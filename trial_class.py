@@ -4,6 +4,7 @@ import tdt
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import os
+from scipy.signal import butter, filtfilt
 
 from sklearn.linear_model import LinearRegression
 from behavior import Behavior
@@ -23,11 +24,11 @@ class Trial:
         self.streams['DA'] = tdtdata.streams['_465A'].data
         self.streams['ISOS'] = tdtdata.streams['_405A'].data
 
-        self.behaviors = {}
+        self.behaviors = {key: value for key, value in tdtdata.epocs.items() if key not in ['Cam1', 'Tick']}
         
         # To ensure that the most updated DA does not require specific preprocessing steps, each of the preprocessing functions will update these. Make sure your ordering is correct
-        self.updated_DA = np.empty(1)
-        self.updated_ISOS = np.empty(1)
+        self.updated_DA = self.streams['DA']
+        self.updated_ISOS = self.streams['ISOS']
 
         self.isosbestic_fitted = np.empty(1)
 
@@ -46,6 +47,9 @@ class Trial:
         
         for stream_name in ['DA', 'ISOS']:
             self.streams[stream_name] = self.streams[stream_name][ind:]
+        
+        self.updated_DA = self.streams['DA']
+        self.updated_ISOS = self.streams['ISOS']
         self.timestamps = self.timestamps[ind:]
 
         # Clear dFF and zscore since the raw data has changed
@@ -65,10 +69,36 @@ class Trial:
             self.streams[stream_name] = self.streams[stream_name][:ind+1]
         
         self.timestamps = self.timestamps[:ind+1]
+        self.updated_DA = self.streams['DA']
+        self.updated_ISOS = self.streams['ISOS']
 
         # Clear dFF and zscore since the raw data has changed
         self.dFF = None
         self.zscore = None
+
+
+    def remove_time_segment(self, start_time, end_time):
+        """
+        Remove the specified time segment between start_time and end_time
+        from the timestamps and associated signal streams.
+        """
+
+        start_idx = np.searchsorted(self.timestamps, start_time)
+        end_idx = np.searchsorted(self.timestamps, end_time)
+
+        if start_idx >= end_idx:
+            raise ValueError("Invalid time segment. start_time must be less than end_time.")
+
+        self.timestamps = np.concatenate([self.timestamps[:start_idx], self.timestamps[end_idx:]])
+        self.streams['DA'] = np.concatenate([self.streams['DA'][:start_idx], self.streams['DA'][end_idx:]])
+        self.streams['ISOS'] = np.concatenate([self.streams['ISOS'][:start_idx], self.streams['ISOS'][end_idx:]])
+
+        if hasattr(self, 'updated_DA'):
+            self.updated_DA = np.concatenate([self.updated_DA[:start_idx], self.updated_DA[end_idx:]])
+        if hasattr(self, 'updated_ISOS'):
+            self.updated_ISOS = np.concatenate([self.updated_ISOS[:start_idx], self.updated_ISOS[end_idx:]])
+
+        print(f"Removed time segment from {start_time}s to {end_time}s.")
 
 
     def smooth_and_apply(self, window_len=1):
@@ -129,7 +159,8 @@ class Trial:
         else:
             raise RuntimeError(f"Input array has too many dimensions. Input: {len(source.shape)}D, Required: 1D")
     
-    def apply_ma_baseline_correction(self, window_len_seconds=30):
+
+    def apply_ma_baseline_drift(self, window_len_seconds=30):
         """
         Applies centered moving average (MA) to both DA and ISOS signals and performs baseline correction,
         with padding to avoid shortening the signals. 
@@ -146,6 +177,19 @@ class Trial:
 
         self.updated_ISOS = (self.updated_ISOS - isosbestic_fc) / isosbestic_fc
         self.updated_DA = (self.updated_DA - DA_fc) / DA_fc
+
+
+    def highpass_baseline_drift(self, cutoff=0.001):
+        """
+        Applies a high-pass Butterworth filter to remove slow drift from the DA and ISOS signals.
+        https://github.com/ThomasAkam/photometry_preprocessing/blob/master/Photometry%20data%20preprocessing.ipynb
+        """
+        # Design a second-order Butterworth high-pass filter
+        b, a = butter(N=2, Wn=cutoff, btype='high', fs=self.fs)
+
+        # Apply zero-phase filtering to avoid phase distortion
+        self.updated_DA = filtfilt(b, a, self.streams['DA'], padtype='even')
+        self.updated_ISOS = filtfilt(b, a, self.streams['ISOS'], padtype='even')
 
 
     def align_channels(self):
@@ -224,6 +268,7 @@ class Trial:
         min_length = min(da_length, isos_length)
 
         if da_length != min_length or isos_length != min_length:
+            print("Trimming")
             # Trim the streams to the shortest length
             self.streams[self.DA] = self.streams[self.DA][:min_length]
             self.streams[self.ISOS] = self.streams[self.ISOS][:min_length]
@@ -238,7 +283,6 @@ class Trial:
         """
         behavior_df = bout_aggregated_df[bout_aggregated_df['Behavior'] == behavior_name]
         onset_times = behavior_df['Start (s)'].values.tolist()
-        print(onset_times)
 
         offset_times = behavior_df['Stop (s)'].values.tolist()
 
@@ -247,8 +291,6 @@ class Trial:
             onset_times=onset_times,
             offset_times=offset_times,
         )
-        
-        # print(f"Behavior '{behavior_name}' stored with onsets: {self.behaviors[behavior_name].onset_times}")
 
 
     def extract_manual_annotation_behaviors(self, bout_aggregated_csv_path):
@@ -273,15 +315,16 @@ class Trial:
             # Call the helper function to extract and add the behavior events
             self.extract_single_behavior(behavior, behavior_df)
 
-    def combine_consecutive_behaviors(self, behavior_name='all', bout_time_threshold=1, min_occurrences=1):
+
+    def combine_consecutive_behaviors(self, behavior_name='all', bout_time_threshold=1):
         """
-        Combines consecutive behavior events if they occur within a specified time threshold,
+        Combines consecutive behavior events if they occur within a specified time threshold
         and updates the behavior's data.
         """
         if behavior_name == 'all':
-            behaviors_to_process = list(self.behaviors.keys())  # Process all behaviors
+            behaviors_to_process = list(self.behaviors.keys())  
         else:
-            behaviors_to_process = [behavior_name]  # Process a single behavior
+            behaviors_to_process = [behavior_name]  
 
         for behavior_event in behaviors_to_process:
             behavior = self.behaviors[behavior_event]
@@ -303,6 +346,7 @@ class Trial:
 
                 next_idx = start_idx + 1
 
+                # Merge behaviors that start within `bout_time_threshold` of the previous offset
                 while next_idx < len(behavior_onsets) and (behavior_onsets[next_idx] - current_offset) <= bout_time_threshold:
                     current_offset = behavior_offsets[next_idx]
                     next_idx += 1
@@ -312,15 +356,10 @@ class Trial:
 
                 start_idx = next_idx
 
-            valid_indices = []
-            for i in range(len(combined_onsets)):
-                num_occurrences = len([onset for onset in behavior_onsets if combined_onsets[i] <= onset <= combined_offsets[i]])
-                if num_occurrences >= min_occurrences:
-                    valid_indices.append(i)
+            # Update the behavior's onset and offset times
+            behavior.onset_times = combined_onsets
+            behavior.offset_times = combined_offsets
 
-            behavior.onset_times = [combined_onsets[i] for i in valid_indices]
-            behavior.offset_times = [combined_offsets[i] for i in valid_indices]
-            behavior.data = [1] * len(behavior.onset_times) 
 
 
     def remove_short_behaviors(self, behavior_name='all', min_duration=0):
@@ -395,3 +434,31 @@ class Trial:
         if ax is None:
             plt.tight_layout()
             plt.show()
+
+
+    '''********************************** MISC **********************************'''
+    def find_baseline_period(self):
+            """
+            Finds the baseline period from the beginning of the timestamps array to 2 minutes after.
+
+            Returns:
+            baseline_start (float): The start time of the baseline period (always 0).
+            baseline_end (float): The end time of the baseline period (2 minutes after the start).
+            """
+            if self.timestamps is None or len(self.timestamps) == 0:
+                raise ValueError("Timestamps data is missing or empty.")
+            
+            # Duration of the baseline period in seconds
+            baseline_duration_in_seconds = 2 * 60  + 20 # 2 minutes 20 seconds
+
+            # Calculate the end time for the baseline period
+            baseline_end_time = self.timestamps[0] + baseline_duration_in_seconds
+
+            # Ensure the baseline period does not exceed the data length
+            if baseline_end_time > self.timestamps[-1]:
+                baseline_end_time = self.timestamps[-1]
+
+            baseline_start = self.timestamps[0]
+            baseline_end = baseline_end_time
+
+            return baseline_start, baseline_end
