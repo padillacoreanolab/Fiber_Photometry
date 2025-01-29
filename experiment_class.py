@@ -10,9 +10,56 @@ class Experiment:
     def __init__(self, experiment_folder_path, behavior_folder_path):
         self.experiment_folder_path = experiment_folder_path
         self.behavior_folder_path = behavior_folder_path
+        self.blocks = {}
         self.trials = {}
 
         self.load_trials()
+    
+    '''********************************** FOR SINGLE OBJECT  **********************************'''
+    def get_first_behavior(self, behaviors=['Investigation', 'Approach', 'Defeat', 'Aggression']):
+        """
+        Extracts the mean z-score and other details for the first 'Investigation' and 'Approach' behavior events
+        from each bout in the bout_dict and stores the values in a new dictionary.
+
+        Parameters:
+        - bout_dict (dict): Dictionary containing bout data with behavior events for each bout.
+        - behaviors (list): List of behavior events to track (defaults to ['Investigation', 'Approach']).
+
+        Returns:
+        - first_behavior_dict (dict): Dictionary containing the start time, end time, duration, 
+                                  and mean z-score for each behavior in each bout.
+        """
+        first_behavior_dict = {}
+
+        # Loop through each bout in the bout_dict
+        for bout_name, bout_data in self.bout_dict.items():
+            first_behavior_dict[bout_name] = {}  # Initialize the dictionary for this bout
+            
+            # Loop through each behavior we want to track
+            for behavior in behaviors:
+                # Check if behavior exists in bout_data and if it contains valid event data
+                if behavior in bout_data and isinstance(bout_data[behavior], list) and len(bout_data[behavior]) > 0:
+                    # Access the first event for the behavior
+                    first_event = bout_data[behavior][0]  # Assuming this is a list of events
+                    
+                    # Extract the relevant details for this behavior event
+                    first_behavior_dict[bout_name][behavior] = {
+                        'Start Time': first_event['Start Time'],
+                        'End Time': first_event['End Time'],
+                        'Total Duration': first_event['End Time'] - first_event['Start Time'],
+                        'Mean zscore': first_event['Mean zscore']
+                    }
+                else:
+                    # If the behavior doesn't exist in this bout, add None placeholders
+                    first_behavior_dict[bout_name][behavior] = {
+                        'Start Time': None,
+                        'End Time': None,
+                        'Total Duration': None,
+                        'Mean zscore': None
+                    }
+
+
+        self.first_behavior_dict = first_behavior_dict
 
     '''********************************** GROUP PROCESSING **********************************'''
     def load_trials(self):
@@ -58,6 +105,26 @@ class Experiment:
             csv_file_name = f"{trial_folder}.csv"
             csv_file_path = os.path.join(self.behavior_folder_path, csv_file_name)
             trial.extract_manual_annotation_behaviors(csv_file_path)
+
+# added by me
+    def remove_time_segments_from_block(self, block_name, time_segments):
+        """
+        Remove specified time segments from a given block's data.
+
+        Parameters:
+        block_name (str): The name of the block (file) to remove time segments from.
+        time_segments (list): A list of tuples representing the time segments to remove [(start_time, end_time), ...].
+        """
+        tdt_data_obj = self.blocks.get(block_name, None)
+        if tdt_data_obj is None:
+            print(f"Block {block_name} not found.")
+            return
+
+        for (start_time, end_time) in time_segments:
+            tdt_data_obj.remove_time_segment(start_time, end_time)
+
+        print(f"Removed specified time segments from block {block_name}.")
+
 
     '''********************************** PLOTTING **********************************'''
     def plot_all_traces(experiment, behavior_name='all'):
