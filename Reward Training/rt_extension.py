@@ -296,7 +296,7 @@ class Reward_Training(Experiment):
 
             # For each sound cue
             for sc_index, sc_onset in enumerate(sound_cue_onsets):
-                reward_time = sc_onset + 4  # Reward issued at 6 seconds
+                reward_time = sc_onset + 6  # Reward issued at 6 seconds
 
                 # Check if the subject was already in the port during the sound cue and stayed past 6s
                 pe_indices_ongoing = np.where((port_entry_onsets < reward_time) & (port_entry_offsets > reward_time))[0]
