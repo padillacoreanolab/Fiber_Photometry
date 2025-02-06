@@ -1,8 +1,12 @@
 import numpy as np
 import pandas as pd
-import tdt
 import os
 import matplotlib.pyplot as plt
+
+import sys
+import os
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(parent_dir)
 
 from trial_class import Trial
 from experiment_class import Experiment
@@ -254,13 +258,13 @@ class HabDishab(Experiment):
 
     '''********************************** PLOTTING  **********************************'''
 
-    def hd_extract_total_behavior_durations(group_data, bouts, behavior='Investigation'):
+    def hp_extract_total_behavior_durations(self, group_data, bouts, behavior='Investigation'):
         """
         Extracts the total durations for the specified behavior (e.g., 'Investigation') 
         for each subject and bout, and returns a DataFrame.
 
         Parameters:
-        group_data (object): The object containing bout data for each subject.
+        group_data (HabDishab): The group data instance.
         bouts (list): A list of bout names to process.
         behavior (str): The behavior of interest to calculate total durations for (default is 'Investigation').
 
@@ -271,7 +275,7 @@ class HabDishab(Experiment):
         # Initialize an empty list to hold the data for each subject
         data_list = []
 
-        # Populate the data_list from the group_data.blocks
+        # Ensure that `group_data.blocks` exists and contains data
         for block_data in group_data.blocks.values():
             if hasattr(block_data, 'bout_dict') and block_data.bout_dict:  # Ensure bout_dict exists and is populated
                 # Use the subject name from the TDTData object
@@ -295,65 +299,38 @@ class HabDishab(Experiment):
         behavior_duration_df.set_index('Subject', inplace=True)
 
         return behavior_duration_df
-    
-    def hab_dishab_plot_y_across_bouts_gray(df,  title='Mean Across Bouts', ylabel='Mean Value', custom_xtick_labels=None, custom_xtick_colors=None, ylim=None, bar_color='#00B7D7', 
-                             yticks_increment=None, xlabel='Intruder',figsize = (12,7), pad_inches = 1):
+
+
+    def hab_dishab_plot_y_across_bouts_gray(self, group_data, df, title='Mean Across Bouts', ylabel='Mean Value', custom_xtick_labels=None, custom_xtick_colors=None, ylim=None, 
+                                            bar_color='#00B7D7', yticks_increment=None, xlabel='Intruder', 
+                                            figsize=(12,7), pad_inches=1):
         """
         Plots the mean values during investigations or other events across bouts with error bars for SEM
         and individual subject lines connecting the bouts. All subjects are plotted in gray.
 
         Parameters:
-        - df (DataFrame): A DataFrame where rows are subjects, and bouts are columns.
-                        Values should represent the mean values (e.g., mean DA, investigation times)
-                        for each subject and bout.
-        - title (str): The title for the plot.
-        - ylabel (str): The label for the y-axis.
-        - custom_xtick_labels (list): A list of custom x-tick labels. If not provided, defaults to the column names.
-        - custom_xtick_colors (list): A list of colors for the x-tick labels. Must be the same length as `custom_xtick_labels`.
-        - ylim (tuple): A tuple (min, max) to set the y-axis limits. If None, the limits are set automatically based on the data.
-        - bar_color (str): The color to use for the bars (default is cyan).
-        - yticks_increment (float): Increment amount for the y-axis ticks.
-        - xlabel (str): The label for the x-axis.
+        group_data (HabDishab): The group data instance.
+        df (pd.DataFrame): The DataFrame containing behavior duration data.
         """
-
-        # Calculate the mean and SEM for each bout (across all subjects)
         mean_values = df.mean()
         sem_values = df.sem()
 
-        # Create the plot
-        fig, ax = plt.subplots(figsize=figsize)  #12,7
+        fig, ax = plt.subplots(figsize=figsize)
 
-        # Plot the bar plot with error bars (mean and SEM) without adding it to the legend
         bars = ax.bar(
-            df.columns, 
-            mean_values, 
-            yerr=sem_values, 
-            capsize=6,  # Increase capsize for larger error bars
-            color=bar_color,  # Customizable bar color
-            edgecolor='black', 
-            linewidth=4,  # Thicker and darker bar outlines
-            width=0.6,
-            error_kw=dict(elinewidth=4, capthick=4,capsize=10,zorder=5)  # Thicker error bars and make them appear above circles
-            # elinewidth = 2.5, capthick = 2.5
+            df.columns, mean_values, yerr=sem_values, capsize=6, color=bar_color, 
+            edgecolor='black', linewidth=4, width=0.6,
+            error_kw=dict(elinewidth=4, capthick=4, capsize=10, zorder=5)
         )
 
-        # Plot all subject lines and markers in gray
-        for i, subject in enumerate(df.index):
+        for subject in df.index:
             ax.plot(df.columns, df.loc[subject], linestyle='-', color='gray', alpha=0.5, linewidth=2.5, zorder=1)
-
-        # Plot unfilled circle markers with larger size, in gray
-        for i, subject in enumerate(df.index):
             ax.scatter(df.columns, df.loc[subject], facecolors='none', edgecolors='gray', s=120, alpha=0.6, linewidth=4, zorder=2)
 
-        # Add labels, title, and format
-        ax.set_ylabel(ylabel, fontsize=28, labelpad=12)  # Larger y-axis label
+        ax.set_ylabel(ylabel, fontsize=28, labelpad=12)
         ax.set_xlabel(xlabel, fontsize=40, labelpad=12)
-        # ax.set_title(title, fontsize=16)
-
-        # Set x-ticks to match the bout labels
         ax.set_xticks(np.arange(len(df.columns)))
 
-        # Use custom x-tick labels if provided, otherwise use the column names
         if custom_xtick_labels is not None:
             ax.set_xticklabels(custom_xtick_labels, fontsize=28)
             if custom_xtick_colors is not None:
@@ -362,42 +339,30 @@ class HabDishab(Experiment):
         else:
             ax.set_xticklabels(df.columns, fontsize=26)
 
-        # Increase the font size of y-axis tick numbers
-        ax.tick_params(axis='y', labelsize=38)  # Increase y-axis number size
-        ax.tick_params(axis='x', labelsize=38)  # Optional: also increase x-axis number size
+        ax.tick_params(axis='y', labelsize=38)
+        ax.tick_params(axis='x', labelsize=38)
 
-        # Automatically set the y-limits based on the data range if ylim is not provided
         if ylim is None:
-            # Collect all values to determine the y-limits
             all_values = np.concatenate([df.values.flatten(), mean_values.values.flatten()])
-            min_val = np.nanmin(all_values)
-            max_val = np.nanmax(all_values)
-
-            # Set lower y-limit to 0 if all values are above 0, otherwise set to the minimum value
+            min_val, max_val = np.nanmin(all_values), np.nanmax(all_values)
             lower_ylim = 0 if min_val > 0 else min_val * 1.1
-            upper_ylim = max_val * 1.1  # Adding a bit of space above the highest value
-            
+            upper_ylim = max_val * 1.1
             ax.set_ylim(lower_ylim, upper_ylim)
         else:
-            # If ylim is provided, set the limits to the specified values
             ax.set_ylim(ylim)
             if ylim[0] < 0:
                 ax.axhline(0, color='black', linestyle='--', linewidth=2, zorder=1)
 
-        # Set y-ticks based on yticks_increment
         if yticks_increment is not None:
             y_min, y_max = ax.get_ylim()
             y_ticks = np.arange(np.floor(y_min), np.ceil(y_max) + yticks_increment, yticks_increment)
             ax.set_yticks(y_ticks)
 
-        # Remove the right and top spines
         ax.spines['right'].set_visible(False)
         ax.spines['top'].set_visible(False)
-        ax.spines['left'].set_linewidth(5)    # Left axis line
-        ax.spines['bottom'].set_linewidth(5)  # Bottom axis line
-
+        ax.spines['left'].set_linewidth(5)
+        ax.spines['bottom'].set_linewidth(5)
 
         plt.savefig(f'{title}{ylabel[0]}.png', transparent=True, bbox_inches='tight', pad_inches=pad_inches)
-        # Display the plot without legend
         plt.tight_layout()
         plt.show()
