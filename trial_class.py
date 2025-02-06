@@ -9,6 +9,11 @@ from scipy.signal import butter, filtfilt
 from sklearn.linear_model import LinearRegression
 from behavior import Behavior
 
+import sys
+import os
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(parent_dir)
+
 class Trial:
     def __init__(self, trial_path):
         tdtdata = tdt.read_block(trial_path)
