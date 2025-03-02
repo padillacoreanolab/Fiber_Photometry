@@ -2,12 +2,10 @@ import numpy as np
 import pandas as pd
 import tdt
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
 import os
 from scipy.signal import butter, filtfilt
 
 from sklearn.linear_model import LinearRegression
-from behavior import Behavior
 
 class Trial:
     def __init__(self, trial_path):
@@ -24,7 +22,7 @@ class Trial:
         self.streams['DA'] = tdtdata.streams['_465A'].data
         self.streams['ISOS'] = tdtdata.streams['_405A'].data
 
-        self.behaviors = {key: value for key, value in tdtdata.epocs.items() if key not in ['Cam1', 'Tick']}
+        self.behaviors = None
         
         # To ensure that the most updated DA does not require specific preprocessing steps, each of the preprocessing functions will update these. Make sure your ordering is correct
         self.updated_DA = self.streams['DA']
@@ -277,114 +275,176 @@ class Trial:
 
 
     '''********************************** BEHAVIORS **********************************'''
-    def extract_single_behavior(self, behavior_name, bout_aggregated_df):
+    def extract_bouts_and_behaviors(self, csv_path, bout_definitions):
         """
-        Extract a single behavior and add it to the behaviors dictionary.
-        """
-        behavior_df = bout_aggregated_df[bout_aggregated_df['Behavior'] == behavior_name]
-        onset_times = behavior_df['Start (s)'].values.tolist()
-
-        offset_times = behavior_df['Stop (s)'].values.tolist()
-
-        self.behaviors[behavior_name] = Behavior(
-            name=behavior_name,
-            onset_times=onset_times,
-            offset_times=offset_times,
-        )
-
-
-    def extract_manual_annotation_behaviors(self, bout_aggregated_csv_path):
-        '''
-        This function processes all behaviors of type 'STATE' in the CSV file and extracts them
-        into the TDT recording.
-
-        Parameters:
-        bout_aggregated_csv_path: The file path to the CSV containing the behavior data.
-        '''
-        bout_aggregated_df = pd.read_csv(bout_aggregated_csv_path)
-
-        # Filter the DataFrame to include only rows where the behavior type is 'STATE'
-        state_behaviors_df = bout_aggregated_df[bout_aggregated_df['Behavior type'] == 'STATE']
+        Reads an aggregated behavior CSV from csv_path, extracts behavior events occurring within bouts,
+        and stores the result as a DataFrame in self.behaviors.
         
-        unique_behaviors = state_behaviors_df['Behavior'].unique()
+        Each bout is defined by an "introduced" event and a "removed" event. Multiple bout definitions
+        can be provided to handle different naming conventions.
+        
+        Parameters:
+        csv_path (str): File path to the CSV containing the behavior data.
+        bout_definitions (list of dict): A list where each dict defines a bout type with keys:
+            - 'prefix': A string used to label bouts (e.g., "s1", "s2", "x", etc.)
+            - 'introduced': The name of the introduced event (e.g., "s1_Introduced", "X_Introduced", etc.)
+            - 'removed': The name of the removed event (e.g., "s1_Removed", "X_Removed", etc.)
+        
+        The resulting DataFrame will have one row per behavior event (that is not a boundary event)
+        with the following columns:
+        - Bout: Bout label (e.g., "s1-1", "s2-1", etc.)
+        - Behavior: The behavior name
+        - Event_Start: Event start time
+        - Event_End: Event end time
+        - Duration (s): Duration of the event (End - Start)
+        """
 
-        for behavior in unique_behaviors:
-            # Filter the DataFrame for the current behavior
-            behavior_df = state_behaviors_df[state_behaviors_df['Behavior'] == behavior]
+        # 1. Read CSV and fix column names
+        data = pd.read_csv(csv_path)
+        
+        # Ensure numeric columns
+        data['Start (s)'] = pd.to_numeric(data['Start (s)'], errors='coerce')
+        data['Stop (s)']   = pd.to_numeric(data['Stop (s)'], errors='coerce')
+        
+        # 2. Build a unique list of boundary behaviors from all bout definitions
+        boundary_behaviors = set()
+        for bout_def in bout_definitions:
+            boundary_behaviors.add(bout_def['introduced'])
+            boundary_behaviors.add(bout_def['removed'])
+        boundary_behaviors = list(boundary_behaviors)
+        
+        # 3. Helper function to extract events for a given introduced/removed pair
+        def extract_bout_events_helper(df, introduced_behavior, removed_behavior, bout_prefix, boundary_list):
+            introduced_df = df[df['Behavior'] == introduced_behavior].sort_values('Start (s)').reset_index(drop=True)
+            removed_df    = df[df['Behavior'] == removed_behavior].sort_values('Start (s)').reset_index(drop=True)
+            num_bouts     = min(len(introduced_df), len(removed_df))
             
-            # Call the helper function to extract and add the behavior events
-            self.extract_single_behavior(behavior, behavior_df)
+            rows = []
+            for i in range(num_bouts):
+                bout_label = f"{bout_prefix}-{i+1}"
+                bout_start = introduced_df.loc[i, 'Start (s)']
+                bout_end   = removed_df.loc[i, 'Start (s)']  # Use the start time of the removed event
+                
+                # Select events fully contained within [bout_start, bout_end]
+                subset = df[
+                    (~df['Behavior'].isin(boundary_list)) &
+                    (df['Start (s)'] >= bout_start) &
+                    (df['Stop (s)']   <= bout_end)
+                ]
+                for _, row in subset.iterrows():
+                    event_start = row['Start (s)']
+                    event_end   = row['Stop (s)']
+                    rows.append({
+                        'Bout': bout_label,
+                        'Behavior': row['Behavior'],
+                        'Event_Start': event_start,
+                        'Event_End': event_end,
+                        'Duration (s)': event_end - event_start
+                    })
+            return rows
+
+        # 4. Loop through each bout definition and collect bout-event rows
+        bout_rows = []
+        for bout_def in bout_definitions:
+            prefix = bout_def.get('prefix', 'bout')
+            introduced_behavior = bout_def['introduced']
+            removed_behavior = bout_def['removed']
+            rows = extract_bout_events_helper(data, introduced_behavior, removed_behavior, prefix, boundary_behaviors)
+            bout_rows.extend(rows)
+        
+        # 5. Store the resulting DataFrame in the Trial instance instead of saving to CSV
+        bout_df = pd.DataFrame(bout_rows)
+        self.behaviors = bout_df
+
 
 
     def combine_consecutive_behaviors(self, behavior_name='all', bout_time_threshold=1):
         """
         Combines consecutive behavior events if they occur within a specified time threshold
-        and updates the behavior's data.
+        and updates the self.behaviors DataFrame.
+
+        Parameters:
+        - behavior_name (str): The behavior type to process. If 'all', process all behaviors.
+        - bout_time_threshold (float): Maximum time (in seconds) between consecutive events to merge them.
         """
-        if behavior_name == 'all':
-            behaviors_to_process = list(self.behaviors.keys())  
-        else:
-            behaviors_to_process = [behavior_name]  
+        if self.behaviors.empty:
+            return  # No behaviors to process
 
-        for behavior_event in behaviors_to_process:
-            behavior = self.behaviors[behavior_event]
-            behavior_onsets = np.array(behavior.onset_times)
-            behavior_offsets = np.array(behavior.offset_times)
+        df = self.behaviors.copy()  # Work on a copy to avoid modifying during iteration
 
-            combined_onsets = []
-            combined_offsets = []
+        # Select behaviors to process
+        if behavior_name != 'all':
+            df = df[df['Behavior'] == behavior_name]
 
-            if len(behavior_onsets) == 0:
-                continue  
+        # Sort by Bout and Event_Start to ensure proper merging
+        df = df.sort_values(by=['Bout', 'Behavior', 'Event_Start']).reset_index(drop=True)
 
-            start_idx = 0
+        # Storage for combined rows
+        combined_rows = []
+        
+        # Iterate through groups of behaviors
+        for (bout, behavior), group in df.groupby(['Bout', 'Behavior']):
+            group = group.sort_values('Event_Start').reset_index(drop=True)
+            
+            # Initialize first behavior
+            current_start = group.loc[0, 'Event_Start']
+            current_end = group.loc[0, 'Event_End']
 
-            while start_idx < len(behavior_onsets):
-                # Initialize the combination window with the first behavior onset and offset
-                current_onset = behavior_onsets[start_idx]
-                current_offset = behavior_offsets[start_idx]
+            for i in range(1, len(group)):
+                next_start = group.loc[i, 'Event_Start']
+                next_end = group.loc[i, 'Event_End']
 
-                next_idx = start_idx + 1
+                # If the next behavior starts within the threshold, merge it
+                if next_start - current_end <= bout_time_threshold:
+                    current_end = next_end  # Extend the current behavior
+                else:
+                    # Store merged event
+                    combined_rows.append({
+                        'Bout': bout,
+                        'Behavior': behavior,
+                        'Event_Start': current_start,
+                        'Event_End': current_end,
+                        'Duration (s)': current_end - current_start
+                    })
+                    # Reset to next behavior
+                    current_start = next_start
+                    current_end = next_end
 
-                # Merge behaviors that start within `bout_time_threshold` of the previous offset
-                while next_idx < len(behavior_onsets) and (behavior_onsets[next_idx] - current_offset) <= bout_time_threshold:
-                    current_offset = behavior_offsets[next_idx]
-                    next_idx += 1
+            # Store the last behavior
+            combined_rows.append({
+                'Bout': bout,
+                'Behavior': behavior,
+                'Event_Start': current_start,
+                'Event_End': current_end,
+                'Duration (s)': current_end - current_start
+            })
 
-                combined_onsets.append(current_onset)
-                combined_offsets.append(current_offset)
-
-                start_idx = next_idx
-
-            # Update the behavior's onset and offset times
-            behavior.onset_times = combined_onsets
-            behavior.offset_times = combined_offsets
-
-
+        # Convert back to DataFrame and update
+        self.behaviors = pd.DataFrame(combined_rows)
 
     def remove_short_behaviors(self, behavior_name='all', min_duration=0):
         """
         Removes behaviors with a duration less than the specified minimum duration.
+
+        Parameters:
+        - behavior_name (str): The behavior type to filter. If 'all', process all behaviors.
+        - min_duration (float): Minimum duration (in seconds) required to keep a behavior.
         """
-        if behavior_name == 'all':
-            behaviors_to_process = list(self.behaviors.keys())
-        else:
-            behaviors_to_process = [behavior_name]
+        if self.behaviors.empty:
+            return  # No behaviors to process
 
-        for behavior_event in behaviors_to_process:
-            behavior = self.behaviors[behavior_event]
-            behavior_onsets = np.array(behavior.onset_times)
-            behavior_offsets = np.array(behavior.offset_times)
+        df = self.behaviors.copy()
 
-            if len(behavior_onsets) == 0:
-                continue
+        # Filter by behavior if specified
+        if behavior_name != 'all':
+            df = df[df['Behavior'] == behavior_name]
 
-            behavior_durations = behavior_offsets - behavior_onsets
-            valid_indices = np.where(behavior_durations >= min_duration)[0]
+        # Apply duration filter
+        df = df[df['Duration (s)'] >= min_duration]
 
-            behavior.onset_times = behavior_onsets[valid_indices].tolist()
-            behavior.offset_times = behavior_offsets[valid_indices].tolist()
-            behavior.data = [1] * len(valid_indices)
+        # Update self.behaviors
+        self.behaviors = df.reset_index(drop=True)
+
 
 
 

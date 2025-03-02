@@ -10,7 +10,6 @@ class Experiment:
     def __init__(self, experiment_folder_path, behavior_folder_path):
         self.experiment_folder_path = experiment_folder_path
         self.behavior_folder_path = behavior_folder_path
-        self.blocks = {}
         self.trials = {}
 
         self.load_trials()
@@ -97,33 +96,36 @@ class Experiment:
             # trial.compute_zscore(method = 'baseline', baseline_start = baseline_start, baseline_end = baseline_end)
             trial.compute_zscore(method = 'standard')
 
-            # trial.remove_short_behaviors(behavior_name='all', min_duration=0.2)
-            # trial.combine_consecutive_behaviors(behavior_name='all', bout_time_threshold=2, min_occurrences=1)
             trial.verify_signal()
 
-            # Extract manual annotation behaviors
-            csv_file_name = f"{trial_folder}.csv"
-            csv_file_path = os.path.join(self.behavior_folder_path, csv_file_name)
-            trial.extract_manual_annotation_behaviors(csv_file_path)
 
-# added by me
-    def remove_time_segments_from_block(self, block_name, time_segments):
+    def group_extract_manual_annotations(self, bout_definitions):
         """
-        Remove specified time segments from a given block's data.
+        Extracts behavior bouts and annotations for all trials in the experiment.
+
+        This function:
+        1. Iterates through `self.trials`, looking for behavior CSV files in `self.behavior_folder_path`.
+        2. Calls `extract_bouts_and_behaviors` for each trial.
+        3. Stores the behavior data inside each `Trial` object.
 
         Parameters:
-        block_name (str): The name of the block (file) to remove time segments from.
-        time_segments (list): A list of tuples representing the time segments to remove [(start_time, end_time), ...].
+        - bout_definitions (list of dict): List defining each bout with:
+            - 'prefix': Label used for the bout (e.g., "s1", "s2", "x").
+            - 'introduced': Name of the behavior marking the start of the bout.
+            - 'removed': Name of the behavior marking the end of the bout.
         """
-        tdt_data_obj = self.blocks.get(block_name, None)
-        if tdt_data_obj is None:
-            print(f"Block {block_name} not found.")
-            return
 
-        for (start_time, end_time) in time_segments:
-            tdt_data_obj.remove_time_segment(start_time, end_time)
+        for trial_name, trial in self.trials.items():
+            csv_path = os.path.join(self.behavior_folder_path, f"{trial_name}.csv")
 
-        print(f"Removed specified time segments from block {block_name}.")
+            if os.path.exists(csv_path):
+                print(f"Processing behaviors for {trial_name}...")
+                trial.extract_bouts_and_behaviors(csv_path, bout_definitions)
+                # trial.combine_consecutive_behaviors(behavior_name='all', bout_time_threshold=1)
+                # trial.remove_short_behaviors(behavior_name='all', min_duration=0)
+            else:
+                print(f"Warning: No CSV found for {trial_name} in {self.behavior_folder_path}. Skipping.")
+
 
 
     '''********************************** PLOTTING **********************************'''
