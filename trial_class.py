@@ -279,82 +279,81 @@ class Trial:
         """
         Reads an aggregated behavior CSV from csv_path, extracts behavior events occurring within bouts,
         and stores the result as a DataFrame in self.behaviors.
-        
+
         Each bout is defined by an "introduced" event and a "removed" event. Multiple bout definitions
         can be provided to handle different naming conventions.
-        
+
         Parameters:
-        csv_path (str): File path to the CSV containing the behavior data.
-        bout_definitions (list of dict): A list where each dict defines a bout type with keys:
-            - 'prefix': A string used to label bouts (e.g., "s1", "s2", "x", etc.)
-            - 'introduced': The name of the introduced event (e.g., "s1_Introduced", "X_Introduced", etc.)
-            - 'removed': The name of the removed event (e.g., "s1_Removed", "X_Removed", etc.)
-        
+        - csv_path (str): File path to the CSV containing the behavior data.
+        - bout_definitions (list of dict): A list where each dict defines a bout type with keys:
+            - 'prefix': A string used to label bouts (e.g., "s1", "s2", "x", etc.).
+            - 'introduced': The name of the introduced event (e.g., "s1_Introduced", "X_Introduced", etc.).
+            - 'removed': The name of the removed event (e.g., "s1_Removed", "X_Removed", etc.).
+
         The resulting DataFrame will have one row per behavior event (that is not a boundary event)
         with the following columns:
-        - Bout: Bout label (e.g., "s1-1", "s2-1", etc.)
-        - Behavior: The behavior name
-        - Event_Start: Event start time
-        - Event_End: Event end time
-        - Duration (s): Duration of the event (End - Start)
+        - Bout: Bout label (e.g., "s1-1", "s2-1", etc.).
+        - Behavior: The behavior name.
+        - Event_Start: Event start time.
+        - Event_End: Event end time.
+        - Duration (s): Duration of the event (Stop - Start).
         """
 
-        # 1. Read CSV and fix column names
+        # 1. Read CSV and ensure numeric columns
         data = pd.read_csv(csv_path)
-        
-        # Ensure numeric columns
+
+        # Ensure 'Start (s)' and 'Stop (s)' are numeric
         data['Start (s)'] = pd.to_numeric(data['Start (s)'], errors='coerce')
-        data['Stop (s)']   = pd.to_numeric(data['Stop (s)'], errors='coerce')
-        
-        # 2. Build a unique list of boundary behaviors from all bout definitions
-        boundary_behaviors = set()
-        for bout_def in bout_definitions:
-            boundary_behaviors.add(bout_def['introduced'])
-            boundary_behaviors.add(bout_def['removed'])
-        boundary_behaviors = list(boundary_behaviors)
-        
-        # 3. Helper function to extract events for a given introduced/removed pair
-        def extract_bout_events_helper(df, introduced_behavior, removed_behavior, bout_prefix, boundary_list):
+        data['Stop (s)'] = pd.to_numeric(data['Stop (s)'], errors='coerce')
+
+        # 2. Filter for the subject's data only
+        data = data[data['Subject'] == 'Subject']
+
+        # 3. Build a unique set of boundary behaviors from bout definitions
+        boundary_behaviors = {bout_def['introduced'] for bout_def in bout_definitions} | {
+            bout_def['removed'] for bout_def in bout_definitions
+        }
+
+        # 4. Helper function to extract events within each bout
+        def extract_bout_events(df, introduced_behavior, removed_behavior, bout_prefix):
             introduced_df = df[df['Behavior'] == introduced_behavior].sort_values('Start (s)').reset_index(drop=True)
-            removed_df    = df[df['Behavior'] == removed_behavior].sort_values('Start (s)').reset_index(drop=True)
-            num_bouts     = min(len(introduced_df), len(removed_df))
-            
+            removed_df = df[df['Behavior'] == removed_behavior].sort_values('Start (s)').reset_index(drop=True)
+            num_bouts = min(len(introduced_df), len(removed_df))
+
             rows = []
             for i in range(num_bouts):
                 bout_label = f"{bout_prefix}-{i+1}"
                 bout_start = introduced_df.loc[i, 'Start (s)']
-                bout_end   = removed_df.loc[i, 'Start (s)']  # Use the start time of the removed event
-                
-                # Select events fully contained within [bout_start, bout_end]
+                bout_end = removed_df.loc[i, 'Start (s)']
+
+                # Select only behaviors within this bout, excluding boundary behaviors
                 subset = df[
-                    (~df['Behavior'].isin(boundary_list)) &
+                    (~df['Behavior'].isin(boundary_behaviors)) &
                     (df['Start (s)'] >= bout_start) &
-                    (df['Stop (s)']   <= bout_end)
+                    (df['Stop (s)'] <= bout_end)
                 ]
+
                 for _, row in subset.iterrows():
-                    event_start = row['Start (s)']
-                    event_end   = row['Stop (s)']
                     rows.append({
                         'Bout': bout_label,
                         'Behavior': row['Behavior'],
-                        'Event_Start': event_start,
-                        'Event_End': event_end,
-                        'Duration (s)': event_end - event_start
+                        'Event_Start': row['Start (s)'],
+                        'Event_End': row['Stop (s)'],
+                        'Duration (s)': row['Stop (s)'] - row['Start (s)']
                     })
+
             return rows
 
-        # 4. Loop through each bout definition and collect bout-event rows
+        # 5. Extract behavior events for all bout definitions
         bout_rows = []
         for bout_def in bout_definitions:
-            prefix = bout_def.get('prefix', 'bout')
+            prefix = bout_def['prefix']
             introduced_behavior = bout_def['introduced']
             removed_behavior = bout_def['removed']
-            rows = extract_bout_events_helper(data, introduced_behavior, removed_behavior, prefix, boundary_behaviors)
-            bout_rows.extend(rows)
-        
-        # 5. Store the resulting DataFrame in the Trial instance instead of saving to CSV
-        bout_df = pd.DataFrame(bout_rows)
-        self.behaviors = bout_df
+            bout_rows.extend(extract_bout_events(data, introduced_behavior, removed_behavior, prefix))
+
+        # 6. Store the resulting DataFrame in the Trial instance instead of saving
+        self.behaviors = pd.DataFrame(bout_rows)
 
 
 
