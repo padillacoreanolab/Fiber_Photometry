@@ -14,51 +14,6 @@ class Experiment:
 
         self.load_trials()
     
-    '''********************************** FOR SINGLE OBJECT  **********************************'''
-    def get_first_behavior(self, behaviors=['Investigation', 'Approach', 'Defeat', 'Aggression']):
-        """
-        Extracts the mean z-score and other details for the first 'Investigation' and 'Approach' behavior events
-        from each bout in the bout_dict and stores the values in a new dictionary.
-
-        Parameters:
-        - bout_dict (dict): Dictionary containing bout data with behavior events for each bout.
-        - behaviors (list): List of behavior events to track (defaults to ['Investigation', 'Approach']).
-
-        Returns:
-        - first_behavior_dict (dict): Dictionary containing the start time, end time, duration, 
-                                  and mean z-score for each behavior in each bout.
-        """
-        first_behavior_dict = {}
-
-        # Loop through each bout in the bout_dict
-        for bout_name, bout_data in self.bout_dict.items():
-            first_behavior_dict[bout_name] = {}  # Initialize the dictionary for this bout
-            
-            # Loop through each behavior we want to track
-            for behavior in behaviors:
-                # Check if behavior exists in bout_data and if it contains valid event data
-                if behavior in bout_data and isinstance(bout_data[behavior], list) and len(bout_data[behavior]) > 0:
-                    # Access the first event for the behavior
-                    first_event = bout_data[behavior][0]  # Assuming this is a list of events
-                    
-                    # Extract the relevant details for this behavior event
-                    first_behavior_dict[bout_name][behavior] = {
-                        'Start Time': first_event['Start Time'],
-                        'End Time': first_event['End Time'],
-                        'Total Duration': first_event['End Time'] - first_event['Start Time'],
-                        'Mean zscore': first_event['Mean zscore']
-                    }
-                else:
-                    # If the behavior doesn't exist in this bout, add None placeholders
-                    first_behavior_dict[bout_name][behavior] = {
-                        'Start Time': None,
-                        'End Time': None,
-                        'Total Duration': None,
-                        'Mean zscore': None
-                    }
-
-
-        self.first_behavior_dict = first_behavior_dict
 
     '''********************************** GROUP PROCESSING **********************************'''
     def load_trials(self):
@@ -88,7 +43,7 @@ class Experiment:
             trial.remove_initial_LED_artifact(t=30)
             trial.remove_final_data_segment(t = 10)
             
-            trial.smooth_and_apply(window_len=int(trial.fs)*1)
+            trial.smooth_and_apply(window_len=int(trial.fs)*2)
             trial.apply_ma_baseline_drift()
             trial.align_channels()
             trial.compute_dFF()
@@ -99,7 +54,7 @@ class Experiment:
             trial.verify_signal()
 
 
-    def group_extract_manual_annotations(self, bout_definitions):
+    def group_extract_manual_annotations(self, bout_definitions, first = False):
         """
         Extracts behavior bouts and annotations for all trials in the experiment.
 
@@ -121,15 +76,15 @@ class Experiment:
             if os.path.exists(csv_path):
                 print(f"Processing behaviors for {trial_name}...")
                 trial.extract_bouts_and_behaviors(csv_path, bout_definitions)
-                # trial.combine_consecutive_behaviors(behavior_name='all', bout_time_threshold=1)
-                # trial.remove_short_behaviors(behavior_name='all', min_duration=0)
+                trial.combine_consecutive_behaviors(behavior_name='all', bout_time_threshold=1)
+                # trial.remove_short_behaviors(behavior_name='all', min_duration=0.3)
             else:
                 print(f"Warning: No CSV found for {trial_name} in {self.behavior_folder_path}. Skipping.")
 
 
 
     '''********************************** PLOTTING **********************************'''
-    def plot_all_traces(experiment, behavior_name='all'):
+    def plot_all_traces(experiment, behavior_name='all'): 
         """
         Plots behavior events for all trials in separate subplots within the same figure.
         """
@@ -154,4 +109,31 @@ class Experiment:
 
         plt.tight_layout()
         plt.show()
+
+
+    def compute_all_da_metrics(self, use_fractional=False, max_bout_duration=30, 
+                           use_adaptive=False, peak_fall_fraction=0.5, 
+                           allow_bout_extension=False,first = False):
+        """
+        Iterates over all trials in the experiment and computes DA metrics with the specified windowing options.
+
+        Parameters:
+        - use_fractional (bool): Whether to use fractional analysis.
+        - max_bout_duration (int): Maximum duration of a bout in seconds.
+        - use_adaptive (bool): Whether to use adaptive windowing.
+        - peak_fall_fraction (float): Fraction of peak fall to use.
+        - allow_bout_extension (bool): Whether to allow bout extension.
+        - first (bool): If True, only the first investigation per bout is considered.
+        """
+        for trial_name, trial in self.trials.items():
+            if hasattr(trial, 'compute_da_metrics'):
+                print(f"Computing DA metrics for {trial_name} ...")
+                trial.compute_da_metrics(use_fractional=use_fractional,
+                                        max_bout_duration=max_bout_duration,
+                                        use_adaptive=use_adaptive,
+                                        peak_fall_fraction=peak_fall_fraction,
+                                        allow_bout_extension=allow_bout_extension,
+                                        first = first)
+            else:
+                print(f"Warning: Trial '{trial_name}' does not have compute_da_metrics method.")
 
