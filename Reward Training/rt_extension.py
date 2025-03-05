@@ -662,12 +662,15 @@ class Reward_Training(Experiment):
         plt.xticks(np.arange(1, 14, 2), fontsize=26)
 
         if "NAc" in str(directory_path):
-            y_limits = (-1, 4)
+            y_lower_limit = -1
+            y_upper_limit = 4
         else: #mPFC
-            y_limits = (-1, 3)
+            y_lower_limit = -1
+            y_upper_limit = 3
         # Set y-axis limits if provided
-        if y_limits is not None:
-            plt.ylim(y_limits)
+        # if y_limits is not None:
+        #     plt.ylim(y_limits)
+        plt.yticks(np.arange(y_lower_limit, y_upper_limit), fontsize = 26)
 
         # Remove the top and right spines
         ax = plt.gca()  # Get current axes
