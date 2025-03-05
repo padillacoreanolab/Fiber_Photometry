@@ -13,7 +13,7 @@ class Experiment:
         self.trials = {}
 
         self.load_trials()
-    
+        # self.load_rtc_trials()
     '''********************************** FOR SINGLE OBJECT  **********************************'''
     def get_first_behavior(self, behaviors=['Investigation', 'Approach', 'Defeat', 'Aggression']):
         """
@@ -70,10 +70,9 @@ class Experiment:
 
         for trial_folder in trial_folders:
             trial_path = os.path.join(self.experiment_folder_path, trial_folder)
-            trial_obj = Trial(trial_path)
+            trial_obj = Trial(trial_path, '_465A', '_405A')
 
             self.trials[trial_folder] = trial_obj
-
 
     def default_batch_process(self, time_segments_to_remove=None):
         """

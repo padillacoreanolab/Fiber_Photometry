@@ -4,17 +4,42 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(parent_dir)
 
 from experiment_class import Experiment
+from trial_class import Trial
 
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-
+from scipy.stats import linregress
 
 class Reward_Training(Experiment):
+    def __init__(self, experiment_folder_path, behavior_folder_path):
+        super().__init__(experiment_folder_path, behavior_folder_path)
+        self.trials = {}  # Reset trials to avoid loading from parent class
+        self.load_rtc_trials()  # Load RTC trials instead
+
+    def load_rtc_trials(self):
+        """
+        Load two streams of data and splits them into two trials.
+        """
+        trial_folders = [folder for folder in os.listdir(self.experiment_folder_path)
+                if os.path.isdir(os.path.join(self.experiment_folder_path, folder))]
+
+        for trial_folder in trial_folders:
+            trial_path = os.path.join(self.experiment_folder_path, trial_folder)
+            trial_obj1 = Trial(trial_path, '_465A', '_405A')
+            trial_obj2 = Trial(trial_path, '_465C', '_405C')
+            trial_name1 = trial_folder.split('_')[0]                # First mouse of rtc
+            trial_name2 = trial_folder.split('_')[1].split('-')[0]  # Second mouse of rtc
+            self.trials[trial_name1] = trial_obj1
+            self.trials[trial_name2] = trial_obj2
+
+            # self.trials[trial_folder] = [trial_obj1, trial_obj2]
+
     def rt_processing(self, time_segments_to_remove=None):
         """
         Batch processes reward training
         """
+        print(self.trials.items())
         for trial_folder, trial in self.trials.items():
             # Check if the subject name is in the time_segments_to_remove dictionary
             if time_segments_to_remove and trial.subject_name in time_segments_to_remove:
@@ -32,28 +57,100 @@ class Reward_Training(Experiment):
             # trial.compute_zscore(method = 'standard')
             trial.verify_signal()
 
-            trial.behaviors['sound cues'] = trial.behaviors.pop('PC0_')
-            trial.behaviors['port entries'] = trial.behaviors.pop('PC3_')
-            
+            # PC0 = Tones
+            # PC3 = Box 3
+            # PC2 = Box 4
+            # print(trial.behaviors1)
+
+            trial.behaviors1['sound cues'] = trial.behaviors1.pop('PC0_')
+            if int(trial_folder[-1]) % 2 == 0:
+                trial.behaviors1['port entries'] = trial.behaviors1.pop('PC2_')
+            else:    # use 'PC3_' instead
+                trial.behaviors1['port entries'] = trial.behaviors1.pop('PC3_')
+
 
             # Remove the first entry because it doesn't count
-            trial.behaviors['sound cues'].onset_times = trial.behaviors['sound cues'].onset[1:]
-            trial.behaviors['sound cues'].offset_times = trial.behaviors['sound cues'].offset[1:]
-            trial.behaviors['port entries'].onset_times = trial.behaviors['port entries'].onset[1:]
-            trial.behaviors['port entries'].offset_times = trial.behaviors['port entries'].offset[1:]
+            trial.behaviors1['sound cues'].onset_times = trial.behaviors1['sound cues'].onset[1:]
+            trial.behaviors1['sound cues'].offset_times = trial.behaviors1['sound cues'].offset[1:]
+            trial.behaviors1['port entries'].onset_times = trial.behaviors1['port entries'].onset[1:]
+            trial.behaviors1['port entries'].offset_times = trial.behaviors1['port entries'].offset[1:]
 
             
             # Finding instances after first tone is played
-            port_entries_onset = np.array(trial.behaviors['port entries'].onset_times)
-            port_entries_offset = np.array(trial.behaviors['port entries'].offset_times)
-            first_sound_cue_onset = trial.behaviors['sound cues'].onset_times[0]
+            port_entries_onset = np.array(trial.behaviors1['port entries'].onset_times)
+            port_entries_offset = np.array(trial.behaviors1['port entries'].offset_times)
+            first_sound_cue_onset = trial.behaviors1['sound cues'].onset_times[0]
             indices = np.where(port_entries_onset >= first_sound_cue_onset)[0]
-            trial.behaviors['port entries'].onset_times = port_entries_onset[indices].tolist()
-            trial.behaviors['port entries'].offset_times = port_entries_offset[indices].tolist()
+            trial.behaviors1['port entries'].onset_times = port_entries_onset[indices].tolist()
+            trial.behaviors1['port entries'].offset_times = port_entries_offset[indices].tolist()
 
-            trial.combine_consecutive_behaviors(behavior_name='all', bout_time_threshold=0.5)
+            self.combine_consecutive_behaviors1(behavior_name='all', bout_time_threshold=0.5)
 
+    """********************************Combining consecutive entries************************************"""
 
+    def combine_consecutive_behaviors1(self, behavior_name='all', bout_time_threshold=1, min_occurrences=1):
+        """
+        Applies the behavior combination logic to all trials within the experiment.
+        """
+
+        for trial_name, trial_obj in self.trials.items():
+            # Ensure the trial has behaviors1 attribute
+            if not hasattr(trial_obj, 'behaviors1'):
+                continue  # Skip if behaviors1 is not available
+
+            # Determine which behaviors to process
+            if behavior_name == 'all':
+                behaviors_to_process = trial_obj.behaviors1.keys()  # Process all behaviors
+            else:
+                behaviors_to_process = [behavior_name]  # Process a single behavior
+
+            for behavior_event in behaviors_to_process:
+                behavior_onsets = np.array(trial_obj.behaviors1[behavior_event].onset)
+                behavior_offsets = np.array(trial_obj.behaviors1[behavior_event].offset)
+
+                combined_onsets = []
+                combined_offsets = []
+                combined_durations = []
+
+                if len(behavior_onsets) == 0:
+                    continue  # Skip this behavior if there are no onsets
+
+                start_idx = 0
+
+                while start_idx < len(behavior_onsets):
+                    # Initialize the combination window with the first behavior onset and offset
+                    current_onset = behavior_onsets[start_idx]
+                    current_offset = behavior_offsets[start_idx]
+
+                    next_idx = start_idx + 1
+
+                    # Check consecutive events and combine them if they fall within the threshold
+                    while next_idx < len(behavior_onsets) and (behavior_onsets[next_idx] - current_offset) <= bout_time_threshold:
+                        # Update the end of the combined bout
+                        current_offset = behavior_offsets[next_idx]
+                        next_idx += 1
+
+                    # Add the combined onset, offset, and total duration to the list
+                    combined_onsets.append(current_onset)
+                    combined_offsets.append(current_offset)
+                    combined_durations.append(current_offset - current_onset)
+
+                    # Move to the next set of events
+                    start_idx = next_idx
+
+                # Filter out bouts with fewer than the minimum occurrences
+                valid_indices = []
+                for i in range(len(combined_onsets)):
+                    num_occurrences = len([onset for onset in behavior_onsets if combined_onsets[i] <= onset <= combined_offsets[i]])
+                    if num_occurrences >= min_occurrences:
+                        valid_indices.append(i)
+
+                # Update the behavior with the combined onsets, offsets, and durations
+                trial_obj.behaviors1[behavior_event].onset = [combined_onsets[i] for i in valid_indices]
+                trial_obj.behaviors1[behavior_event].offset = [combined_offsets[i] for i in valid_indices]
+                trial_obj.behaviors1[behavior_event].Total_Duration = [combined_durations[i] for i in valid_indices]  # Update Total Duration
+
+                trial_obj.bout_dict = {}  # Reset bout dictionary after processing
 
     '''********************************** PETH **********************************'''
     def rt_compute_peth_per_event(self, behavior_name='sound cues', n_events=None, pre_time=5, post_time=5, bin_size=0.1):
@@ -79,8 +176,8 @@ class Reward_Training(Experiment):
         if n_events is None:
             n_events = 0
             for block_data in self.trials.values():
-                if behavior_name in block_data.behaviors:
-                    num_events = len(block_data.behaviors[behavior_name].onset_times)
+                if behavior_name in block_data.behaviors1:
+                    num_events = len(block_data.behaviors1[behavior_name].onset_times)
                     if num_events > n_events:
                         n_events = num_events
 
@@ -93,10 +190,13 @@ class Reward_Training(Experiment):
             self.peri_event_data_per_event[event_index] = []
 
         # Loop through each block in self.trials
+        print(self.trials.items())
         for block_name, block_data in self.trials.items():
             # Get the onset times for the behavior
-            if behavior_name in block_data.behaviors:
-                event_onsets = block_data.behaviors[behavior_name].onset_times
+            print(block_name)
+            print(block_data)
+            if behavior_name in block_data.behaviors1:
+                event_onsets = block_data.behaviors1[behavior_name].onset_times
                 # Limit to the first n_events if necessary
                 event_onsets = event_onsets[:n_events]
                 # For each event onset, compute the peri-event data
@@ -126,7 +226,7 @@ class Reward_Training(Experiment):
                 print(f"Behavior '{behavior_name}' not found in block '{block_name}'.")
 
 
-    def rt_plot_peth_per_event(self, signal_type='zscore', error_type='sem', title='PETH for First n Sound Cues',
+    def rt_plot_peth_per_event(self, title = 'PETH graph for n trials', signal_type = 'zscore', error_type='sem',
                             color='#00B7D7', display_pre_time=5, display_post_time=5, yticks_interval=2):
         """
         Plots the PETH for each event index (e.g., each sound cue) across all trials in one figure with subplots.
@@ -219,7 +319,26 @@ class Reward_Training(Experiment):
 
         # Adjust layout and add a common title
         plt.suptitle(title, fontsize=16)
+        save_path = os.path.join(self.experiment_folder_path + '\\plots\\all_peth.png')
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
         plt.show()
+
+
+        """
+        Plots the PETH for each event index (e.g., each sound cue) across all trials in one figure with subplots.
+
+        Parameters:
+        - signal_type (str): The type of signal to plot. Options are 'zscore' or 'dFF'.
+        - error_type (str): The type of error to plot. Options are 'sem' for Standard Error of the Mean or 'std' for Standard Deviation.
+        - title (str): Title for the figure.
+        - color (str): Color for both the trace line and the error area (default is cyan '#00B7D7').
+        - display_pre_time (float): How much time to show before the event on the x-axis (default is 5 seconds).
+        - display_post_time (float): How much time to show after the event on the x-axis (default is 5 seconds).
+        - yticks_interval (float): Interval for the y-ticks on the plots (default is 2).
+
+        Returns:
+        - None. Displays the PETH plot for each event index in one figure.
+        """
 
     '''********************************** LICKS **********************************'''
     def find_first_lick_after_sound_cue(self):
@@ -232,9 +351,9 @@ class Reward_Training(Experiment):
         """
 
         # Extract sound cue and port entry onset/offset times
-        sound_cues_onsets = np.array(self.behaviors['sound cues'].onset_times)
-        port_entries_onsets = np.array(self.behaviors['port entries'].onset_times)
-        port_entries_offsets = np.array(self.behaviors['port entries'].offset_times)
+        sound_cues_onsets = np.array(self.behaviors1['sound cues'].onset_times)
+        port_entries_onsets = np.array(self.behaviors1['port entries'].onset_times)
+        port_entries_offsets = np.array(self.behaviors1['port entries'].offset_times)
 
         first_licks = []  # List to store the first lick timestamp for each sound cue
 
@@ -287,9 +406,9 @@ class Reward_Training(Experiment):
             print(f"Processing trial: {trial_name}")
 
             # Extract sound cue onsets and port entry onsets
-            sound_cue_onsets = np.array(trial_data.behaviors['sound cues'].onset)
-            port_entry_onsets = np.array(trial_data.behaviors['port entries'].onset)
-            port_entry_offsets = np.array(trial_data.behaviors['port entries'].offset)
+            sound_cue_onsets = np.array(trial_data.behaviors1['sound cues'].onset)
+            port_entry_onsets = np.array(trial_data.behaviors1['port entries'].onset)
+            port_entry_offsets = np.array(trial_data.behaviors1['port entries'].offset)
 
             # Limit to the first n sound cues
             sound_cue_onsets = sound_cue_onsets[:n]

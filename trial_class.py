@@ -8,8 +8,8 @@ from scipy.signal import butter, filtfilt
 from sklearn.linear_model import LinearRegression
 
 class Trial:
-    def __init__(self, trial_path):
-        tdtdata = tdt.read_block(trial_path)
+    def __init__(self, trial_path, stream_DA, stream_ISOS):
+        """tdtdata = tdt.read_block(trial_path)
         
         # Extract the subject name from the folder or file name
         self.subject_name = os.path.basename(trial_path).split('-')[0]
@@ -32,7 +32,26 @@ class Trial:
 
         self.dFF = np.empty(1)
         self.zscore = np.empty(1)
+        """
+        tdtdata = tdt.read_block(trial_path)
 
+        self.subject_name = os.path.basename(trial_path).split('-')[0]
+        self.fs = tdtdata.streams[stream_DA].fs
+        self.timestamps = np.arange(len(tdtdata.streams[stream_DA].data)) / self.fs
+
+        self.streams = {}
+        self.streams['DA'] = tdtdata.streams[stream_DA].data
+        self.streams['ISOS'] = tdtdata.streams[stream_ISOS].data
+
+        self.behaviors = None
+        self.behaviors1 = {key: value for key, value in tdtdata.epocs.items() if key not in ['Cam1', 'Cam2', 'Tick']}
+
+        self.updated_DA = self.streams['DA']
+        self.updated_ISOS = self.streams['ISOS']
+
+        self.isosbestic_fitted = np.empty(1)
+        self.dFF = np.empty(1)
+        self.zscore = np.empty(1)
 
 
     '''********************************** PREPROCESSING **********************************'''
@@ -355,7 +374,70 @@ class Trial:
         # 6. Store the resulting DataFrame in the Trial instance instead of saving
         self.behaviors = pd.DataFrame(bout_rows)
 
+    """def combine_consecutive_behaviors1(self, behavior_name='all', bout_time_threshold=1, min_occurrences=1):
+        
+        Combines consecutive behavior events if they occur within a specified time threshold,
+        and updates the Total Duration.
 
+        Parameters:
+        - behavior_name (str): The name of the behavior to process. If 'all', process all behaviors.
+        - bout_time_threshold (float): Maximum time gap (in seconds) between consecutive behaviors to be combined.
+        - min_occurrences (int): Minimum number of occurrences required for a combined bout to be kept.
+        
+
+        # Determine which behaviors to process
+        if behavior_name == 'all':
+            behaviors_to_process = self.behaviors.keys()  # Process all behaviors
+        else:
+            behaviors_to_process = [behavior_name]  # Process a single behavior
+
+        for behavior_event in behaviors_to_process:
+            behavior_onsets = np.array(self.behaviors[behavior_event].onset)
+            behavior_offsets = np.array(self.behaviors[behavior_event].offset)
+
+            combined_onsets = []
+            combined_offsets = []
+            combined_durations = []
+
+            if len(behavior_onsets) == 0:
+                continue  # Skip this behavior if there are no onsets
+
+            start_idx = 0
+
+            while start_idx < len(behavior_onsets):
+                # Initialize the combination window with the first behavior onset and offset
+                current_onset = behavior_onsets[start_idx]
+                current_offset = behavior_offsets[start_idx]
+
+                next_idx = start_idx + 1
+
+                # Check consecutive events and combine them if they fall within the threshold
+                while next_idx < len(behavior_onsets) and (behavior_onsets[next_idx] - current_offset) <= bout_time_threshold:
+                    # Update the end of the combined bout
+                    current_offset = behavior_offsets[next_idx]
+                    next_idx += 1
+
+                # Add the combined onset, offset, and total duration to the list
+                combined_onsets.append(current_onset)
+                combined_offsets.append(current_offset)
+                combined_durations.append(current_offset - current_onset)
+
+                # Move to the next set of events
+                start_idx = next_idx
+
+            # Filter out bouts with fewer than the minimum occurrences
+            valid_indices = []
+            for i in range(len(combined_onsets)):
+                num_occurrences = len([onset for onset in behavior_onsets if combined_onsets[i] <= onset <= combined_offsets[i]])
+                if num_occurrences >= min_occurrences:
+                    valid_indices.append(i)
+
+            # Update the behavior with the combined onsets, offsets, and durations
+            self.behaviors1[behavior_event].onset = [combined_onsets[i] for i in valid_indices]
+            self.behaviors1[behavior_event].offset = [combined_offsets[i] for i in valid_indices]
+            self.behaviors1[behavior_event].Total_Duration = [combined_durations[i] for i in valid_indices]  # Update Total Duration
+
+            self.bout_dict = {}"""
 
     def combine_consecutive_behaviors(self, behavior_name='all', bout_time_threshold=1):
         """
