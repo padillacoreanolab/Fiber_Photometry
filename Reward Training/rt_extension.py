@@ -61,7 +61,6 @@ class Reward_Training(Experiment):
             # PC3 = Box 3
             # PC2 = Box 4
             # print(trial.behaviors1)
-
             trial.behaviors1['sound cues'] = trial.behaviors1.pop('PC0_')
             if int(trial_folder[-1]) % 2 == 0:
                 trial.behaviors1['port entries'] = trial.behaviors1.pop('PC2_')
@@ -226,7 +225,7 @@ class Reward_Training(Experiment):
                 print(f"Behavior '{behavior_name}' not found in block '{block_name}'.")
 
 
-    def rt_plot_peth_per_event(self, title = 'PETH graph for n trials', signal_type = 'zscore', error_type='sem',
+    def rt_plot_peth_per_event(self, directory_path, title = 'PETH graph for n trials', signal_type = 'zscore', error_type='sem',
                             color='#00B7D7', display_pre_time=5, display_post_time=5, yticks_interval=2):
         """
         Plots the PETH for each event index (e.g., each sound cue) across all trials in one figure with subplots.
@@ -319,7 +318,7 @@ class Reward_Training(Experiment):
 
         # Adjust layout and add a common title
         plt.suptitle(title, fontsize=16)
-        save_path = os.path.join(self.experiment_folder_path + '\\plots\\all_peth.png')
+        save_path = os.path.join(str(directory_path) + '\\' + 'all_PETH.png')
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
         plt.show()
 
@@ -339,6 +338,140 @@ class Reward_Training(Experiment):
         Returns:
         - None. Displays the PETH plot for each event index in one figure.
         """
+
+    def plot_specific_peth(self, directory_path, brain_region):
+        # Parameters
+        selected_indices = [15]  # Specify which events to plot (1-based index)
+        event_type = 'sound cues'  # Choose between 'port entries' or 'sound cues'
+        pre_time = 4    # Time before event onset to include in PETH (seconds)
+        post_time = 10   # Time after event onset to include in PETH (seconds)
+        bin_size = 0.1  # Bin size for PETH (seconds)
+        y_axis_limits = (-1.5, 2.5)  # Set y-axis limits as a tuple (min, max). Set to None for auto-scaling.
+
+        # Initialize data structures
+        peri_event_signals = [[] for _ in selected_indices]  # List to collect signals for each selected event
+        common_time_axis = np.arange(-pre_time, post_time + bin_size, bin_size)
+
+        # Iterate over all trials in exp
+        for block_name, block_data in self.trials.items():
+            print(f"Processing block: {block_name}")
+            print(block_data)
+            # Extract event onsets based on the chosen event type
+            event_onsets = np.array(block_data.behaviors1[event_type].onset)
+            
+            # For each selected event
+            for idx, event_index in enumerate(selected_indices):
+                # Ensure the event_index is within the range of available events
+                if event_index > len(event_onsets):
+                    print(f"Event index {event_index} exceeds the number of {event_type} in block {block_name}. Skipping.")
+                    continue
+                
+                # Get the onset of the specified event
+                sc_onset = event_onsets[event_index - 1]  # 1-based index adjustment
+                
+                if event_type == 'port entries':
+                    # For port entries, find the first port entry after the sound cue onset
+                    pe_indices = np.where(block_data.behaviors1['sound cues'].onset > sc_onset)[0]
+                    if len(pe_indices) == 0:
+                        print(f"No sound cues found after {event_type} at {sc_onset} seconds in block {block_name}.")
+                        continue
+                    sc_onset = block_data.behaviors1['sound cues'].onset[pe_indices[0]]
+                
+                # Define time window around the event onset
+                start_time = sc_onset - pre_time
+                end_time = sc_onset + post_time
+                
+                # Get indices of DA signal within this window
+                indices = np.where((block_data.timestamps >= start_time) & (block_data.timestamps <= end_time))[0]
+                if len(indices) == 0:
+                    print(f"No DA data found for {event_type} at {sc_onset} seconds in block {block_name}.")
+                    continue
+                
+                # Extract DA signal and timestamps
+                da_segment = block_data.zscore[indices]
+                time_segment = block_data.timestamps[indices] - sc_onset  # Align time to event onset
+                
+                # Interpolate DA signal onto the common time axis
+                interpolated_da = np.interp(common_time_axis, time_segment, da_segment)
+                
+                # Collect the interpolated DA signal
+                peri_event_signals[idx].append(interpolated_da)
+
+        # Now, peri_event_signals is a list where each element is a list of DA signals from each block for that event
+
+        # Plot individual PETHs side by side for each selected event number
+        num_events = len(selected_indices)
+        fig, axes = plt.subplots(1, num_events, figsize=(4 * num_events, 7), sharey=True)
+        if num_events == 1:
+            axes = [axes]  # Ensure axes is iterable
+
+        for i, ax in enumerate(axes):
+            event_signals = peri_event_signals[i]
+            if not event_signals:
+                print(f"No data collected for {event_type} {i+1}.")
+                continue
+            # Convert to numpy array
+            event_signals = np.array(event_signals)
+            # Compute mean and SEM
+            mean_peth = np.mean(event_signals, axis=0)
+            sem_peth = np.std(event_signals, axis=0) / np.sqrt(len(event_signals))
+            # Plot
+            ax.plot(common_time_axis, mean_peth, color=brain_region, label='Mean DA')
+            ax.fill_between(common_time_axis, mean_peth - sem_peth, mean_peth + sem_peth, color=brain_region, alpha=0.4)
+            ax.axvline(0, color='black', linestyle='--')
+            ax.set_title(f'Tone #{selected_indices[i]}', fontsize=24)
+            ax.set_xlabel('Onset (s)', fontsize=26, labelpad=12)
+            
+            # Only show y-axis label and ticks on the first plot
+            if i == 0:
+                ax.set_ylabel('Event Induced Z-scored ΔF/F', fontsize=30, labelpad= 12)
+            else:
+                ax.tick_params(axis='y', labelleft=False)  # Hide y-ticks on subsequent plots
+
+            # Set x-ticks and labels, including 6 seconds
+            ax.set_xticks([common_time_axis[0], 0, 6, common_time_axis[-1]])
+            ax.set_xticklabels([f'{common_time_axis[0]:.1f}', '0', '6.0', f'{common_time_axis[-1]:.1f}'], fontsize=20)
+            ax.set_xticklabels(['-4', '0','6', '10'], fontsize=24)
+            
+            # Apply the same y-axis limits across all plots and ensure 0 is included
+            if y_axis_limits:
+                ax.set_ylim(y_axis_limits)
+            else:
+                # Adjust to include 0 in y-axis range
+                min_y = min(0, np.min(mean_peth - sem_peth))
+                max_y = max(0, np.max(mean_peth + sem_peth))
+                ax.set_ylim(min_y, max_y)
+
+            if "NAc" in str(directory_path):
+                # NAc
+                ax.set_yticks([-2, -1, 0, 1, 2, 3, 4, 5])
+                ax.set_yticklabels(['-2.0', '-1.0', '0.0', '1.0', '2.0', '3.0', '4.0', '5.0'], fontsize=28)
+            else:
+                # mPFC
+                ax.set_yticks([-2, -1, 0, 1, 2])
+                ax.set_yticklabels(['-2.0', '-1.0', '0.0', '1.0', '2.0'], fontsize=28)
+
+            # Manually ensure 0 is included in y-ticks
+            y_ticks = ax.get_yticks()
+            if 0 not in y_ticks:
+                y_ticks = np.append(y_ticks, 0)
+            ax.set_yticks(y_ticks)
+            ax.tick_params(axis='both', which='major', labelsize=28, width=2)  # Adjust tick label size and width
+
+            # Remove top and right spines
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+
+            # **Adjust spine linewidths to make axes lines thicker**
+            ax.spines['left'].set_linewidth(2)    # Left axis line
+            ax.spines['bottom'].set_linewidth(2)  # Bottom axis line
+
+        save_path = os.path.join(str(directory_path) + '\\' + 'PETH.png')
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        # plt.savefig(f'PETH.png', transparent=True, bbox_inches='tight', pad_inches=0.1)
+
+        # plt.suptitle(f'Mean PETH for Selected {event_type.capitalize()} Events', fontsize=16)
+        plt.show()
 
     '''********************************** LICKS **********************************'''
     def find_first_lick_after_sound_cue(self):
@@ -487,7 +620,7 @@ class Reward_Training(Experiment):
 
 
     
-    def plot_linear_fit_with_error_bars(self, df, color='blue', y_limits=None):
+    def plot_linear_fit_with_error_bars(self, directory_path, df, color='blue', y_limits=None):
         """
         Plots the mean DA values with SEM error bars, fits a line of best fit,
         and computes the Pearson correlation coefficient.
@@ -528,6 +661,10 @@ class Reward_Training(Experiment):
         # Set custom x-ticks from 2 to 16 (whole numbers)
         plt.xticks(np.arange(1, 14, 2), fontsize=26)
 
+        if "NAc" in str(directory_path):
+            y_limits = (-1, 4)
+        else: #mPFC
+            y_limits = (-1, 3)
         # Set y-axis limits if provided
         if y_limits is not None:
             plt.ylim(y_limits)
@@ -545,7 +682,9 @@ class Reward_Training(Experiment):
 
 
         plt.tight_layout()
-        plt.savefig(f'linear.png', transparent=True, bbox_inches='tight', pad_inches=0.1)
+        save_path = os.path.join(str(directory_path) + '\\linear.png')
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        # plt.savefig(f'linear.png', transparent=True, bbox_inches='tight', pad_inches=0.1)
 
         plt.show()
         
