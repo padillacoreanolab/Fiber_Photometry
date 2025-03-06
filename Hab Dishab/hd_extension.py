@@ -478,3 +478,89 @@ def plot_behavior_metric_colored(df,
         cmap_name=cmap_name
     )
 
+# plots colored spaghetti plots corresponding to individual mouse on top of average bar graphs 
+def plot_da_metrics_color_oneplot(experiment, 
+                                     metric_name="Mean Z-score", 
+                                     title="Combined DA Metrics", 
+                                     ylabel="DA Metric", 
+                                     xlabel="Bout", 
+                                     figsize=(14,8)):
+    """
+    Plots a combined figure with:
+      - A bar chart showing the overall average of the specified DA metric for each bout.
+      - Overlaid line plots for each trial (each in a unique color) showing the chosen metric across bouts.
+    
+    This function assumes that each trial in experiment.trials has its updated behaviors DataFrame 
+    (with computed DA metrics) containing at least:
+        - 'Bout': Bout label (e.g., "s1-1", "s2-1", etc.)
+        - A column corresponding to the desired DA metric (e.g., "Mean Z-score").
+    
+    Parameters:
+        - experiment: The experiment object (with a dictionary attribute `trials`).
+        - metric_name (str): The DA metric to plot (e.g., "Mean Z-score").
+        - title (str): The title for the plot.
+        - ylabel (str): The y-axis label.
+        - xlabel (str): The x-axis label.
+        - figsize (tuple): The size of the figure.
+    
+    Returns:
+        None. Displays a single plot that combines the overall average (bar chart)
+        and the individual trial lines.
+    """
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
+    # Collect per-trial data from updated behaviors.
+    trial_data = []
+    for trial_name, trial in experiment.trials.items():
+        if hasattr(trial, "behaviors") and not trial.behaviors.empty:
+            df = trial.behaviors.copy()
+            if metric_name not in df.columns:
+                print(f"Warning: Trial '{trial_name}' does not have '{metric_name}'. Skipping.")
+                continue
+            # Group by Bout to get one numeric value per Bout for this trial.
+            df_grouped = df.groupby("Bout", as_index=False)[metric_name].mean()
+            df_grouped["Trial"] = trial_name
+            trial_data.append(df_grouped)
+        else:
+            print(f"Warning: Trial '{trial_name}' has no behavior data.")
+    
+    if not trial_data:
+        print("No data available to plot.")
+        return
+    
+    # Combine data from all trials.
+    combined_df = pd.concat(trial_data, ignore_index=True)
+    
+    # Pivot the combined DataFrame for the line plot: rows = Trial, columns = Bout.
+    try:
+        pivot_df = combined_df.pivot(index="Trial", columns="Bout", values=metric_name)
+    except Exception as e:
+        print("Error pivoting data:", e)
+        return
+    pivot_df = pivot_df.fillna(0)
+    
+    # Compute overall average for each Bout across all trials.
+    overall_avg = combined_df.groupby("Bout", as_index=False)[metric_name].mean()
+    
+    # Create a single figure and axis.
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    # Plot the overall average as a bar chart (with semi-transparent bars).
+    ax.bar(overall_avg["Bout"], overall_avg[metric_name], color="skyblue", edgecolor="black", 
+           alpha=0.5, label="Overall Average")
+    
+    # Plot each trial's data as a line plot.
+    cmap = plt.cm.get_cmap("tab10", len(pivot_df.index))
+    for i, trial in enumerate(pivot_df.index):
+        ax.plot(pivot_df.columns, pivot_df.loc[trial], marker="o", color=cmap(i), label=trial)
+    
+    ax.set_title(title, fontsize=16)
+    ax.set_ylabel(ylabel, fontsize=14)
+    ax.set_xlabel(xlabel, fontsize=14)
+    ax.legend(title="Trial", fontsize=10, title_fontsize=12)
+    
+    plt.tight_layout()
+    plt.show()
+
+
