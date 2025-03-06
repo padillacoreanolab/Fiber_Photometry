@@ -296,7 +296,7 @@ def plot_y_across_bouts_gray(df,
     plt.tight_layout()
     plt.show()
 
-# def plot_all_da_metrics(self, 
+def plot_all_da_metrics(self, 
                         metric_name="DA_peak", 
                         title="DA Metrics Across Trials", 
                         ylabel="DA Value", 
