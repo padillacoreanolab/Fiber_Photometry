@@ -186,6 +186,7 @@ def automate_investigation_workflow(experiment,
     # ----------------------------------------------------------------
     return filtered_summary_df
 
+# plot stuff
 def plot_y_across_bouts_gray(df,  
                              title='Mean Across Bouts', 
                              ylabel='Mean Value', 
@@ -292,6 +293,69 @@ def plot_y_across_bouts_gray(df,
 
     # Save the figure and display the plot
     #plt.savefig(f'{title}{ylabel[0]}.png', transparent=True, bbox_inches='tight', pad_inches=pad_inches)
+    plt.tight_layout()
+    plt.show()
+
+# def plot_all_da_metrics(self, 
+                        metric_name="DA_peak", 
+                        title="DA Metrics Across Trials", 
+                        ylabel="DA Value", 
+                        xlabel="Bout",
+                        figsize=(12,7)):
+    """
+    Plots the specified DA metric across all trials.
+    
+    Assumes that after compute_all_da_metrics has been called, each trial in 
+    self.trials that computed DA metrics stores its results in a DataFrame 
+    attribute called 'da_metrics' with at least the following columns:
+        - Bout: Bout label (e.g., "s1-1", "s2-1", etc.)
+        - A column corresponding to the metric of interest (e.g., "DA_peak").
+    
+    Parameters:
+        - metric_name (str): The name of the DA metric column to plot (default is "DA_peak").
+        - title (str): The title for the plot.
+        - ylabel (str): The label for the y-axis.
+        - xlabel (str): The label for the x-axis.
+        - figsize (tuple): The size of the figure.
+    
+    Returns:
+        None. Displays a plot with one line per trial.
+    """
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
+    all_metrics = []
+    for trial_name, trial in self.trials.items():
+        if hasattr(trial, "da_metrics"):
+            # Assume trial.da_metrics is a DataFrame that contains columns "Bout" and metric_name.
+            df = trial.da_metrics.copy()
+            df["Trial"] = trial_name
+            all_metrics.append(df)
+        else:
+            print(f"Trial '{trial_name}' does not have computed DA metrics.")
+    
+    if not all_metrics:
+        print("No DA metrics available to plot.")
+        return
+
+    # Concatenate all trial metrics into one DataFrame.
+    metrics_df = pd.concat(all_metrics, ignore_index=True)
+    
+    # Pivot the DataFrame so that rows are Trials, columns are Bout labels, and values are the metric.
+    pivot_df = metrics_df.pivot(index="Trial", columns="Bout", values=metric_name)
+    pivot_df = pivot_df.fillna(0)  # Fill missing values with 0 (or you could choose to interpolate)
+    
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    # Plot each trial as a separate line with markers.
+    for trial in pivot_df.index:
+        ax.plot(pivot_df.columns, pivot_df.loc[trial], marker="o", label=trial)
+    
+    ax.set_title(title, fontsize=16)
+    ax.set_ylabel(ylabel, fontsize=14)
+    ax.set_xlabel(xlabel, fontsize=14)
+    ax.legend(title="Trial", fontsize=10, title_fontsize=12)
+    
     plt.tight_layout()
     plt.show()
 
