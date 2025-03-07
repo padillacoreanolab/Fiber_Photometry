@@ -13,7 +13,6 @@ class Experiment:
         self.trials = {}
 
         self.load_trials()
-        # self.load_rtc_trials()
     '''********************************** FOR SINGLE OBJECT  **********************************'''
     def get_first_behavior(self, behaviors=['Investigation', 'Approach', 'Defeat', 'Aggression']):
         """

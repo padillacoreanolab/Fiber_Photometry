@@ -53,8 +53,9 @@ class Reward_Training(Experiment):
             trial.align_channels()
             trial.compute_dFF()
             baseline_start, baseline_end = trial.find_baseline_period()  
-            trial.compute_zscore(method = 'baseline', baseline_start = baseline_start, baseline_end = baseline_end)
+            # trial.compute_zscore(method = 'baseline', baseline_start = baseline_start, baseline_end = baseline_end)
             # trial.compute_zscore(method = 'standard')
+            trial.compute_zscore(method = 'modified')
             trial.verify_signal()
 
             # PC0 = Tones
@@ -179,6 +180,8 @@ class Reward_Training(Experiment):
                     num_events = len(block_data.behaviors1[behavior_name].onset_times)
                     if num_events > n_events:
                         n_events = num_events
+
+        n_events = 40
 
         # Define a common time axis
         time_axis = np.arange(-pre_time, post_time + bin_size, bin_size)
@@ -341,7 +344,7 @@ class Reward_Training(Experiment):
 
     def plot_specific_peth(self, directory_path, brain_region):
         # Parameters
-        selected_indices = [15]  # Specify which events to plot (1-based index)
+        selected_indices = [40]  # Specify which events to plot (1-based index)
         event_type = 'sound cues'  # Choose between 'port entries' or 'sound cues'
         pre_time = 4    # Time before event onset to include in PETH (seconds)
         post_time = 10   # Time after event onset to include in PETH (seconds)
@@ -513,10 +516,7 @@ class Reward_Training(Experiment):
         # Store results in the object
         self.first_lick_after_sound_cue = first_licks
 
-
-
-
-    def compute_mean_da_across_trials(self, n=15, pre_time=5, post_time=5, bin_size=0.1, mean_window=4):
+    def compute_mean_da_across_trials(self, n=40, pre_time=5, post_time=5, bin_size=0.1, mean_window=4):
         """
         Computes the mean DA signal across all trials for each of the first n sound cues.
 
@@ -649,7 +649,8 @@ class Reward_Training(Experiment):
         y_fitted = intercept + slope * x_data
         
         # Plot the data with error bars and the fitted line
-        plt.figure(figsize=(12, 7))
+        # plt.figure(figsize=(12, 7))
+        plt.figure(figsize=(30, 7))
         plt.errorbar(x_data, y_data, yerr=y_err, fmt='o', label = 'DA during Port Entry', color=color, 
                     capsize=10, markersize=20, elinewidth=4, capthick=3)
         plt.plot(x_data, y_fitted, 'r--', label=f'$R^2$ = {(r_value)**2:.2f}, p = {p_value:.3f}', linewidth=3)
@@ -659,7 +660,7 @@ class Reward_Training(Experiment):
         plt.legend(fontsize=20)
         
         # Set custom x-ticks from 2 to 16 (whole numbers)
-        plt.xticks(np.arange(1, 14, 2), fontsize=26)
+        plt.xticks(np.arange(1, 43, 2), fontsize=26)
 
         if "NAc" in str(directory_path):
             y_lower_limit = -1
