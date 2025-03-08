@@ -578,9 +578,6 @@ def plot_da_metrics_color_oneplot(experiment,
 
 
 
-
-
-
 # random stuff
 # plot colors stuff
 def hab_dishab_plot_y_across_bouts_colored(
