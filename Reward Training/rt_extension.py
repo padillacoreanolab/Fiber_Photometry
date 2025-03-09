@@ -63,11 +63,7 @@ class Reward_Training(Experiment):
             # PC2 = Box 4
             # print(trial.behaviors1)
             trial.behaviors1['sound cues'] = trial.behaviors1.pop('PC0_')
-            if int(trial_folder[-1]) % 2 == 0:
-                trial.behaviors1['port entries'] = trial.behaviors1.pop('PC2_')
-            else:    # use 'PC3_' instead
-                trial.behaviors1['port entries'] = trial.behaviors1.pop('PC3_')
-
+            trial.behaviors1['port entries'] = trial.behaviors1.pop('PC2_', trial.behaviors1.pop('PC3_'))
 
             # Remove the first entry because it doesn't count
             trial.behaviors1['sound cues'].onset_times = trial.behaviors1['sound cues'].onset[1:]
@@ -181,7 +177,7 @@ class Reward_Training(Experiment):
                     if num_events > n_events:
                         n_events = num_events
 
-        n_events = 14
+        n_events = 40
 
         # Define a common time axis
         time_axis = np.arange(-pre_time, post_time + bin_size, bin_size)
@@ -344,7 +340,7 @@ class Reward_Training(Experiment):
 
     def plot_specific_peth(self, directory_path, brain_region):
         # Parameters
-        selected_indices = [14]  # Specify which events to plot (1-based index)
+        selected_indices = [40]  # Specify which events to plot (1-based index)
         event_type = 'sound cues'  # Choose between 'port entries' or 'sound cues'
         pre_time = 4    # Time before event onset to include in PETH (seconds)
         post_time = 10   # Time after event onset to include in PETH (seconds)
@@ -516,7 +512,7 @@ class Reward_Training(Experiment):
         # Store results in the object
         self.first_lick_after_sound_cue = first_licks
 
-    def compute_mean_da_across_trials(self, n=14, pre_time=5, post_time=5, bin_size=0.1, mean_window=4):
+    def compute_mean_da_across_trials(self, n=40, pre_time=5, post_time=5, bin_size=0.1, mean_window=4):
         """
         Computes the mean DA signal across all trials for each of the first n sound cues.
 
