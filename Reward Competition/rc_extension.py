@@ -238,9 +238,137 @@ class Reward_Competition(Experiment):
         self.df['filtered_port_entries'] = self.df.apply(
             lambda row: remove_indices_from_array(row['port entries onset'], row['tangles_array']), axis=1
         )
-        
-        # Optionally drop the 'tangles_array' column if no longer needed
+        # drop the 'tangles_array' column if no longer needed
         self.df.drop(columns=['tangles_array'], inplace=True)
+        self.df.drop(columns=['tangles'], inplace=True)
         
         print(self.df.columns)
+
+    """**********************ISOLATING WINNING/LOSING TRIALS************************"""
+    def winning(self):
+        def filter_by_winner(row):
+            # Ensure 'filtered_winner_array' is a list
+            if not isinstance(row['filtered_winner_array'], list):
+                print(f"Skipping row {row.name}: filtered_winner_array is not a list.")
+                return pd.Series([row['filtered_sound_cues'], row['filtered_port_entries']])
+
+            # Get valid indices where `filtered_winner_array` matches `subject_name`
+            valid_indices = [i for i, winner in enumerate(row['filtered_winner_array']) if winner == row['subject_name']]
+            
+            print(f"Row {row.name}: Subject {row['subject_name']} - Valid Indices: {valid_indices}")
+
+            # If no indices match, return empty lists
+            if not valid_indices:
+                return pd.Series([[], []])
+
+            # Ensure lists are correctly structured before filtering
+            if not isinstance(row['filtered_sound_cues'], list) or not isinstance(row['filtered_port_entries'], list):
+                print(f"Skipping row {row.name}: filtered_sound_cues or filtered_port_entries is not a list.")
+                return pd.Series([[], []])
+
+            # Filter sound cues and port entries using valid indices
+            filtered_cues = [row['filtered_sound_cues'][i] for i in valid_indices]
+            filtered_entries = [row['filtered_port_entries'][i] for i in valid_indices]
+
+            # Print changes per row
+            print(f"Row {row.name}: Before -> {row['filtered_sound_cues']}, After -> {filtered_cues}")
+
+            return pd.Series([filtered_cues, filtered_entries])
+
+        # Apply the function to filter the DataFrame
+        self.df[['filtered_sound_cues', 'filtered_port_entries']] = self.df.apply(filter_by_winner, axis=1)
+
+        # Drop rows where no filtered_sound_cues remain
+        self.df = self.df[self.df['filtered_sound_cues'].apply(len) > 0]
+
+
+    def losing(self):
+        """
+        Creates a 'loser_array' based on the subject and removes the corresponding 
+        data from other columns like 'sound_cues', 'port_entries', etc.
+        """
+        def filter_trial_data(winner_array, subject_name, other_columns):
+            """
+            Filter the data such that only the subject's trials are retained.
+            Removes non-winner data from all other columns.
+            """
+            loser_indices = [idx for idx, winner in enumerate(winner_array) if winner != subject_name]
+
+            # Filter other columns based on the winner indices
+            filtered_data = {}
+            for column, data in other_columns.items():
+                filtered_data[column] = [value for idx, value in enumerate(data) if idx in loser_indices]
+            
+            return filtered_data, loser_indices
+        # Step 1: Create the winner_array for each row
+        self.df['loser_array'] = self.df.apply(
+            lambda row: [row[col] for col in self.df.columns if 'loser' in col.lower()], axis=1
+        )
+        
+        # Step 2: Iterate over rows and filter data
+        all_other_columns = ['sound cues', 'port entries', 'tangles']  # Add more columns as needed
+        for idx, row in self.df.iterrows():
+            # Collect all other column values for the current row
+            other_columns = {col: row[col] for col in all_other_columns}
+            
+            # Filter the trial data to keep only the subject's winning trials
+            filtered_data, winner_indices = filter_trial_data(
+                row['loser_array'], row['subject'], other_columns
+            )
+            
+            # Update the row with filtered data
+            for column, filtered_values in filtered_data.items():
+                self.df.at[idx, column] = filtered_values
+
+        # Step 3: Drop any trials where the subject is not the winner
+        self.df['filtered_loser_array'] = self.df['loser_array'].apply(
+            lambda row: [value for idx, value in enumerate(row) if value == row['subject']]
+        )
+
+        # Drop unnecessary columns
+        self.df.drop(columns=[col for col in self.df.columns if 'winner' in col.lower()], inplace=True)
+
+        print(self.df[['winner_array', 'filtered_winner_array', 'sound cues', 'port entries']])
+    
+
+
+    """*******************************LICKS********************************"""
+    def find_first_lick_after_sound_cue(self):
+        """
+        Finds the first port entry occurring after 4 seconds following each sound cue.
+        If a port entry starts before 4 seconds but extends past it, 
+        the function selects the timestamp at 4 seconds after the sound cue.
+        
+        Stores the results as a list of timestamps in `self.first_lick_after_sound_cue`.
+        """
+
+        # Extract sound cue and port entry onset/offset times
+        sound_cues_onsets = np.array(self.behaviors1['sound cues'].onset_times)
+        port_entries_onsets = np.array(self.behaviors1['port entries'].onset_times)
+        port_entries_offsets = np.array(self.behaviors1['port entries'].offset_times)
+
+        first_licks = []  # List to store the first lick timestamp for each sound cue
+
+        for sc_onset in sound_cues_onsets:
+            threshold_time = sc_onset + 4  # Define the 4-second threshold after the sound cue
+
+            # Find port entries that start AFTER 4 seconds post sound cue
+            future_licks_indices = np.where(port_entries_onsets >= threshold_time)[0]
+
+            if len(future_licks_indices) > 0:
+                # If there are port entries after 4s, take the first one
+                first_licks.append(port_entries_onsets[future_licks_indices[0]])
+            else:
+                # Find port entries that START before 4s but continue PAST it
+                ongoing_licks_indices = np.where((port_entries_onsets < threshold_time) & (port_entries_offsets > threshold_time))[0]
+
+                if len(ongoing_licks_indices) > 0:
+                    # If a port entry spans past 4s, use the exact timepoint at 4s
+                    first_licks.append(threshold_time)
+                else:
+                    # If no port entry occurs after 4s, append None (or NaN for consistency)
+                    first_licks.append(None)
+
+        # Store results in the object
+        self.first_lick_after_sound_cue = first_licks
 
