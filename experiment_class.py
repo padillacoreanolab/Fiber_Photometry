@@ -47,9 +47,9 @@ class Experiment:
             trial.apply_ma_baseline_drift()
             trial.align_channels()
             trial.compute_dFF()
-            baseline_start, baseline_end = trial.find_baseline_period()  
-            trial.compute_zscore(method = 'baseline', baseline_start = baseline_start, baseline_end = baseline_end)
-            # trial.compute_zscore(method = 'standard')
+            # baseline_start, baseline_end = trial.find_baseline_period()  
+            # trial.compute_zscore(method = 'baseline', baseline_start = baseline_start, baseline_end = baseline_end)
+            trial.compute_zscore(method = 'standard')
 
             trial.verify_signal()
 

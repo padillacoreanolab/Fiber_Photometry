@@ -15,6 +15,19 @@ import re
 
 # Behavior ---------------------------------------------------------------------------------------
 # Behavior Processing
+def get_trial_dataframes(experiment):
+    """
+    Given an Experiment object, return a list of DataFrames,
+    where each DataFrame corresponds to the .behaviors of each trial.
+    """
+    # Extract all trial IDs from the experiment
+    trial_ids = list(experiment.trials.keys())
+
+    # Retrieve a DataFrame of behaviors for each trial
+    trial_dataframes = [experiment.trials[tid].behaviors for tid in trial_ids]
+
+    return trial_dataframes
+
 def create_subject_summary_df(dfs):
     """
     Takes in a list of DataFrames (each CSV is one subject),
@@ -52,6 +65,88 @@ def create_subject_summary_df(dfs):
     # Concatenate all into a single DataFrame
     final_df = pd.concat(processed_list, ignore_index=True)
     return final_df
+
+def process_investigation_data(df, 
+                               behavior_name='Investigation', 
+                               gap_threshold=1.0, 
+                               min_duration=0.5,
+                               desired_bouts=None,
+                               agg_func='sum'):
+    """
+    Merge consecutive Investigation events within 'gap_threshold' seconds,
+    remove events shorter than 'min_duration', then group/pivot by Subject & Bout.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must have columns: [Subject, Behavior, Bout, Event_Start, Event_End, Duration (s)]
+    behavior_name : str
+        Which behavior to combine/filter (default 'Investigation').
+    gap_threshold : float
+        Max gap (in seconds) to consider consecutive events mergeable.
+    min_duration : float
+        Minimum duration below which events are removed.
+    desired_bouts : list or None
+        Which bouts to keep (if None, keep all).
+    agg_func : {'sum', 'mean'}
+        How to combine the durations in the final group step.
+        
+    Returns
+    -------
+    pivot_df : pd.DataFrame
+        Pivoted DataFrame of aggregated durations by Subject × Bout.
+    """
+    
+    #--- 1) Keep only rows matching the specified behavior ---
+    df = df[df["Behavior"] == behavior_name].copy()
+    
+    #--- 2) Sort so consecutive events are truly consecutive by subject & start time ---
+    df.sort_values(["Subject", "Event_Start"], inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    
+    #--- 3) Identify which rows should *not* merge with their predecessor ---
+    df["new_block"] = (
+        (df["Subject"] != df["Subject"].shift(1)) |
+        (df["Event_Start"] - df["Event_End"].shift(1) > gap_threshold)
+    )
+    df["group_id"] = df["new_block"].cumsum()
+    
+    #--- 4) Merge consecutive events in each group_id ---
+    merged = (
+        df.groupby("group_id", as_index=False)
+          .agg({
+              "Subject":      "first",
+              "Behavior":     "first",
+              "Bout":         "first",  # Uses the first bout label in the block
+              "Event_Start":  "min",
+              "Event_End":    "max",
+              "Duration (s)": "sum"
+          })
+    )
+    
+    #--- 5) Remove events shorter than min_duration ---
+    merged = merged[merged["Duration (s)"] >= min_duration].copy()
+    
+    #--- 6) Filter by desired bouts (if provided) ---
+    if desired_bouts is not None:
+        merged = merged[merged["Bout"].isin(desired_bouts)]
+    
+    #--- 7) Group by Subject & Bout with either sum or mean, then pivot ---
+    if agg_func == 'sum':
+        grouped_df = merged.groupby(["Subject", "Bout"], as_index=False)["Duration (s)"].sum()
+    elif agg_func == 'mean':
+        grouped_df = merged.groupby(["Subject", "Bout"], as_index=False)["Duration (s)"].mean()
+    else:
+        raise ValueError("agg_func must be either 'sum' or 'mean'")
+    
+    pivot_df = (
+        grouped_df
+        .pivot(index="Subject", columns="Bout", values="Duration (s)")
+        .fillna(0)
+    )
+    
+    return pivot_df
+
 
 # Behavior Plotting
 def plot_y_across_bouts_gray(df,  
@@ -159,7 +254,7 @@ def plot_y_across_bouts_gray(df,
     ax.spines['bottom'].set_linewidth(5)
 
     # Save the figure and display the plot
-    #plt.savefig(f'{title}{ylabel[0]}.png', transparent=True, bbox_inches='tight', pad_inches=pad_inches)
+    # plt.savefig(f'{title}{ylabel[0]}.png', transparent=True, bbox_inches='tight', pad_inches=pad_inches)
     plt.tight_layout()
     plt.show()
 
