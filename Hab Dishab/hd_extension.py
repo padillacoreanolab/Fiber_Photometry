@@ -582,6 +582,7 @@ def plot_da_metrics_combined_oneplot_integrated(experiment,
             ax.plot([x1, x2], [y, y], color='black', linewidth=5)  # Horizontal line
             ax.text((x1 + x2) / 2, y + sig_y_offset / 2, "*", fontsize=40, ha='center', color='black')
 
+    plt.savefig(f'{title}{ylabel[0]}.png', transparent=True, bbox_inches='tight', pad_inches=pad_inches)
     plt.tight_layout(pad=pad_inches)
     plt.show()
 
