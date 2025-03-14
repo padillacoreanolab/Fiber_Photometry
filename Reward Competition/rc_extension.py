@@ -5,7 +5,7 @@ sys.path.append(parent_dir)
 
 from experiment_class import Experiment
 from trial_class import Trial
-
+import math
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -198,6 +198,7 @@ class Reward_Competition(Experiment):
         self.df['port entries'] = self.df['trial'].apply(lambda x: x.behaviors1.get('port entries', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
         self.df['sound cues onset'] = self.df['sound cues'].apply(lambda x: x.onset_times if x else None)
         self.df['port entries onset'] = self.df['port entries'].apply(lambda x: x.onset_times if x else None)
+        self.df['port entries offset'] = self.df['port entries'].apply(lambda x: x.offset_times if x else None)
         
         # Creates a column for subject name
         self.df['subject_name'] = self.df['file name'].str.split('-').str[0]
@@ -213,6 +214,154 @@ class Reward_Competition(Experiment):
         self.df.dropna(subset=['trial'], inplace=True)
         self.df.reset_index(drop=True, inplace=True)
         print(self.df.columns)
+
+    """***********************FINDING RANKS******************************"""
+    def find_ranks_using_ds(self, file_path):
+        def creating_new_df(individuals_array):
+            columns = ['ID']
+            # Using a loop to add the suffix to each string
+            # building columns
+            suffix1 = 'w'
+            suffix2 = 'm'
+            w_array = []
+            m_array = []
+            for w in individuals_array:
+                w_array.append(w + suffix1)
+            for m in individuals_array:
+                m_array.append(m + suffix2)
+            columns.extend(w_array)
+            columns.extend(m_array)
+            calculations = ['w', 'l', 'w2', 'l2', 'DS']
+            columns.extend(calculations)
+            # entering base values into the new data frame
+            empty_dataframe = pd.DataFrame(columns=columns)
+            empty_dataframe['ID'] = individuals_array
+            # fill in the data frame with zeros
+            pd.set_option('future.no_silent_downcasting', True)
+            new_dataframe = empty_dataframe.fillna(0).infer_objects(copy=False)
+            new_dataframe[calculations] = new_dataframe[calculations].astype(float)
+            return new_dataframe, w_array, m_array
+    # Read the Excel file with header
+        df = pd.read_excel(file_path, header=0)
+        df.columns = [str(col).lower().strip().replace(' ', '_') for col in df.columns]
+        # Remove unneeded columns
+        # to_keep = ['subject_wins', 'other_mouse_wins', 'subject', 'agent']
+        to_keep = ['mouse_1_wins', 'mouse_2_wins', 'subject', 'agent']
+        # Keep only the specified columns
+        df = df[to_keep]
+        # splitting matches to find specific individuals
+        individuals = set()
+        for subjects1 in df['agent']:
+                individuals.add(subjects1)
+        individuals_list = list(individuals)
+        individuals_array = np.array(individuals_list)
+        all_individuals_array = np.sort(individuals_array)  # More explicit
+
+        # creating a dataframe using function.
+        new_dataframe, w_array, m_array = creating_new_df(all_individuals_array)
+
+
+        # finding the mice in each match and naming them as mouse 1 or 2 and finding all matches of these mice
+        for n, row in df.iterrows():
+            
+            all_individuals_list = list(all_individuals_array)  # Convert array to list
+            mouse1 = df.at[n, 'subject']
+            # locate mouse 1 location in all_individuals_array
+            index_of_mouse1 = all_individuals_list.index(mouse1)
+            mouse2 = df.at[n, 'agent']
+            # locate mouse 2 location in all_individuals_array
+            index_of_mouse2 = all_individuals_list.index(mouse2)
+            mouse1w = df.at[n, 'mouse_1_wins']
+            mouse2w = df.at[n, 'mouse_2_wins']
+            new_dataframe.loc[index_of_mouse1, mouse2 + 'w'] += int(mouse1w)
+            new_dataframe.loc[index_of_mouse2, mouse1 + 'w'] += int(mouse2w)
+    
+            # total matches between the 2 mice
+            mouse_m = mouse1w + mouse2w
+            new_dataframe.at[index_of_mouse1, mouse2 + 'm'] += int(mouse_m)
+            new_dataframe.at[index_of_mouse2, mouse1 + 'm'] += int(mouse_m)
+        
+
+        for i in range(len(all_individuals_array)):
+            # w = sum of P(ij) win-rate    P(ij)=(individual1/opponent)
+            w = 0
+            # l = sum of P(ji) loss-rate   P(ji)=1-(individual1/opponent)
+            l = 0
+            for j in range(len(all_individuals_array)):
+                num_wins = new_dataframe.at[i, w_array[j]]
+                num_matches = new_dataframe.at[i, m_array[j]]
+                # ensure that there are matches between the two
+                if pd.isna(num_matches) or num_matches == 0:
+                    continue
+                if math.isnan(num_wins):
+                    num_wins = 0
+                pw = num_wins / num_matches
+                pl = 1 - pw
+                w += pw
+                l += pl
+            new_dataframe.loc[i, ['w', 'l']] = float(w), float(l)  # More efficient
+
+            """new_dataframe.at[i, 'w'] = float(w)
+            new_dataframe.at[i, 'l'] = float(l)"""
+
+        # calculate the w2 and l2 values
+        for i in range(len(all_individuals_array)):
+            # w2 = sum of all P(ij) * w(j)
+            w2 = 0
+            # l2 = sum of all (1-P(ij)) * l(j)
+            l2 = 0
+            for j in range(len(all_individuals_array)):
+                num_wins = new_dataframe.at[i, w_array[j]]
+                num_matches = new_dataframe.at[i, m_array[j]]
+                # ensure that there are matches between the two
+                if math.isnan(num_matches) or num_matches == 0:
+                    continue
+                if math.isnan(num_wins):
+                    num_wins = 0
+                pw = num_wins / num_matches
+                pl = 1 - pw
+                w_opponent = new_dataframe.at[j, 'w']
+                l_opponent = new_dataframe.at[j, 'l']
+                w2 += pw * w_opponent
+                l2 += pl * l_opponent
+            new_dataframe.at[i, 'w2'] = float(w2)
+            new_dataframe.at[i, 'l2'] = float(l2)
+
+        # calculating David's score = w + w2 - l - l2
+        for i in range(len(all_individuals_array)):
+            w = new_dataframe.at[i, 'w']
+            l = new_dataframe.at[i, 'l']
+            w2 = new_dataframe.at[i, 'w2']
+            l2 = new_dataframe.at[i, 'l2']
+            ds = w + w2 - l - l2
+            new_dataframe.at[i, 'DS'] = float(ds)
+
+        # necessary output data
+        data_to_keep = ['ID', 'DS']
+        new_dataframe = new_dataframe[data_to_keep]
+
+        # for cohort 1 and 2 and combined remove n8
+        new_dataframe = new_dataframe.loc[new_dataframe['ID'] != 'n8']
+
+        new_dataframe["Prefix"] = new_dataframe["ID"].str.extract(r"([a-zA-Z]+)")  # Extract letter prefix ('n' or 'p')
+        new_dataframe["Number"] = new_dataframe["ID"].str.extract(r"(\d+)").astype(int)  # Extract numeric part
+
+        # Step 3: Assign cages dynamically
+        new_dataframe["Cage"] = new_dataframe.apply(lambda row: f"{row['Prefix']}{1 if row['Number'] <= 4 else 2}", axis=1)
+
+        # Step 4: Rank within each cage
+        new_dataframe["Rank"] = new_dataframe.groupby("Cage")["DS"].rank(ascending=False, method="min").astype("Int64")
+
+        # Drop helper columns
+        new_dataframe = new_dataframe.drop(columns=["Prefix", "Number"])
+        return new_dataframe
+    
+    def merging_ranks(self, rank_df):
+        df_merged = self.df.merge(rank_df, left_on="subject_name", right_on="ID", how="left")
+
+        # Step 2: Drop redundant "ID" column if needed
+        df_merged.drop(columns=["ID"], inplace=True)
+        self.df = df_merged
 
     """***********************REMOVING TRIALS WITH TANGLES******************************"""
     def remove_tangles(self):
@@ -238,6 +387,9 @@ class Reward_Competition(Experiment):
         self.df['filtered_port_entries'] = self.df.apply(
             lambda row: remove_indices_from_array(row['port entries onset'], row['tangles_array']), axis=1
         )
+        self.df['filtered_port_entry_offset'] = self.df.apply(
+            lambda row: remove_indices_from_array(row['port entries offset'], row['tangles_array']), axis=1
+        )
         # drop the 'tangles_array' column if no longer needed
         self.df.drop(columns=['tangles_array'], inplace=True)
         self.df.drop(columns=['tangles'], inplace=True)
@@ -250,36 +402,36 @@ class Reward_Competition(Experiment):
             # Ensure 'filtered_winner_array' is a list
             if not isinstance(row['filtered_winner_array'], list):
                 print(f"Skipping row {row.name}: filtered_winner_array is not a list.")
-                return pd.Series([row['filtered_sound_cues'], row['filtered_port_entries']])
+                return pd.Series([row['filtered_sound_cues']])
 
             # Get valid indices where `filtered_winner_array` matches `subject_name`
             valid_indices = [i for i, winner in enumerate(row['filtered_winner_array']) if winner == row['subject_name']]
             
             print(f"Row {row.name}: Subject {row['subject_name']} - Valid Indices: {valid_indices}")
 
-            # If no indices match, return empty lists
+            # If no indices match, return an empty list
             if not valid_indices:
-                return pd.Series([[], []])
+                return pd.Series([[]])
 
-            # Ensure lists are correctly structured before filtering
-            if not isinstance(row['filtered_sound_cues'], list) or not isinstance(row['filtered_port_entries'], list):
-                print(f"Skipping row {row.name}: filtered_sound_cues or filtered_port_entries is not a list.")
-                return pd.Series([[], []])
+            # Ensure `filtered_sound_cues` is a list before filtering
+            if not isinstance(row['filtered_sound_cues'], list):
+                print(f"Skipping row {row.name}: filtered_sound_cues is not a list.")
+                return pd.Series([[]])
 
-            # Filter sound cues and port entries using valid indices
+            # Filter sound cues using valid indices
             filtered_cues = [row['filtered_sound_cues'][i] for i in valid_indices]
-            filtered_entries = [row['filtered_port_entries'][i] for i in valid_indices]
 
             # Print changes per row
             print(f"Row {row.name}: Before -> {row['filtered_sound_cues']}, After -> {filtered_cues}")
 
-            return pd.Series([filtered_cues, filtered_entries])
+            return pd.Series([filtered_cues])
 
         # Apply the function to filter the DataFrame
-        self.df[['filtered_sound_cues', 'filtered_port_entries']] = self.df.apply(filter_by_winner, axis=1)
+        self.df[['filtered_sound_cues']] = self.df.apply(filter_by_winner, axis=1)
 
         # Drop rows where no filtered_sound_cues remain
         self.df = self.df[self.df['filtered_sound_cues'].apply(len) > 0]
+
 
 
     def losing(self):
@@ -339,36 +491,42 @@ class Reward_Competition(Experiment):
         If a port entry starts before 4 seconds but extends past it, 
         the function selects the timestamp at 4 seconds after the sound cue.
         
-        Stores the results as a list of timestamps in `self.first_lick_after_sound_cue`.
+        Stores the results as a list in `self.first_lick_after_sound_cue` and adds it to `self.df`.
         """
 
-        # Extract sound cue and port entry onset/offset times
-        sound_cues_onsets = np.array(self.behaviors1['sound cues'].onset_times)
-        port_entries_onsets = np.array(self.behaviors1['port entries'].onset_times)
-        port_entries_offsets = np.array(self.behaviors1['port entries'].offset_times)
+        first_licks = []  # List to store results
 
-        first_licks = []  # List to store the first lick timestamp for each sound cue
+        for index, row in self.df.iterrows():
+            sound_cues_onsets = row['filtered_sound_cues'] 
+            port_entries_onsets = row['filtered_port_entries']  
+            port_entries_offsets = row['filtered_port_entry_offset']  
 
-        for sc_onset in sound_cues_onsets:
-            threshold_time = sc_onset + 4  # Define the 4-second threshold after the sound cue
+            first_licks_per_row = []  # Store first licks for this row
 
-            # Find port entries that start AFTER 4 seconds post sound cue
-            future_licks_indices = np.where(port_entries_onsets >= threshold_time)[0]
+            for sc_onset in sound_cues_onsets:
+                threshold_time = sc_onset + 4  # Define 4s threshold
 
-            if len(future_licks_indices) > 0:
-                # If there are port entries after 4s, take the first one
-                first_licks.append(port_entries_onsets[future_licks_indices[0]])
-            else:
-                # Find port entries that START before 4s but continue PAST it
-                ongoing_licks_indices = np.where((port_entries_onsets < threshold_time) & (port_entries_offsets > threshold_time))[0]
+                # Find port entries that start AFTER 4 seconds post sound cue
+                future_licks_indices = np.where(port_entries_onsets >= threshold_time)[0]
 
-                if len(ongoing_licks_indices) > 0:
-                    # If a port entry spans past 4s, use the exact timepoint at 4s
-                    first_licks.append(threshold_time)
+                if len(future_licks_indices) > 0:
+                    # If there are port entries after 4s, take the first one
+                    first_licks_per_row.append(port_entries_onsets[future_licks_indices[0]])
                 else:
-                    # If no port entry occurs after 4s, append None (or NaN for consistency)
-                    first_licks.append(None)
+                    # Find port entries that START before 4s but continue PAST it
+                    ongoing_licks_indices = np.where((port_entries_onsets < threshold_time) & (port_entries_offsets > threshold_time))[0]
+
+                    if len(ongoing_licks_indices) > 0:
+                        # If a port entry spans past 4s, use the exact timepoint at 4s
+                        first_licks_per_row.append(threshold_time)
+                    else:
+                        # If no port entry occurs after 4s, append None
+                        first_licks_per_row.append(None)
+
+            first_licks.append(first_licks_per_row)  # Append row's results to main list
 
         # Store results in the object
         self.first_lick_after_sound_cue = first_licks
 
+        # Add to DataFrame
+        self.df["first_lick_after_sound_cue"] = first_licks

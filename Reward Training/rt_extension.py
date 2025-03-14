@@ -512,7 +512,7 @@ class Reward_Training(Experiment):
         # Store results in the object
         self.first_lick_after_sound_cue = first_licks
 
-    def compute_mean_da_across_trials(self, n=40, pre_time=5, post_time=5, bin_size=0.1, mean_window=4):
+    def compute_mean_da_across_trials(self, n=40, pre_time=5, post_time=14, bin_size=0.1, mean_window=4):
         """
         Computes the mean DA signal across all trials for each of the first n sound cues.
 
