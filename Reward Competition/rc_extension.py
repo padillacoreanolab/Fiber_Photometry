@@ -14,10 +14,11 @@ from scipy.stats import linregress
 class Reward_Competition(Experiment):
     def __init__(self, experiment_folder_path, behavior_folder_path):
         super().__init__(experiment_folder_path, behavior_folder_path)
-        # self.trials = {}  # Reset trials to avoid loading from parent class
+        self.trials = {}  # Reset trials to avoid loading from parent class
         self.df = pd.DataFrame()
-        # self.load_rtc1_trials()  # Load 1 RTC trial
-        # self.load_rtc2_trials()  # Load 2 RTC trials instead
+        self.load_rtc1_trials()  # Load 1 RTC trial
+        if self.behavior_folder_path and 'Cohort_1_2' in self.behavior_folder_path:
+            self.load_rtc2_trials() # load 2 trials for cohort 3
 
     def load_rtc1_trials(self):
         # Loads each trial folder (block) as a TDTData object and extracts manual annotation behaviors.
@@ -101,6 +102,133 @@ class Reward_Competition(Experiment):
             """
             Using csv_data
             """
+
+    """*********************************CALCULATING DOPAMINE RESPONS***********************************"""
+    def compute_da(self, 
+                    use_fractional=False, 
+                    max_bout_duration=30, 
+                    use_adaptive=False, 
+                    peak_fall_fraction=0.5,
+                    allow_bout_extension=False,
+                    first=False):
+        """
+        Computes DA metrics for each behavior event (row) in self.behaviors.
+
+        If `first=True`, the behavior DataFrame is filtered to contain only the first investigation per bout before 
+        computing DA metrics.
+
+        Metrics computed:
+        - AUC: Area under the z-score curve (using trapezoidal integration)
+        - Max Peak: Maximum z-score in the window
+        - Time of Max Peak: Timestamp corresponding to the maximum z-score
+        - Mean Z-score: Mean z-score over the window
+
+        Windowing logic:
+        1. Fractional Bout Window (if use_fractional=True):  
+            If the bout duration exceeds max_bout_duration seconds, only the first max_bout_duration 
+            seconds are used.
+        2. Adaptive Peak-Following (if use_adaptive=True):  
+            If the peak is positive, the window is adjusted so that, starting from the peak,
+            it continues until the z-score falls below (peak * peak_fall_fraction).  
+            If no fall is found within the current window and allow_bout_extension is True, the search 
+            extends to the end of the recording.
+        3. If the peak is negative, adaptive processing is skipped and metrics are computed over the 
+            current window.
+
+        In addition, this function stores:
+        - 'Original End': the original bout end time from the CSV.
+        - 'Adjusted End': the end time after applying any window adjustments.
+
+        Parameters:
+        - use_fractional (bool): Whether to limit the window to max_bout_duration seconds.
+        - max_bout_duration (float): Maximum duration (in seconds) for the fractional window.
+        - use_adaptive (bool): Whether to apply the adaptive peak-following window.
+        - peak_fall_fraction (float): Fraction of the peak to define the fall threshold.
+        - allow_bout_extension (bool): Whether to extend the window past the bout’s official end if needed.
+        - first (bool): If True, only the first investigation event per bout is considered.
+        """
+        if self.df.empty:
+            return
+        
+        # Ensure the metric columns exist
+        for col in ['AUC', 'Max Peak', 'Time of Max Peak', 'Mean Z-score', 'Adjusted End']:
+            if col not in self.df.columns:
+                self.df[col] = np.nan
+
+        # Global end time (last timestamp) for potential extension
+        global_end_time = Trial.timestamps[-1]
+
+        # Process each behavior event (each row in self.behaviors)
+        for i, row in self.df.iterrows():
+            start_time = row['filtered_port_entries']
+            orig_end_time = row['filted_port_entry_offset']
+            end_time = orig_end_time  # default window end
+
+            # 1) Fractional Bout Window: truncate if duration exceeds max_bout_duration
+            if use_fractional:
+                bout_duration = orig_end_time - start_time
+                if bout_duration > max_bout_duration:
+                    end_time = start_time + max_bout_duration
+            # (If not using fractional, end_time remains orig_end_time)
+
+            # 2) Extract the current window from self.timestamps and self.zscore
+            mask = (Trial.timestamps >= start_time) & (Trial.timestamps <= end_time)
+            window_ts = Trial.timestamps[mask]
+            window_z = Trial.zscore[mask]
+            if len(window_ts) < 2:
+                continue
+
+            # 3) Adaptive Peak-Following Window: if enabled and peak is nonnegative
+            if use_adaptive:
+                max_idx = np.argmax(window_z)
+                max_val = window_z[max_idx]
+                peak_time = window_ts[max_idx]
+                if max_val >= 0:
+                    threshold = max_val * peak_fall_fraction
+                    fall_idx = max_idx
+                    while fall_idx < len(window_z) and window_z[fall_idx] > threshold:
+                        fall_idx += 1
+
+                    if fall_idx < len(window_z):
+                        end_time = window_ts[fall_idx]
+                    elif allow_bout_extension:
+                        # Extend window to global end and search again
+                        extended_mask = (Trial.timestamps >= start_time) & (Trial.timestamps <= global_end_time)
+                        extended_ts = Trial.timestamps[extended_mask]
+                        extended_z = Trial.zscore[extended_mask]
+                        # Find the index closest to peak_time in the extended window
+                        peak_idx_ext = np.argmin(np.abs(extended_ts - peak_time))
+                        fall_idx_ext = peak_idx_ext
+                        while fall_idx_ext < len(extended_z) and extended_z[fall_idx_ext] > threshold:
+                            fall_idx_ext += 1
+                        if fall_idx_ext < len(extended_ts):
+                            end_time = extended_ts[fall_idx_ext]
+                        else:
+                            end_time = extended_ts[-1]
+                    # Else: if adaptive is enabled but no fall is found and extension is not allowed,
+                    # keep the current end_time.
+                # If max_val is negative, adaptive processing is skipped.
+
+            # 4) Re-extract the final window using the (possibly) updated end_time
+            final_mask = (Trial.timestamps >= start_time) & (Trial.timestamps <= end_time)
+            final_ts = Trial.timestamps[final_mask]
+            final_z = Trial.zscore[final_mask]
+            if len(final_ts) < 2:
+                continue
+
+            # 5) Compute final metrics
+            auc = np.trapz(final_z, final_ts)
+            mean_z = np.mean(final_z)
+            final_max_idx = np.argmax(final_z)
+            final_max_val = final_z[final_max_idx]
+            final_peak_time = final_ts[final_max_idx]
+
+            # 6) Save metrics and adjusted end time into the DataFrame
+            self.df.loc[i, 'AUC'] = auc
+            self.df.loc[i, 'Max Peak'] = final_max_val
+            self.df.loc[i, 'Time of Max Peak'] = final_peak_time
+            self.df.loc[i, 'Mean Z-score'] = mean_z
+            self.df.loc[i, 'Adjusted End'] = end_time
 
     """*********************************COMBINE CONSECUTIVE BEHAVIORS***********************************"""
     def combine_consecutive_behaviors1(self, behavior_name='all', bout_time_threshold=1, min_occurrences=1):
