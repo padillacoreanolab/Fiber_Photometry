@@ -770,18 +770,72 @@ class Reward_Competition(Experiment):
         self.df["Tone Mean Z-score Mean"] = self.df["Tone Mean Z-score"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
 
     def find_overall_mean(self):
-        mean_df = self.df.groupby('subject_name')[['Lick AUC Mean', 'Lick Max Peak Mean', 'Lick Mean Z-score Mean',
-                                                   'Tone AUC Mean', 'Tone Max Peak Mean', 'Tone Mean Z-score Mean']].mean()
+        mean_df = self.df.groupby(['subject_name'], as_index=False).agg({
+            'Rank': 'first',  # Keeps the Rank column
+            'Lick AUC Mean': 'mean',
+            'Lick Max Peak Mean': 'mean',
+            'Lick Mean Z-score Mean': 'mean',
+            'Tone AUC Mean': 'mean',
+            'Tone Max Peak Mean': 'mean',
+            'Tone Mean Z-score Mean': 'mean',
+            'Lick AUC First': 'mean',
+            'Lick AUC Last': 'mean',
+            'Lick Max Peak First': 'mean',
+            'Lick Max Peak Last': 'mean',
+            'Lick Mean Z-score First': 'mean',
+            'Lick Mean Z-score Last': 'mean',
+            'Tone AUC First': 'mean',
+            'Tone AUC Last': 'mean',
+            'Tone Max Peak First': 'mean',
+            'Tone Max Peak Last': 'mean',
+            'Tone Mean Z-score First': 'mean',
+            'Tone Mean Z-score Last': 'mean'
+        })
 
-        # Reset index to turn the subject back into a column
-        mean_df.reset_index(inplace=True)
         self.df = mean_df
 
     """*******************************PLOTTING**********************************"""
     def plot_tone_da(self, condition='winning'):
         pass
 
+    def plot_lick_da(self, condition='winning'):
+        pass
+
+    def plot_first_last(self, condition='winning'):
+        pass
+
+    def plot_dom(self, condition='winning'):
+        pass
+
+    def plot_sub(self, condition='winning'):
+        pass
+
+
     """********************************MISC*************************************"""
     def drop_unnecessary(self):
+        # drops lots of unnecessary column to allow for easier observations
         self.df.drop(columns=['file name', 'port entries onset', 'port entries offset', 'sound cues',
                               'sound cues', 'port entries', 'winner_array', 'DS', 'filtered_port_entries'], inplace=True)
+        
+    def first_last(self):
+        """
+        Finds the first and last bouts DA of competition
+        """
+        # Extract the first and last values of the array under 'Lick AUC'
+        self.df['Lick AUC First'] = self.df['Lick AUC'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        self.df['Lick AUC Last'] = self.df['Lick AUC'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+
+        self.df['Lick Max Peak First'] = self.df['Lick Max Peak'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        self.df['Lick Max Peak Last'] = self.df['Lick Max Peak'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+
+        self.df['Lick Mean Z-score First'] = self.df['Lick Mean Z-score'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        self.df['Lick Mean Z-score Last'] = self.df['Lick Mean Z-score'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+
+        self.df['Tone AUC First'] = self.df['Tone AUC'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        self.df['Tone AUC Last'] = self.df['Tone AUC'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+
+        self.df['Tone Max Peak First'] = self.df['Tone Max Peak'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        self.df['Tone Max Peak Last'] = self.df['Tone Max Peak'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+
+        self.df['Tone Mean Z-score First'] = self.df['Tone Mean Z-score'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        self.df['Tone Mean Z-score Last'] = self.df['Tone Mean Z-score'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
