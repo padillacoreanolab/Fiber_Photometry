@@ -103,205 +103,6 @@ class Reward_Competition(Experiment):
             Using csv_data
             """
 
-    """*********************************CALCULATING DOPAMINE RESPONSE***********************************"""
-    def compute_tone_da(self):
-        def compute_da_metrics_for_trial(trial_obj, filtered_sound_cues, 
-                                        use_adaptive=True, peak_fall_fraction=0.5, 
-                                        allow_bout_extension=False):
-            """Compute DA metrics (AUC, Max Peak, Time of Max Peak, Mean Z-score) for each sound cue, using adaptive peak-following."""
-            """if not hasattr(trial_obj, "timestamps") or not hasattr(trial_obj, "zscore"):
-                return np.nan"""  # Handle missing attributes
-
-            timestamps = np.array(trial_obj.timestamps)  
-            zscores = np.array(trial_obj.zscore)  
-
-            computed_metrics = []
-
-            for cue in filtered_sound_cues:
-                start_time = cue
-                end_time = cue + 10  # Default window end
-
-                # Extract initial window
-                mask = (timestamps >= start_time) & (timestamps <= end_time)
-                window_ts = timestamps[mask]
-                window_z = zscores[mask]
-
-                if len(window_ts) < 2:
-                    computed_metrics.append({"AUC": np.nan, "Max Peak": np.nan, "Time of Max Peak": np.nan, "Mean Z-score": np.nan, "Adjusted End": np.nan})
-                    continue  # Skip to next cue
-
-                # Compute initial metrics
-                auc = np.trapz(window_z, window_ts)  
-                max_idx = np.argmax(window_z)
-                max_peak = window_z[max_idx]
-                peak_time = window_ts[max_idx]
-                mean_z = np.mean(window_z)
-
-                # Adaptive peak-following
-                if use_adaptive and max_peak >= 0:
-                    threshold = max_peak * peak_fall_fraction
-                    fall_idx = max_idx
-
-                    while fall_idx < len(window_z) and window_z[fall_idx] > threshold:
-                        fall_idx += 1
-
-                    if fall_idx < len(window_z):
-                        end_time = window_ts[fall_idx]  # Adjust end time
-                    elif allow_bout_extension:
-                        # Extend to the full timestamp range
-                        extended_mask = (timestamps >= start_time)
-                        extended_ts = timestamps[extended_mask]
-                        extended_z = zscores[extended_mask]
-
-                        peak_idx_ext = np.argmin(np.abs(extended_ts - peak_time))
-                        fall_idx_ext = peak_idx_ext
-
-                        while fall_idx_ext < len(extended_z) and extended_z[fall_idx_ext] > threshold:
-                            fall_idx_ext += 1
-
-                        if fall_idx_ext < len(extended_ts):
-                            end_time = extended_ts[fall_idx_ext]
-                        else:
-                            end_time = extended_ts[-1]
-
-                # Re-extract window with adjusted end time
-                final_mask = (timestamps >= start_time) & (timestamps <= end_time)
-                final_ts = timestamps[final_mask]
-                final_z = zscores[final_mask]
-
-                if len(final_ts) < 2:
-                    computed_metrics.append({"AUC": np.nan, "Max Peak": np.nan, "Time of Max Peak": np.nan, "Mean Z-score": np.nan, "Adjusted End": np.nan})
-                    continue
-
-                # Compute final metrics
-                auc = np.trapz(final_z, final_ts)
-                final_max_idx = np.argmax(final_z)
-                final_max_val = final_z[final_max_idx]
-                final_peak_time = final_ts[final_max_idx]
-                mean_z = np.mean(final_z)
-
-                computed_metrics.append({
-                    "AUC": auc,
-                    "Max Peak": final_max_val,
-                    "Time of Max Peak": final_peak_time,
-                    "Mean Z-score": mean_z,
-                    "Adjusted End": end_time  # Store adjusted end
-                })
-            return computed_metrics
-
-        # Apply function across all trials
-        self.df["computed_metrics"] = self.df.apply(
-            lambda row: compute_da_metrics_for_trial(row["trial"], row["filtered_sound_cues"], 
-                                                    use_adaptive=True, peak_fall_fraction=0.5, 
-                                                    allow_bout_extension=False), axis=1)
-        self.df["Tone AUC"] = self.df["computed_metrics"].apply(lambda x: [item.get("AUC", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        self.df["Tone Max Peak"] = self.df["computed_metrics"].apply(lambda x: [item.get("Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        self.df["Tone Time of Max Peak"] = self.df["computed_metrics"].apply(lambda x: [item.get("Time of Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        self.df["Tone Mean Z-score"] = self.df["computed_metrics"].apply(lambda x: [item.get("Mean Z-score", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        self.df["Tone Adjusted End"] = self.df["computed_metrics"].apply(lambda x: [item.get("Adjusted End", np.nan) for item in x] if isinstance(x, list) else np.nan)
-
-        # Drop the "computed_metrics" column if it's no longer needed
-        self.df.drop(columns=["computed_metrics"], inplace=True)
-            
-    def compute_da_lick(self):
-        def compute_da_metrics_for_trial(trial_obj, filtered_sound_cues, 
-                                        use_adaptive=True, peak_fall_fraction=0.5, 
-                                        allow_bout_extension=False):
-            """Compute DA metrics (AUC, Max Peak, Time of Max Peak, Mean Z-score) for each sound cue, using adaptive peak-following."""
-            """if not hasattr(trial_obj, "timestamps") or not hasattr(trial_obj, "zscore"):
-                return np.nan"""  # Handle missing attributes
-
-            timestamps = np.array(trial_obj.timestamps)  
-            zscores = np.array(trial_obj.zscore)  
-
-            computed_metrics = []
-
-            for cue in filtered_sound_cues:
-                start_time = cue
-                end_time = cue + 10  # Default window end
-
-                # Extract initial window
-                mask = (timestamps >= start_time) & (timestamps <= end_time)
-                window_ts = timestamps[mask]
-                window_z = zscores[mask]
-
-                if len(window_ts) < 2:
-                    computed_metrics.append({"AUC": np.nan, "Max Peak": np.nan, "Time of Max Peak": np.nan, "Mean Z-score": np.nan, "Adjusted End": np.nan})
-                    continue  # Skip to next cue
-
-                # Compute initial metrics
-                auc = np.trapz(window_z, window_ts)  
-                max_idx = np.argmax(window_z)
-                max_peak = window_z[max_idx]
-                peak_time = window_ts[max_idx]
-                mean_z = np.mean(window_z)
-
-                # Adaptive peak-following
-                if use_adaptive and max_peak >= 0:
-                    threshold = max_peak * peak_fall_fraction
-                    fall_idx = max_idx
-
-                    while fall_idx < len(window_z) and window_z[fall_idx] > threshold:
-                        fall_idx += 1
-
-                    if fall_idx < len(window_z):
-                        end_time = window_ts[fall_idx]  # Adjust end time
-                    elif allow_bout_extension:
-                        # Extend to the full timestamp range
-                        extended_mask = (timestamps >= start_time)
-                        extended_ts = timestamps[extended_mask]
-                        extended_z = zscores[extended_mask]
-
-                        peak_idx_ext = np.argmin(np.abs(extended_ts - peak_time))
-                        fall_idx_ext = peak_idx_ext
-
-                        while fall_idx_ext < len(extended_z) and extended_z[fall_idx_ext] > threshold:
-                            fall_idx_ext += 1
-
-                        if fall_idx_ext < len(extended_ts):
-                            end_time = extended_ts[fall_idx_ext]
-                        else:
-                            end_time = extended_ts[-1]
-
-                # Re-extract window with adjusted end time
-                final_mask = (timestamps >= start_time) & (timestamps <= end_time)
-                final_ts = timestamps[final_mask]
-                final_z = zscores[final_mask]
-
-                if len(final_ts) < 2:
-                    computed_metrics.append({"AUC": np.nan, "Max Peak": np.nan, "Time of Max Peak": np.nan, "Mean Z-score": np.nan, "Adjusted End": np.nan})
-                    continue
-
-                # Compute final metrics
-                auc = np.trapz(final_z, final_ts)
-                final_max_idx = np.argmax(final_z)
-                final_max_val = final_z[final_max_idx]
-                final_peak_time = final_ts[final_max_idx]
-                mean_z = np.mean(final_z)
-
-                computed_metrics.append({
-                    "AUC": auc,
-                    "Max Peak": final_max_val,
-                    "Time of Max Peak": final_peak_time,
-                    "Mean Z-score": mean_z,
-                    "Adjusted End": end_time  # Store adjusted end
-                })
-            print(computed_metrics)
-            return computed_metrics
-
-        # Apply function across all trials
-        self.df["computed_metrics"] = self.df.apply(
-            lambda row: compute_da_metrics_for_trial(row["trial"], row["filtered_sound_cues"], 
-                                                    use_adaptive=True, peak_fall_fraction=0.5, 
-                                                    allow_bout_extension=False), axis=1)
-        self.df["Tone AUC"] = self.df["computed_metrics"].apply(lambda x: [item.get("AUC", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        self.df["Tone Max Peak"] = self.df["computed_metrics"].apply(lambda x: [item.get("Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        self.df["Tone Time of Max Peak"] = self.df["computed_metrics"].apply(lambda x: [item.get("Time of Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        self.df["Tone Mean Z-score"] = self.df["computed_metrics"].apply(lambda x: [item.get("Mean Z-score", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        self.df["Tone Adjusted End"] = self.df["computed_metrics"].apply(lambda x: [item.get("Adjusted End", np.nan) for item in x] if isinstance(x, list) else np.nan)
-
-        # Drop the "computed_metrics" column if it's no longer needed
-        self.df.drop(columns=["computed_metrics"], inplace=True)
 
     """*********************************COMBINE CONSECUTIVE BEHAVIORS***********************************"""
     def combine_consecutive_behaviors1(self, behavior_name='all', bout_time_threshold=1, min_occurrences=1):
@@ -387,6 +188,8 @@ class Reward_Competition(Experiment):
     def read_manual_scoring2(self, csv_file_path):
         """
         Reads in and creates a df for trials that recorded 2 mice simultaneously
+        
+        First change file names so that there is only one mouse before the date, using the subject column.
         """
         pass
 
@@ -684,7 +487,6 @@ class Reward_Competition(Experiment):
         print(self.df[['winner_array', 'filtered_winner_array', 'sound cues', 'port entries']])
     
 
-
     """*******************************LICKS********************************"""
     def find_first_lick_after_sound_cue(self):
         """
@@ -775,4 +577,212 @@ class Reward_Competition(Experiment):
 
         # Apply the function to the DataFrame and create a new column with the results
         self.df['closest_lick_offset'] = self.df.apply(compute_lick_metrics, axis=1)
+    """*********************************CALCULATING DOPAMINE RESPONSE***********************************"""
+    def compute_tone_da(self):
+        def compute_da_metrics_for_trial(trial_obj, filtered_sound_cues, 
+                                        use_adaptive=True, peak_fall_fraction=0.5, 
+                                        allow_bout_extension=False):
+            """Compute DA metrics (AUC, Max Peak, Time of Max Peak, Mean Z-score) for each sound cue, using adaptive peak-following."""
+            """if not hasattr(trial_obj, "timestamps") or not hasattr(trial_obj, "zscore"):
+                return np.nan"""  # Handle missing attributes
 
+            timestamps = np.array(trial_obj.timestamps)  
+            zscores = np.array(trial_obj.zscore)  
+
+            computed_metrics = []
+
+            for cue in filtered_sound_cues:
+                start_time = cue
+                end_time = cue + 10  # Default window end
+
+                # Extract initial window
+                mask = (timestamps >= start_time) & (timestamps <= end_time)
+                window_ts = timestamps[mask]
+                window_z = zscores[mask]
+
+                if len(window_ts) < 2:
+                    computed_metrics.append({"AUC": np.nan, "Max Peak": np.nan, "Time of Max Peak": np.nan, "Mean Z-score": np.nan, "Adjusted End": np.nan})
+                    continue  # Skip to next cue
+
+                # Compute initial metrics
+                auc = np.trapz(window_z, window_ts)  
+                max_idx = np.argmax(window_z)
+                max_peak = window_z[max_idx]
+                peak_time = window_ts[max_idx]
+                mean_z = np.mean(window_z)
+
+                # Adaptive peak-following
+                if use_adaptive and max_peak >= 0:
+                    threshold = max_peak * peak_fall_fraction
+                    fall_idx = max_idx
+
+                    while fall_idx < len(window_z) and window_z[fall_idx] > threshold:
+                        fall_idx += 1
+
+                    if fall_idx < len(window_z):
+                        end_time = window_ts[fall_idx]  # Adjust end time
+                    elif allow_bout_extension:
+                        # Extend to the full timestamp range
+                        extended_mask = (timestamps >= start_time)
+                        extended_ts = timestamps[extended_mask]
+                        extended_z = zscores[extended_mask]
+
+                        peak_idx_ext = np.argmin(np.abs(extended_ts - peak_time))
+                        fall_idx_ext = peak_idx_ext
+
+                        while fall_idx_ext < len(extended_z) and extended_z[fall_idx_ext] > threshold:
+                            fall_idx_ext += 1
+
+                        if fall_idx_ext < len(extended_ts):
+                            end_time = extended_ts[fall_idx_ext]
+                        else:
+                            end_time = extended_ts[-1]
+
+                # Re-extract window with adjusted end time
+                final_mask = (timestamps >= start_time) & (timestamps <= end_time)
+                final_ts = timestamps[final_mask]
+                final_z = zscores[final_mask]
+
+                if len(final_ts) < 2:
+                    computed_metrics.append({"AUC": np.nan, "Max Peak": np.nan, "Time of Max Peak": np.nan, "Mean Z-score": np.nan, "Adjusted End": np.nan})
+                    continue
+
+                # Compute final metrics
+                auc = np.trapz(final_z, final_ts)
+                final_max_idx = np.argmax(final_z)
+                final_max_val = final_z[final_max_idx]
+                final_peak_time = final_ts[final_max_idx]
+                mean_z = np.mean(final_z)
+
+                computed_metrics.append({
+                    "AUC": auc,
+                    "Max Peak": final_max_val,
+                    "Time of Max Peak": final_peak_time,
+                    "Mean Z-score": mean_z,
+                    "Adjusted End": end_time  # Store adjusted end
+                })
+            return computed_metrics
+
+        # Apply function across all trials
+        self.df["computed_metrics"] = self.df.apply(
+            lambda row: compute_da_metrics_for_trial(row["trial"], row["filtered_sound_cues"], 
+                                                    use_adaptive=True, peak_fall_fraction=0.5, 
+                                                    allow_bout_extension=False), axis=1)
+        self.df["Tone AUC"] = self.df["computed_metrics"].apply(lambda x: [item.get("AUC", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        self.df["Tone Max Peak"] = self.df["computed_metrics"].apply(lambda x: [item.get("Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        self.df["Tone Time of Max Peak"] = self.df["computed_metrics"].apply(lambda x: [item.get("Time of Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        self.df["Tone Mean Z-score"] = self.df["computed_metrics"].apply(lambda x: [item.get("Mean Z-score", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        self.df["Tone Adjusted End"] = self.df["computed_metrics"].apply(lambda x: [item.get("Adjusted End", np.nan) for item in x] if isinstance(x, list) else np.nan)
+
+        # Drop the "computed_metrics" column if it's no longer needed
+        self.df.drop(columns=["computed_metrics"], inplace=True)
+                
+    def compute_lick_da(self):
+        """Iterate through trials in the dataframe and compute DA metrics for each lick trial."""
+        
+        def compute_da_metrics_for_lick(trial_obj, first_lick_after_tones, closest_port_entry_offsets, 
+                                        use_adaptive=True, peak_fall_fraction=0.5, allow_bout_extension=False):
+            """Compute DA metrics (AUC, Max Peak, Time of Max Peak, Mean Z-score) for a single trial, 
+            iterating over multiple first_lick_after_tone and closest_port_entry_offset values."""
+            
+            timestamps = np.array(trial_obj.timestamps)  
+            zscores = np.array(trial_obj.zscore)  
+
+            computed_metrics = []
+
+            for first_lick_after_tone, closest_port_entry_offset in zip(first_lick_after_tones, closest_port_entry_offsets):
+                # Ensure timestamps array is not empty and start_time is before end_time
+                if len(timestamps) == 0 or first_lick_after_tone >= closest_port_entry_offset: 
+                    computed_metrics.append({"AUC": np.nan, "Max Peak": np.nan, "Time of Max Peak": np.nan, "Mean Z-score": np.nan, "Adjusted End": np.nan})
+                    continue
+
+                # Extract initial window
+                mask = (timestamps >= first_lick_after_tone) & (timestamps <= closest_port_entry_offset)
+                
+                if mask.sum() == 0:  # If no valid timestamps in the window
+                    computed_metrics.append({"AUC": np.nan, "Max Peak": np.nan, "Time of Max Peak": np.nan, "Mean Z-score": np.nan, "Adjusted End": np.nan})
+                    continue
+                
+                window_ts = timestamps[mask]
+                window_z = zscores[mask]
+
+                # Compute initial metrics
+                auc = np.trapz(window_z, window_ts)  
+                max_idx = np.argmax(window_z)
+                max_peak = window_z[max_idx]
+                peak_time = window_ts[max_idx]
+                mean_z = np.mean(window_z)
+
+                # Adaptive peak-following
+                if use_adaptive and max_peak >= 0:
+                    threshold = max_peak * peak_fall_fraction
+                    fall_idx = max_idx
+
+                    while fall_idx < len(window_z) and window_z[fall_idx] > threshold:
+                        fall_idx += 1
+
+                    if fall_idx < len(window_z):
+                        closest_port_entry_offset = window_ts[fall_idx]  # Adjust end time based on threshold
+
+                    elif allow_bout_extension:
+                        # Extend to the full timestamp range if no fall-off is found
+                        extended_mask = (timestamps >= first_lick_after_tone)
+                        extended_ts = timestamps[extended_mask]
+                        extended_z = zscores[extended_mask]
+
+                        peak_idx_ext = np.argmin(np.abs(extended_ts - peak_time))
+                        fall_idx_ext = peak_idx_ext
+
+                        while fall_idx_ext < len(extended_z) and extended_z[fall_idx_ext] > threshold:
+                            fall_idx_ext += 1
+
+                        if fall_idx_ext < len(extended_ts):
+                            closest_port_entry_offset = extended_ts[fall_idx_ext]
+                        else:
+                            closest_port_entry_offset = extended_ts[-1]
+
+                # Re-extract window with adjusted end time
+                final_mask = (timestamps >= first_lick_after_tone) & (timestamps <= closest_port_entry_offset)
+                final_ts = timestamps[final_mask]
+                final_z = zscores[final_mask]
+
+                if len(final_ts) < 2:
+                    computed_metrics.append({"AUC": np.nan, "Max Peak": np.nan, "Time of Max Peak": np.nan, "Mean Z-score": np.nan, "Adjusted End": np.nan})
+                    continue  # Skip to next pair of values
+
+                # Compute final metrics
+                auc = np.trapz(final_z, final_ts)
+                final_max_idx = np.argmax(final_z)
+                final_max_val = final_z[final_max_idx]
+                final_peak_time = final_ts[final_max_idx]
+                mean_z = np.mean(final_z)
+
+                computed_metrics.append({
+                    "AUC": auc,
+                    "Max Peak": final_max_val,
+                    "Time of Max Peak": final_peak_time,
+                    "Mean Z-score": mean_z,
+                    "Adjusted End": closest_port_entry_offset  # Store adjusted end
+                })
+
+            return computed_metrics
+
+        # Apply the function across all trials
+        self.df["lick_computed_metrics"] = self.df.apply(
+            lambda row: compute_da_metrics_for_lick(row["trial"], row["first_lick_after_sound_cue"], 
+                                                    row["closest_lick_offset"], use_adaptive=True, 
+                                                    peak_fall_fraction=0.5, allow_bout_extension=False), axis=1)
+
+        # Extract the individual DA metrics into new columns
+        self.df["Lick AUC"] = self.df["lick_computed_metrics"].apply(lambda x: [item.get("AUC", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        self.df["Lick Max Peak"] = self.df["lick_computed_metrics"].apply(lambda x: [item.get("Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        self.df["Lick Time of Max Peak"] = self.df["lick_computed_metrics"].apply(lambda x: [item.get("Time of Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        self.df["Lick Mean Z-score"] = self.df["lick_computed_metrics"].apply(lambda x: [item.get("Mean Z-score", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        self.df["Lick Adjusted End"] = self.df["lick_computed_metrics"].apply(lambda x: [item.get("Adjusted End", np.nan) for item in x] if isinstance(x, list) else np.nan)
+
+        # Drop the "lick_computed_metrics" column if it's no longer needed
+        self.df.drop(columns=["lick_computed_metrics"], inplace=True)
+
+"""*******************************PLOTTING**********************************"""
+def plot_tone_da(self, condition='winning'):
+    pass
