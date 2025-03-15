@@ -98,7 +98,6 @@ class Reward_Competition(Experiment):
             trial.behaviors1['port entries'].offset_times = port_entries_offset[indices].tolist()
 
             self.combine_consecutive_behaviors1(behavior_name='all', bout_time_threshold=0.5)
-            print(trial)
             """
             Using csv_data
             """
@@ -217,7 +216,6 @@ class Reward_Competition(Experiment):
         # drops all rows without dopamine data.
         self.df.dropna(subset=['trial'], inplace=True)
         self.df.reset_index(drop=True, inplace=True)
-        print(self.df.columns)
 
     """***********************FINDING RANKS******************************"""
     def find_ranks_using_ds(self, file_path):
@@ -397,8 +395,6 @@ class Reward_Competition(Experiment):
         # drop the 'tangles_array' column if no longer needed
         self.df.drop(columns=['tangles_array'], inplace=True)
         self.df.drop(columns=['tangles'], inplace=True)
-        
-        print(self.df.columns)
 
     """**********************ISOLATING WINNING/LOSING TRIALS************************"""
     def winning(self):
@@ -439,52 +435,34 @@ class Reward_Competition(Experiment):
 
 
     def losing(self):
-        """
-        Creates a 'loser_array' based on the subject and removes the corresponding 
-        data from other columns like 'sound_cues', 'port_entries', etc.
-        """
-        def filter_trial_data(winner_array, subject_name, other_columns):
-            """
-            Filter the data such that only the subject's trials are retained.
-            Removes non-winner data from all other columns.
-            """
-            loser_indices = [idx for idx, winner in enumerate(winner_array) if winner != subject_name]
+        def filter_by_loser(row):
+            # Ensure 'filtered_winner_array' is a list
+            if not isinstance(row['filtered_winner_array'], list):
+                print(f"Skipping row {row.name}: filtered_winner_array is not a list.")
+                return pd.Series([row['filtered_sound_cues']])
 
-            # Filter other columns based on the winner indices
-            filtered_data = {}
-            for column, data in other_columns.items():
-                filtered_data[column] = [value for idx, value in enumerate(data) if idx in loser_indices]
-            
-            return filtered_data, loser_indices
-        # Step 1: Create the winner_array for each row
-        self.df['loser_array'] = self.df.apply(
-            lambda row: [row[col] for col in self.df.columns if 'loser' in col.lower()], axis=1
-        )
-        
-        # Step 2: Iterate over rows and filter data
-        all_other_columns = ['sound cues', 'port entries', 'tangles']  # Add more columns as needed
-        for idx, row in self.df.iterrows():
-            # Collect all other column values for the current row
-            other_columns = {col: row[col] for col in all_other_columns}
-            
-            # Filter the trial data to keep only the subject's winning trials
-            filtered_data, winner_indices = filter_trial_data(
-                row['loser_array'], row['subject'], other_columns
-            )
-            
-            # Update the row with filtered data
-            for column, filtered_values in filtered_data.items():
-                self.df.at[idx, column] = filtered_values
+            # Get indices where `subject_name` is NOT the winner
+            loser_indices = [i for i, winner in enumerate(row['filtered_winner_array']) if winner != row['subject_name']]
 
-        # Step 3: Drop any trials where the subject is not the winner
-        self.df['filtered_loser_array'] = self.df['loser_array'].apply(
-            lambda row: [value for idx, value in enumerate(row) if value == row['subject']]
-        )
+            # If no losing trials exist, return an empty list
+            if not loser_indices:
+                return pd.Series([[]])
 
-        # Drop unnecessary columns
-        self.df.drop(columns=[col for col in self.df.columns if 'winner' in col.lower()], inplace=True)
+            # Ensure `filtered_sound_cues` is a list before filtering
+            if not isinstance(row['filtered_sound_cues'], list):
+                return pd.Series([[]])
 
-        print(self.df[['winner_array', 'filtered_winner_array', 'sound cues', 'port entries']])
+            # Filter only relevant columns
+            filtered_cues = [row['filtered_sound_cues'][i] for i in loser_indices]
+
+            return pd.Series([filtered_cues])
+
+        # Apply the function to filter only the `filtered_sound_cues` column
+        self.df[['filtered_sound_cues']] = self.df.apply(filter_by_loser, axis=1)
+
+        # Drop rows where no `filtered_sound_cues` remain
+        self.df = self.df[self.df['filtered_sound_cues'].apply(len) > 0]
+
     
 
     """*******************************LICKS********************************"""
@@ -783,6 +761,27 @@ class Reward_Competition(Experiment):
         # Drop the "lick_computed_metrics" column if it's no longer needed
         self.df.drop(columns=["lick_computed_metrics"], inplace=True)
 
-"""*******************************PLOTTING**********************************"""
-def plot_tone_da(self, condition='winning'):
-    pass
+    def find_means(self):
+        self.df["Lick AUC Mean"] = self.df["Lick AUC"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        self.df["Lick Max Peak Mean"] = self.df["Lick Max Peak"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        self.df["Lick Mean Z-score Mean"] = self.df["Lick Mean Z-score"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        self.df["Tone AUC Mean"] = self.df["Tone AUC"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        self.df["Tone Max Peak Mean"] = self.df["Tone Max Peak"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        self.df["Tone Mean Z-score Mean"] = self.df["Tone Mean Z-score"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+
+    def find_overall_mean(self):
+        mean_df = self.df.groupby('subject_name')[['Lick AUC Mean', 'Lick Max Peak Mean', 'Lick Mean Z-score Mean',
+                                                   'Tone AUC Mean', 'Tone Max Peak Mean', 'Tone Mean Z-score Mean']].mean()
+
+        # Reset index to turn the subject back into a column
+        mean_df.reset_index(inplace=True)
+        self.df = mean_df
+
+    """*******************************PLOTTING**********************************"""
+    def plot_tone_da(self, condition='winning'):
+        pass
+
+    """********************************MISC*************************************"""
+    def drop_unnecessary(self):
+        self.df.drop(columns=['file name', 'port entries onset', 'port entries offset', 'sound cues',
+                              'sound cues', 'port entries', 'winner_array', 'DS', 'filtered_port_entries'], inplace=True)
