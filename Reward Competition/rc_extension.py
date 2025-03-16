@@ -795,12 +795,6 @@ class Reward_Competition(Experiment):
         self.df = mean_df
 
     """*******************************PLOTTING**********************************"""
-    def plot_tone_da(self, condition='winning'):
-        pass
-
-    def plot_lick_da(self, condition='winning'):
-        pass
-
     def plot_first_last(self, condition='winning'):
         pass
 
@@ -810,6 +804,171 @@ class Reward_Competition(Experiment):
     def plot_sub(self, condition='winning'):
         pass
 
+    # Response is tone or lick, metric_name is for AUC, Max Peak, or Mean Z-score
+    def plot_da(self, metric_name, condition='Winning',  
+                    brain_region='mPFC',  # New parameter to specify the brain region
+                    custom_xtick_labels=None, 
+                    custom_xtick_colors=None, 
+                    ylim=None, 
+                    nac_color='#15616F',   # Color for NAc
+                    mpfc_color='#FFAF00',  # Color for mPFC
+                    yticks_increment=None, 
+                    figsize=(7,7),  
+                    pad_inches=0.1):
+        """
+        Customizable plotting function that plots a single brain region (NAc or mPFC) for both lick and tone.
+        Can use metrics Max Peak, Mean Z-score, and AUC
+        """
+        # Filtering data frame to only keep specified metrics
+        def filter_by_metric(df):
+            metric_columns = df.filter(like=metric_name + ' Mean').columns
+            if len(metric_columns) != 2:
+                raise ValueError(f"Expected exactly 2 columns, but found {len(metric_columns)}.")
+
+            # Create two DataFrames, keeping 'subject_name'
+            df1 = df[['subject_name', metric_columns[0]]].copy()
+            df2 = df[['subject_name', metric_columns[1]]].copy()
+
+            return df1, df2
+        
+        # spliting and copying dataframe into two dataframes for each brain region 
+        def split_by_subject(df1, df2):            
+            # Filter out the 'subject_name' column and keep only the relevant columns for response and metric_name
+            df_n = df1[df1['subject_name'].str.startswith('n')].drop(columns=['subject_name'])
+            df_p = df1[df1['subject_name'].str.startswith('p')].drop(columns=['subject_name'])
+            
+            df_n1 = df2[df2['subject_name'].str.startswith('n')].drop(columns=['subject_name'])
+            df_p1 = df2[df2['subject_name'].str.startswith('p')].drop(columns=['subject_name'])
+            # Return filtered dataframes and subject_name column
+            return df_n, df_p, df_n1, df_p1
+
+        filtered_df, filtered_df1 = filter_by_metric(self.df)
+
+        # Split data into NAc and mPFC, with subject names
+        df_nac, df_mpfc, df_nac1, df_mpfc1 = split_by_subject(filtered_df, filtered_df1)
+
+        # Select the data for the desired brain region
+        if brain_region == 'NAc':
+            df = df_nac
+            df1 = df_nac1 
+            mean_values = df_nac.mean()
+            sem_values = df_nac.sem()
+            title_suffix = 'NAc'
+            bar_color = nac_color
+        elif brain_region == 'mPFC':
+            df = df_mpfc
+            df1 = df_mpfc1
+            mean_values = df_mpfc.mean()
+            sem_values = df_mpfc.sem()
+            title_suffix = 'mPFC'
+            bar_color = mpfc_color
+        else:
+            raise ValueError("brain_region must be either 'NAc' or 'mPFC'")
+
+        title = metric_name + ' ' + condition + f' DA Response ({title_suffix})'
+
+        # Ensure the dataframe contains only numeric data (in case of any non-numeric columns)
+        df = df.apply(pd.to_numeric, errors='coerce')
+
+        # Calculate the mean and SEM values for the entire dataframe
+        # Tone
+        mean_values = df.mean()
+        sem_values = df.sem()
+
+        # Lick
+        mean_values1 = df1.mean()
+        sem_values1 = df1.sem()
+
+        # Example: renaming specific columns
+        df.rename(columns={'Tone ' + metric_name: 'Tone'}, inplace=True)
+        df1.rename(columns={'Lick ' + metric_name: 'Tone'}, inplace=True)
+
+        # Define bar width for side-by-side bars
+        bar_width = 1  # Width of each bar
+        gap = 0.5  # Adjust this value to control the gap between the bars
+
+        # Calculate the x positions for both Tone and Lick, leaving a gap between the bars
+        x = np.arange(len(df.columns))  # Positions for the x-ticks
+
+        # Create the plot
+        fig, ax = plt.subplots(figsize=figsize)
+
+        # Plot individual subject values for both dataframes
+        for i, subject in enumerate(df.index):
+            ax.scatter(x - bar_width / 2 - gap / 2, df.loc[subject], facecolors='none', edgecolors='gray', s=120, alpha=0.6, linewidth=4, zorder=2)
+        for i, subject in enumerate(df1.index):    
+            ax.scatter(x + bar_width / 2 + gap / 2, df1.loc[subject], facecolors='none', edgecolors='gray', s=120, alpha=0.6, linewidth=4, zorder=2)
+
+        # Plot bars for the mean with error bars
+        bars1 = ax.bar(
+            x - bar_width / 2 - gap / 2,  # Adjust x to leave a gap for Tone
+            mean_values, 
+            yerr=sem_values, 
+            capsize=6, 
+            color=bar_color, 
+            edgecolor='black', 
+            linewidth=4, 
+            width=bar_width,
+            label='Tone',  # Label for legend
+            error_kw=dict(elinewidth=4, capthick=4, capsize=10, zorder=5)
+        )
+
+        bars2 = ax.bar(
+            x + bar_width / 2 + gap / 2,  # Adjust x to leave a gap for Lick
+            mean_values1, 
+            yerr=sem_values1, 
+            capsize=6, 
+            color=bar_color,
+            edgecolor='black', 
+            linewidth=4, 
+            width=bar_width,
+            label='Lick',  # Label for legend
+            error_kw=dict(elinewidth=4, capthick=4, capsize=10, zorder=5)
+        )
+
+        # Set x-ticks in the center of each grouped pair of bars
+        x_ticks = x  # The positions for the x-ticks (center of the grouped bars)
+        custom_xtick_labels = ['Tone', 'Lick']  # Labels for the groups
+
+        # Set the positions of x-ticks and their labels
+        ax.set_xticks(x)  # Position the ticks at the center of the bars
+        ax.set_xticklabels(custom_xtick_labels * len(df.columns), fontsize=36)  # Set the labels, repeating for each group
+
+        # Increase font sizes
+        ax.set_ylabel(metric_name, fontsize=36, labelpad=12)
+        ax.set_xlabel("Event", fontsize=40, labelpad=12)
+        ax.tick_params(axis='y', labelsize=32)
+        ax.tick_params(axis='x', labelsize=32)
+
+        # Automatically adjust y-limits based on the data
+        if ylim is None:
+            all_values = np.concatenate([df.values.flatten(), df1.values.flatten()])
+            min_val = np.nanmin(all_values)
+            max_val = np.nanmax(all_values)
+            ax.set_ylim(0 if min_val > 0 else min_val * 1.1, max_val * 1.1)
+        else:
+            ax.set_ylim(ylim)
+            if ylim[0] < 0:
+                ax.axhline(0, color='black', linestyle='--', linewidth=2, zorder=1)
+
+        # Add y-ticks if specified
+        if yticks_increment is not None:
+            y_min, y_max = ax.get_ylim()
+            ax.set_yticks(np.arange(np.floor(y_min), np.ceil(y_max) + yticks_increment, yticks_increment))
+
+        # Remove unnecessary spines
+        ax.spines['right'].set_visible(False)
+        ax.spines['top'].set_visible(False)
+        ax.spines['left'].set_linewidth(5)
+        ax.spines['bottom'].set_linewidth(5)
+
+        # Add title
+        plt.title(title, fontsize=36, fontweight='bold')
+
+        # Save and display the plot
+        plt.savefig(f'{title}{metric_name[0]}.png', transparent=True, bbox_inches='tight', pad_inches=pad_inches)
+        plt.tight_layout()
+        plt.show()
 
     """********************************MISC*************************************"""
     def drop_unnecessary(self):
