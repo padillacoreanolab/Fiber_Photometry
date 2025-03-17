@@ -358,12 +358,15 @@ class Reward_Competition(Experiment):
         new_dataframe = new_dataframe.drop(columns=["Prefix", "Number"])
         return new_dataframe
     
-    def merging_ranks(self, rank_df):
-        df_merged = self.df.merge(rank_df, left_on="subject_name", right_on="ID", how="left")
+    def merging_ranks(self, rank_df, df=None):
+        if df is None:
+            df=self.df
+        df_merged = df.merge(rank_df, left_on="subject_name", right_on="ID", how="left")
 
         # Step 2: Drop redundant "ID" column if needed
         df_merged.drop(columns=["ID"], inplace=True)
-        self.df = df_merged
+        df = df_merged
+        return df
 
     """***********************REMOVING TRIALS WITH TANGLES******************************"""
     def remove_tangles(self):
@@ -422,16 +425,20 @@ class Reward_Competition(Experiment):
             filtered_cues = [row['filtered_sound_cues'][i] for i in valid_indices]
 
             # Print changes per row
-            print(f"Row {row.name}: Before -> {row['filtered_sound_cues']}, After -> {filtered_cues}")
+            # print(f"Row {row.name}: Before -> {row['filtered_sound_cues']}, After -> {filtered_cues}")
 
             return pd.Series([filtered_cues])
 
-        # Apply the function to filter the DataFrame
-        self.df[['filtered_sound_cues']] = self.df.apply(filter_by_winner, axis=1)
+        # Create a copy of the DataFrame to avoid modifying self.df
+        df_copy = self.df.copy()
+
+        # Apply the function to the copied DataFrame
+        df_copy[['filtered_sound_cues']] = df_copy.apply(filter_by_winner, axis=1)
 
         # Drop rows where no filtered_sound_cues remain
-        self.df = self.df[self.df['filtered_sound_cues'].apply(len) > 0]
+        df_filtered = df_copy[df_copy['filtered_sound_cues'].apply(len) > 0]
 
+        return df_filtered
 
 
     def losing(self):
@@ -442,77 +449,77 @@ class Reward_Competition(Experiment):
                 return pd.Series([row['filtered_sound_cues']])
 
             # Get indices where `subject_name` is NOT the winner
-            loser_indices = [i for i, winner in enumerate(row['filtered_winner_array']) if winner != row['subject_name']]
+            valid_indices = [i for i, winner in enumerate(row['filtered_winner_array']) if winner != row['subject_name']]
 
             # If no losing trials exist, return an empty list
-            if not loser_indices:
+            if not valid_indices:
                 return pd.Series([[]])
 
             # Ensure `filtered_sound_cues` is a list before filtering
             if not isinstance(row['filtered_sound_cues'], list):
+                print(f"Skipping row {row.name}: filtered_sound_cues is not a list.")
                 return pd.Series([[]])
 
-            # Filter only relevant columns
-            filtered_cues = [row['filtered_sound_cues'][i] for i in loser_indices]
+            # Filter sound cues using valid indices
+            filtered_cues = [row['filtered_sound_cues'][i] for i in valid_indices]
 
             return pd.Series([filtered_cues])
 
-        # Apply the function to filter only the `filtered_sound_cues` column
-        self.df[['filtered_sound_cues']] = self.df.apply(filter_by_loser, axis=1)
+        # Create a copy of the DataFrame to avoid modifying self.df
+        df_copy = self.df.copy()
 
-        # Drop rows where no `filtered_sound_cues` remain
-        self.df = self.df[self.df['filtered_sound_cues'].apply(len) > 0]
+        # Apply the function to the copied DataFrame
+        df_copy[['filtered_sound_cues']] = df_copy.apply(filter_by_loser, axis=1)
 
-    
+        # Drop rows where no filtered_sound_cues remain
+        df_filtered = df_copy[df_copy['filtered_sound_cues'].apply(len) > 0]
+
+        return df_filtered
+
 
     """*******************************LICKS********************************"""
-    def find_first_lick_after_sound_cue(self):
+    def find_first_lick_after_sound_cue(self, df=None):
         """
         Finds the first port entry occurring after 4 seconds following each sound cue.
         If a port entry starts before 4 seconds but extends past it, 
         the function selects the timestamp at 4 seconds after the sound cue.
-        
-        Stores the results as a list in `self.first_lick_after_sound_cue` and adds it to `self.df`.
+
+        Works with any DataFrame that has the required columns.
         """
+        if df is None:
+            df = self.df  # Default to self.df only if no DataFrame is provided
 
         first_licks = []  # List to store results
 
-        for index, row in self.df.iterrows():
-            sound_cues_onsets = row['filtered_sound_cues'] 
-            port_entries_onsets = row['filtered_port_entries']  
-            port_entries_offsets = row['filtered_port_entry_offset']  
+        for index, row in df.iterrows():  # Use df, not self.df
+            sound_cues_onsets = row['filtered_sound_cues']
+            port_entries_onsets = row['filtered_port_entries']
+            port_entries_offsets = row['filtered_port_entry_offset']
 
-            first_licks_per_row = []  # Store first licks for this row
+            first_licks_per_row = []
 
             for sc_onset in sound_cues_onsets:
-                threshold_time = sc_onset + 4  # Define 4s threshold
+                threshold_time = sc_onset + 4
 
-                # Find port entries that start AFTER 4 seconds post sound cue
                 future_licks_indices = np.where(port_entries_onsets >= threshold_time)[0]
 
                 if len(future_licks_indices) > 0:
-                    # If there are port entries after 4s, take the first one
                     first_licks_per_row.append(port_entries_onsets[future_licks_indices[0]])
                 else:
-                    # Find port entries that START before 4s but continue PAST it
                     ongoing_licks_indices = np.where((port_entries_onsets < threshold_time) & (port_entries_offsets > threshold_time))[0]
 
                     if len(ongoing_licks_indices) > 0:
-                        # If a port entry spans past 4s, use the exact timepoint at 4s
                         first_licks_per_row.append(threshold_time)
                     else:
-                        # If no port entry occurs after 4s, append None
                         first_licks_per_row.append(None)
 
-            first_licks.append(first_licks_per_row)  # Append row's results to main list
+            first_licks.append(first_licks_per_row)
 
-        # Store results in the object
-        self.first_lick_after_sound_cue = first_licks
+        df["first_lick_after_sound_cue"] = first_licks  # Add to the given DataFrame
 
-        # Add to DataFrame
-        self.df["first_lick_after_sound_cue"] = first_licks
+        return df  # Return the modified DataFrame
 
-    def compute_closest_port_offset(self, lick_column, offset_column):
+    def compute_closest_port_offset(self, lick_column, offset_column, df=None):
         """
         Computes the closest port entry offsets after each lick time and adds them as a new column in the dataframe.
         
@@ -524,7 +531,8 @@ class Reward_Competition(Experiment):
         Returns:
             pd.DataFrame: Updated DataFrame with the new column of closest port entry offsets.
         """
-        
+        if df is None:
+            df = self.df 
         def find_closest_port_entries(licks, port_entry_offsets):
             """Finds the closest port entry offsets greater than each lick in 'licks'."""
             closest_offsets = []
@@ -554,9 +562,11 @@ class Reward_Competition(Experiment):
             return closest_offsets
 
         # Apply the function to the DataFrame and create a new column with the results
-        self.df['closest_lick_offset'] = self.df.apply(compute_lick_metrics, axis=1)
+        df['closest_lick_offset'] = df.apply(compute_lick_metrics, axis=1)
     """*********************************CALCULATING DOPAMINE RESPONSE***********************************"""
-    def compute_tone_da(self):
+    def compute_tone_da(self, df=None):
+        if df is None:
+            df = self.df
         def compute_da_metrics_for_trial(trial_obj, filtered_sound_cues, 
                                         use_adaptive=True, peak_fall_fraction=0.5, 
                                         allow_bout_extension=False):
@@ -642,20 +652,22 @@ class Reward_Competition(Experiment):
             return computed_metrics
 
         # Apply function across all trials
-        self.df["computed_metrics"] = self.df.apply(
+        df["computed_metrics"] = df.apply(
             lambda row: compute_da_metrics_for_trial(row["trial"], row["filtered_sound_cues"], 
                                                     use_adaptive=True, peak_fall_fraction=0.5, 
                                                     allow_bout_extension=False), axis=1)
-        self.df["Tone AUC"] = self.df["computed_metrics"].apply(lambda x: [item.get("AUC", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        self.df["Tone Max Peak"] = self.df["computed_metrics"].apply(lambda x: [item.get("Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        self.df["Tone Time of Max Peak"] = self.df["computed_metrics"].apply(lambda x: [item.get("Time of Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        self.df["Tone Mean Z-score"] = self.df["computed_metrics"].apply(lambda x: [item.get("Mean Z-score", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        self.df["Tone Adjusted End"] = self.df["computed_metrics"].apply(lambda x: [item.get("Adjusted End", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        df["Tone AUC"] = df["computed_metrics"].apply(lambda x: [item.get("AUC", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        df["Tone Max Peak"] = df["computed_metrics"].apply(lambda x: [item.get("Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        df["Tone Time of Max Peak"] = df["computed_metrics"].apply(lambda x: [item.get("Time of Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        df["Tone Mean Z-score"] = df["computed_metrics"].apply(lambda x: [item.get("Mean Z-score", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        df["Tone Adjusted End"] = df["computed_metrics"].apply(lambda x: [item.get("Adjusted End", np.nan) for item in x] if isinstance(x, list) else np.nan)
 
         # Drop the "computed_metrics" column if it's no longer needed
-        self.df.drop(columns=["computed_metrics"], inplace=True)
+        df.drop(columns=["computed_metrics"], inplace=True)
                 
-    def compute_lick_da(self):
+    def compute_lick_da(self, df=None):
+        if df is None:
+            df = self.df
         """Iterate through trials in the dataframe and compute DA metrics for each lick trial."""
         
         def compute_da_metrics_for_lick(trial_obj, first_lick_after_tones, closest_port_entry_offsets, 
@@ -746,31 +758,35 @@ class Reward_Competition(Experiment):
             return computed_metrics
 
         # Apply the function across all trials
-        self.df["lick_computed_metrics"] = self.df.apply(
+        df["lick_computed_metrics"] = df.apply(
             lambda row: compute_da_metrics_for_lick(row["trial"], row["first_lick_after_sound_cue"], 
                                                     row["closest_lick_offset"], use_adaptive=True, 
                                                     peak_fall_fraction=0.5, allow_bout_extension=False), axis=1)
 
         # Extract the individual DA metrics into new columns
-        self.df["Lick AUC"] = self.df["lick_computed_metrics"].apply(lambda x: [item.get("AUC", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        self.df["Lick Max Peak"] = self.df["lick_computed_metrics"].apply(lambda x: [item.get("Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        self.df["Lick Time of Max Peak"] = self.df["lick_computed_metrics"].apply(lambda x: [item.get("Time of Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        self.df["Lick Mean Z-score"] = self.df["lick_computed_metrics"].apply(lambda x: [item.get("Mean Z-score", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        self.df["Lick Adjusted End"] = self.df["lick_computed_metrics"].apply(lambda x: [item.get("Adjusted End", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        df["Lick AUC"] = df["lick_computed_metrics"].apply(lambda x: [item.get("AUC", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        df["Lick Max Peak"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        df["Lick Time of Max Peak"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Time of Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        df["Lick Mean Z-score"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Mean Z-score", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        df["Lick Adjusted End"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Adjusted End", np.nan) for item in x] if isinstance(x, list) else np.nan)
 
         # Drop the "lick_computed_metrics" column if it's no longer needed
-        self.df.drop(columns=["lick_computed_metrics"], inplace=True)
+        df.drop(columns=["lick_computed_metrics"], inplace=True)
 
-    def find_means(self):
-        self.df["Lick AUC Mean"] = self.df["Lick AUC"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        self.df["Lick Max Peak Mean"] = self.df["Lick Max Peak"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        self.df["Lick Mean Z-score Mean"] = self.df["Lick Mean Z-score"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        self.df["Tone AUC Mean"] = self.df["Tone AUC"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        self.df["Tone Max Peak Mean"] = self.df["Tone Max Peak"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        self.df["Tone Mean Z-score Mean"] = self.df["Tone Mean Z-score"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+    def find_means(self, df):
+        if df is None:
+            df = self.df
+        df["Lick AUC Mean"] = df["Lick AUC"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Lick Max Peak Mean"] = df["Lick Max Peak"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Lick Mean Z-score Mean"] = df["Lick Mean Z-score"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Tone AUC Mean"] = df["Tone AUC"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Tone Max Peak Mean"] = df["Tone Max Peak"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Tone Mean Z-score Mean"] = df["Tone Mean Z-score"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
 
-    def find_overall_mean(self):
-        mean_df = self.df.groupby(['subject_name'], as_index=False).agg({
+    def find_overall_mean(self, df):
+        if df is None:
+            df = self.df
+        df = df.groupby(['subject_name'], as_index=False).agg({
             'Rank': 'first',  # Keeps the Rank column
             'Lick AUC Mean': 'mean',
             'Lick Max Peak Mean': 'mean',
@@ -791,37 +807,132 @@ class Reward_Competition(Experiment):
             'Tone Mean Z-score First': 'mean',
             'Tone Mean Z-score Last': 'mean'
         })
-
-        self.df = mean_df
+        final_df = df
+        return final_df
 
     """*******************************PLOTTING**********************************"""
-    def plot_first_last(self, condition='winning'):
-        pass
+    def ploting_side_by_side(self, df, df1, mean_values, sem_values, mean_values1, sem_values1, bar_color, figsize, metric_name,
+                        ylim, yticks_increment, title, directory_path, pad_inches, label1, label2):    
+        # Define bar width for side-by-side bars with gap between them
+        bar_width = 0.35  # Width of each bar
+        gap = 0.075  # Adjust this value to control the gap between the bars
 
-    def plot_dom(self, condition='winning'):
-        pass
+        # Calculate the x positions for both Tone and Lick, leaving a gap between the bars
+        x = np.arange(len(df.columns))  # Positions for the x-ticks
 
-    def plot_sub(self, condition='winning'):
-        pass
+        # Create the plot
+        fig, ax = plt.subplots(figsize=figsize)
+
+        # Plot individual subject values for both dataframes
+        for i, subject in enumerate(df.index):
+            ax.scatter(x - bar_width / 2 - gap / 2, df.loc[subject], facecolors='none', edgecolors='gray', s=120, alpha=0.6, linewidth=4, zorder=2)
+        for i, subject in enumerate(df1.index):    
+            ax.scatter(x + bar_width / 2 + gap / 2, df1.loc[subject], facecolors='none', edgecolors='gray', s=120, alpha=0.6, linewidth=4, zorder=2)
+
+        # Plot bars for the mean with error bars
+        bars1 = ax.bar(
+            x - bar_width / 2 - gap / 2,  # Adjust x to leave a gap for Tone
+            mean_values, 
+            yerr=sem_values, 
+            capsize=6, 
+            color=bar_color, 
+            edgecolor='black', 
+            linewidth=4, 
+            width=bar_width,
+            label=label1,  # Label for legend
+            error_kw=dict(elinewidth=4, capthick=4, capsize=10, zorder=5)
+        )
+
+        bars2 = ax.bar(
+            x + bar_width / 2 + gap / 2,  # Adjust x to leave a gap for Lick
+            mean_values1, 
+            yerr=sem_values1, 
+            capsize=6, 
+            color=bar_color,
+            edgecolor='black', 
+            linewidth=4, 
+            width=bar_width,
+            label=label2,  # Label for legend
+            error_kw=dict(elinewidth=4, capthick=4, capsize=10, zorder=5)
+        )
+
+        # Set x-ticks in the center of each grouped pair of bars
+        # Define the positions for the x-ticks of both bars
+        x_left = x - bar_width / 2 - gap / 2  # Position for Tone
+        x_right = x + bar_width / 2 + gap / 2  # Position for Lick
+
+        # Combine the tick positions for both
+        combined_x_ticks = np.concatenate([x_left, x_right])
+
+        # Set the tick positions
+        ax.set_xticks(combined_x_ticks)  # All positions for ticks (Tone and Lick)
+
+        # Set the corresponding labels (alternating "Tone" and "Lick")
+        combined_labels = [label1] * len(df.columns) + [label2] * len(df.columns)
+        ax.set_xticklabels(combined_labels, fontsize=36)
+
+        # Optionally adjust the alignment of the labels if needed
+        ax.tick_params(axis='x', which='major', labelsize=36, direction='out', length=6, width=2)
+        
+        # Adjust y-tick marks to extend further
+        ax.tick_params(axis='y', which='major', labelsize=36, direction='out', length=10, width=2)
+
+        # Increase font sizes
+        ax.set_ylabel(metric_name, fontsize=36, labelpad=12)
+        ax.set_xlabel("Event", fontsize=40, labelpad=12)
+        ax.tick_params(axis='y', labelsize=32)
+        ax.tick_params(axis='x', labelsize=32)
+        # Add a dashed gray line at y = 0
+        ax.axhline(0, color='gray', linestyle='--', linewidth=2, zorder=1)
+
+        # Automatically adjust y-limits based on the data
+        if ylim is None:
+            all_values = np.concatenate([df.values.flatten(), df1.values.flatten()])
+            min_val = np.nanmin(all_values)
+            max_val = np.nanmax(all_values)
+            ax.set_ylim(0 if min_val > 0 else min_val * 1.1, max_val * 1.1)
+        else:
+            ax.set_ylim(ylim)
+            if ylim[0] < 0:
+                ax.axhline(0, color='black', linestyle='--', linewidth=2, zorder=1)
+
+        # Add y-ticks if specified
+        if yticks_increment is not None:
+            y_min, y_max = ax.get_ylim()
+            ax.set_yticks(np.arange(np.floor(y_min), np.ceil(y_max) + yticks_increment, yticks_increment))
+
+        # Remove unnecessary spines
+        ax.spines['right'].set_visible(False)
+        ax.spines['top'].set_visible(False)
+        ax.spines['left'].set_linewidth(5)
+        ax.spines['bottom'].set_linewidth(5)
+
+        # Add title
+        plt.title(title, fontsize=40, fontweight='bold', pad=24)
+
+        save_path = os.path.join(str(directory_path) + '\\' + f'{title}.png')
+        plt.savefig(save_path, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
+        plt.show()
 
     # Response is tone or lick, metric_name is for AUC, Max Peak, or Mean Z-score
-    def plot_da(self, metric_name, condition='Winning',  
+    def plot_da_tone_lick(self, method, metric_name, directory_path, condition='Winning',  
                     brain_region='mPFC',  # New parameter to specify the brain region
                     custom_xtick_labels=None, 
                     custom_xtick_colors=None, 
                     ylim=None, 
                     nac_color='#15616F',   # Color for NAc
                     mpfc_color='#FFAF00',  # Color for mPFC
-                    yticks_increment=None, 
+                    yticks_increment=1, 
                     figsize=(7,7),  
                     pad_inches=0.1):
         """
         Customizable plotting function that plots a single brain region (NAc or mPFC) for both lick and tone.
         Can use metrics Max Peak, Mean Z-score, and AUC
         """
+        
         # Filtering data frame to only keep specified metrics
         def filter_by_metric(df):
-            metric_columns = df.filter(like=metric_name + ' Mean').columns
+            metric_columns = df.filter(like=metric_name + method).columns
             if len(metric_columns) != 2:
                 raise ValueError(f"Expected exactly 2 columns, but found {len(metric_columns)}.")
 
@@ -865,11 +976,13 @@ class Reward_Competition(Experiment):
         else:
             raise ValueError("brain_region must be either 'NAc' or 'mPFC'")
 
-        title = metric_name + ' ' + condition + f' DA Response ({title_suffix})'
+        title = metric_name + ' ' + condition + f' DA ({title_suffix})'
 
         # Ensure the dataframe contains only numeric data (in case of any non-numeric columns)
         df = df.apply(pd.to_numeric, errors='coerce')
 
+        label1 = 'Tone'
+        label2 = 'Lick'
         # Calculate the mean and SEM values for the entire dataframe
         # Tone
         mean_values = df.mean()
@@ -881,120 +994,161 @@ class Reward_Competition(Experiment):
 
         # Example: renaming specific columns
         df.rename(columns={'Tone ' + metric_name: 'Tone'}, inplace=True)
-        df1.rename(columns={'Lick ' + metric_name: 'Tone'}, inplace=True)
+        df1.rename(columns={'Lick ' + metric_name: 'Lick'}, inplace=True)
 
-        # Define bar width for side-by-side bars
-        bar_width = 1  # Width of each bar
-        gap = 0.5  # Adjust this value to control the gap between the bars
+        self.ploting_side_by_side(df, df1, mean_values, sem_values, mean_values1, sem_values1,
+                                  bar_color, figsize, metric_name, ylim, 
+                                  yticks_increment, title, directory_path, pad_inches,
+                                  label1, label2)
 
-        # Calculate the x positions for both Tone and Lick, leaving a gap between the bars
-        x = np.arange(len(df.columns))  # Positions for the x-ticks
+    def plot_conditional(self, df_winning, df_losing, method, metric_name, directory_path,
+                    custom_xtick_labels=None, 
+                    custom_xtick_colors=None, 
+                    ylim=None, 
+                    nac_color='#15616F',   # Color for NAc
+                    mpfc_color='#FFAF00',  # Color for mPFC
+                    yticks_increment=1, 
+                    figsize=(7,7),  
+                    pad_inches=0.1):
+        """
+        Plotting metrics side by side with win on left and lose on right
+        """
+        title_suffix = 'NAc'
+        title_suffix1 = 'mPFC'
+        bar_color = nac_color
+        bar_color1 = mpfc_color
+        label1 = 'Win'
+        label2 = 'Lose'
 
-        # Create the plot
-        fig, ax = plt.subplots(figsize=figsize)
+        def filter_by_metric(df):
+            metric_columns = df.filter(like=metric_name + method).columns
+            print(metric_columns)
+            if len(metric_columns) != 2:
+                raise ValueError(f"Expected exactly 2 columns, but found {len(metric_columns)}.")
 
-        # Plot individual subject values for both dataframes
-        for i, subject in enumerate(df.index):
-            ax.scatter(x - bar_width / 2 - gap / 2, df.loc[subject], facecolors='none', edgecolors='gray', s=120, alpha=0.6, linewidth=4, zorder=2)
-        for i, subject in enumerate(df1.index):    
-            ax.scatter(x + bar_width / 2 + gap / 2, df1.loc[subject], facecolors='none', edgecolors='gray', s=120, alpha=0.6, linewidth=4, zorder=2)
+            # Create two DataFrames, keeping 'subject_name'
+            df1 = df[['subject_name', metric_columns[0]]].copy()
+            df2 = df[['subject_name', metric_columns[1]]].copy()
 
-        # Plot bars for the mean with error bars
-        bars1 = ax.bar(
-            x - bar_width / 2 - gap / 2,  # Adjust x to leave a gap for Tone
-            mean_values, 
-            yerr=sem_values, 
-            capsize=6, 
-            color=bar_color, 
-            edgecolor='black', 
-            linewidth=4, 
-            width=bar_width,
-            label='Tone',  # Label for legend
-            error_kw=dict(elinewidth=4, capthick=4, capsize=10, zorder=5)
-        )
+            return df1, df2
+        
+        # spliting and copying dataframe into two dataframes for each brain region 
+        def split_by_subject(df1):            
+            # Filter out the 'subject_name' column and keep only the relevant columns for response and metric_name
+            df_n = df1[df1['subject_name'].str.startswith('n')].drop(columns=['subject_name'])
+            df_p = df1[df1['subject_name'].str.startswith('p')].drop(columns=['subject_name'])
+            
+            """df_n1 = df2[df2['subject_name'].str.startswith('n')].drop(columns=['subject_name'])
+            df_p1 = df2[df2['subject_name'].str.startswith('p')].drop(columns=['subject_name'])"""
+            # Return filtered dataframes and subject_name column
+            return df_n, df_p
 
-        bars2 = ax.bar(
-            x + bar_width / 2 + gap / 2,  # Adjust x to leave a gap for Lick
-            mean_values1, 
-            yerr=sem_values1, 
-            capsize=6, 
-            color=bar_color,
-            edgecolor='black', 
-            linewidth=4, 
-            width=bar_width,
-            label='Lick',  # Label for legend
-            error_kw=dict(elinewidth=4, capthick=4, capsize=10, zorder=5)
-        )
+        win_df, win_df1 = filter_by_metric(df_winning)
+        # win_df = lick
+        # win_df1 = tone
+        lose_df, lose_df1 = filter_by_metric(df_losing)
+        # lose_df = lick
+        # lose_df1 = tone
+        
+        # win lick
+        win_df_n, win_df_p = split_by_subject(win_df)
+        # win tone
+        win_df_n1, win_df_p1 = split_by_subject(win_df1)
+        # lose lick
+        lose_df_n, lose_df_p = split_by_subject(lose_df)
+        # lose tone
+        lose_df_n1, lose_df_p1 = split_by_subject(lose_df1)
 
-        # Set x-ticks in the center of each grouped pair of bars
-        x_ticks = x  # The positions for the x-ticks (center of the grouped bars)
-        custom_xtick_labels = ['Tone', 'Lick']  # Labels for the groups
+        """4 plots"""
+        # plot 1: NAc Lick
+        # win
+        mean_values = win_df_n.mean()
+        print(mean_values)
+        sem_values = win_df_n.sem()
+        # lose
+        mean_values1 = lose_df_n.mean()
+        sem_values1 = lose_df_n.sem()
+        # title and plot
+        title = metric_name + f' Lick DA ({title_suffix})'
+        self.ploting_side_by_side(win_df_n, lose_df_n, mean_values, sem_values, mean_values1, sem_values1,
+                                  bar_color, figsize, metric_name, ylim, 
+                                  yticks_increment, title, directory_path, pad_inches,
+                                  label1, label2)
+        # plot 2: mPFC Lick
+        # win
+        mean_values2 = win_df_p.mean()
+        sem_values2 = win_df_p.sem()
+        # lose
+        mean_values3 = lose_df_p.mean()
+        sem_values3 = lose_df_p.sem()
+        title1 = metric_name +  f' Lick DA ({title_suffix1})'
+        self.ploting_side_by_side(win_df_p, lose_df_p, mean_values2, sem_values2, mean_values3, sem_values3,
+                                  bar_color1, figsize, metric_name, ylim, 
+                                  yticks_increment, title1, directory_path, pad_inches,
+                                  'Win', 'Lose')
+        
+        # plot 3: NAc Tone
+        # win
+        mean_values4 = win_df_n1.mean()
+        sem_values4 = win_df_n1.sem()
+        # lose
+        mean_values5 = lose_df_n1.mean()
+        sem_values5 = lose_df_n1.sem()
+        title2 = metric_name + f' Tone DA ({title_suffix})'
+        self.ploting_side_by_side(win_df_n1, lose_df_n1, mean_values4, sem_values4, mean_values5, sem_values5,
+                                  bar_color, figsize, metric_name, ylim, 
+                                  yticks_increment, title2, directory_path, pad_inches,
+                                  'Win', 'Lose')
+        
+        # plot 4: mPFC Tone
+        # win
+        mean_values6 = win_df_p1.mean()
+        sem_values6 = win_df_p1.sem()
+        # lose
+        mean_values7 = lose_df_p1.mean()
+        sem_values7 = lose_df_p1.sem()
+        title3 = metric_name +  f' Tone DA ({title_suffix1})'
+        self.ploting_side_by_side(win_df_p1, lose_df_p1, mean_values6, sem_values6, mean_values7, sem_values7,
+                                  bar_color1, figsize, metric_name, ylim, 
+                                  yticks_increment, title3, directory_path, pad_inches,
+                                  'Win', 'Lose')
 
-        # Set the positions of x-ticks and their labels
-        ax.set_xticks(x)  # Position the ticks at the center of the bars
-        ax.set_xticklabels(custom_xtick_labels * len(df.columns), fontsize=36)  # Set the labels, repeating for each group
+    def plot_dom(self, condition='winning'):
+        pass
 
-        # Increase font sizes
-        ax.set_ylabel(metric_name, fontsize=36, labelpad=12)
-        ax.set_xlabel("Event", fontsize=40, labelpad=12)
-        ax.tick_params(axis='y', labelsize=32)
-        ax.tick_params(axis='x', labelsize=32)
+    def plot_sub(self, condition='winning'):
+        pass
 
-        # Automatically adjust y-limits based on the data
-        if ylim is None:
-            all_values = np.concatenate([df.values.flatten(), df1.values.flatten()])
-            min_val = np.nanmin(all_values)
-            max_val = np.nanmax(all_values)
-            ax.set_ylim(0 if min_val > 0 else min_val * 1.1, max_val * 1.1)
-        else:
-            ax.set_ylim(ylim)
-            if ylim[0] < 0:
-                ax.axhline(0, color='black', linestyle='--', linewidth=2, zorder=1)
-
-        # Add y-ticks if specified
-        if yticks_increment is not None:
-            y_min, y_max = ax.get_ylim()
-            ax.set_yticks(np.arange(np.floor(y_min), np.ceil(y_max) + yticks_increment, yticks_increment))
-
-        # Remove unnecessary spines
-        ax.spines['right'].set_visible(False)
-        ax.spines['top'].set_visible(False)
-        ax.spines['left'].set_linewidth(5)
-        ax.spines['bottom'].set_linewidth(5)
-
-        # Add title
-        plt.title(title, fontsize=36, fontweight='bold')
-
-        # Save and display the plot
-        plt.savefig(f'{title}{metric_name[0]}.png', transparent=True, bbox_inches='tight', pad_inches=pad_inches)
-        plt.tight_layout()
-        plt.show()
 
     """********************************MISC*************************************"""
-    def drop_unnecessary(self):
+    def drop_unnecessary(self, df=None):
+        if df is None:
+            df = self.df
         # drops lots of unnecessary column to allow for easier observations
-        self.df.drop(columns=['file name', 'port entries onset', 'port entries offset', 'sound cues',
-                              'sound cues', 'port entries', 'winner_array', 'DS', 'filtered_port_entries'], inplace=True)
+        df.drop(columns=['file name', 'port entries onset', 'port entries offset', 'sound cues',
+                              'sound cues', 'port entries', 'winner_array', 'filtered_port_entries'], inplace=True)
         
-    def first_last(self):
+    def first_last(self, df=None):
         """
         Finds the first and last bouts DA of competition
         """
+        if df is None:
+            df = self.df
         # Extract the first and last values of the array under 'Lick AUC'
-        self.df['Lick AUC First'] = self.df['Lick AUC'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
-        self.df['Lick AUC Last'] = self.df['Lick AUC'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+        df['Lick AUC First'] = df['Lick AUC'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        df['Lick AUC Last'] = df['Lick AUC'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
 
-        self.df['Lick Max Peak First'] = self.df['Lick Max Peak'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
-        self.df['Lick Max Peak Last'] = self.df['Lick Max Peak'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+        df['Lick Max Peak First'] = df['Lick Max Peak'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        df['Lick Max Peak Last'] = df['Lick Max Peak'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
 
-        self.df['Lick Mean Z-score First'] = self.df['Lick Mean Z-score'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
-        self.df['Lick Mean Z-score Last'] = self.df['Lick Mean Z-score'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+        df['Lick Mean Z-score First'] = df['Lick Mean Z-score'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        df['Lick Mean Z-score Last'] = df['Lick Mean Z-score'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
 
-        self.df['Tone AUC First'] = self.df['Tone AUC'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
-        self.df['Tone AUC Last'] = self.df['Tone AUC'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+        df['Tone AUC First'] = df['Tone AUC'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        df['Tone AUC Last'] = df['Tone AUC'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
 
-        self.df['Tone Max Peak First'] = self.df['Tone Max Peak'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
-        self.df['Tone Max Peak Last'] = self.df['Tone Max Peak'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+        df['Tone Max Peak First'] = df['Tone Max Peak'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        df['Tone Max Peak Last'] = df['Tone Max Peak'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
 
-        self.df['Tone Mean Z-score First'] = self.df['Tone Mean Z-score'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
-        self.df['Tone Mean Z-score Last'] = self.df['Tone Mean Z-score'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+        df['Tone Mean Z-score First'] = df['Tone Mean Z-score'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        df['Tone Mean Z-score Last'] = df['Tone Mean Z-score'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
