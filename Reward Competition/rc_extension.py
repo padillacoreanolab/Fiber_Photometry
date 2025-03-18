@@ -16,8 +16,9 @@ class Reward_Competition(Experiment):
         super().__init__(experiment_folder_path, behavior_folder_path)
         # self.trials = {}  # Reset trials to avoid loading from parent class
         self.df = pd.DataFrame()
-        # self.load_rtc1_trials()  # Load 1 RTC trial
-        if self.behavior_folder_path and 'Cohort_1_2' not in self.behavior_folder_path:
+        if "Cohort_1_2" in experiment_folder_path:
+            self.load_rtc1_trials()  # Load 1 RTC trial
+        else:
             self.load_rtc2_trials() # load 2 trials for cohort 3
 
     def load_rtc1_trials(self):
@@ -45,8 +46,8 @@ class Reward_Competition(Experiment):
             trial_obj2 = Trial(trial_path, '_465C', '_405C')
             trial_name1 = trial_folder.split('_')[0]                # First mouse of rtc
             trial_name2 = trial_folder.split('_')[1].split('-')[0]  # Second mouse of rtc
-            trial_folder1 = trial_name1 + trial_folder.split('_')[1].split('-')[1]
-            trial_folder2 = trial_name2 + trial_folder.split('_')[1].split('-')[1]
+            trial_folder1 = trial_name1 + '-' + '-'.join(trial_folder.split('_')[1].split('-')[1:])
+            trial_folder2 = trial_name2 + '-' + '-'.join(trial_folder.split('_')[1].split('-')[1:])
             self.trials[trial_folder1] = trial_obj1
             self.trials[trial_folder2] = trial_obj2
 
@@ -104,7 +105,7 @@ class Reward_Competition(Experiment):
 
 
     """*********************************COMBINE CONSECUTIVE BEHAVIORS***********************************"""
-    def combine_consecutive_behaviors1(self, behavior_name='all', bout_time_threshold=1, min_occurrences=1):
+    def combine_consecutive_behaviors1(self, behavior_name='all', bout_time_threshold=0.5, min_occurrences=1):
         """
         Applies the behavior combination logic to all trials within the experiment.
         """
@@ -177,10 +178,6 @@ class Reward_Competition(Experiment):
         df.columns = df.columns.str.strip().str.lower()
         filtered_columns = df.filter(like='winner').dropna(axis=1, how='all').columns.tolist()
         col_to_keep = ['file name'] + filtered_columns + ['tangles']
-        # if use excel time:
-        # filtered_time_col = df.filter(like='time')
-        # filtered_time_col = filtered_time_col.dropna(axis=1, how='all')
-        # col_to_keep = ['file name', filtered_columns, 'tangles']
         df = df[col_to_keep]
         self.df = df
 
@@ -190,13 +187,48 @@ class Reward_Competition(Experiment):
         
         First change file names so that there is only one mouse before the date, using the subject column.
         """
-        pass
+        df = pd.read_excel(csv_file_path)
+        df.columns = df.columns.str.strip().str.lower()
+        filtered_columns = df.filter(like='winner').dropna(axis=1, how='all').columns.tolist()
+        col_to_keep = ['file name'] + ['subject'] + filtered_columns + ['tangles']
+        df = df[col_to_keep]
+        self.df = df
 
-    def merge_data(self):
+    def find_matching_trial(self, file_name):
+        return self.trials.get(file_name, None)  # Return the trial if exact match, else None
+
+    def merge_data1(self):
         """
         Merges all data into a dataframe for analysis.
         """
-        self.df['trial'] = self.df['file name'].map(self.trials)
+        self.df['trial'] = self.df.apply(lambda row: self.find_matching_trial(row['file name']), axis=1)
+        self.df['sound cues'] = self.df['trial'].apply(lambda x: x.behaviors1.get('sound cues', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
+        self.df['port entries'] = self.df['trial'].apply(lambda x: x.behaviors1.get('port entries', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
+        self.df['sound cues onset'] = self.df['sound cues'].apply(lambda x: x.onset_times if x else None)
+        self.df['port entries onset'] = self.df['port entries'].apply(lambda x: x.onset_times if x else None)
+        self.df['port entries offset'] = self.df['port entries'].apply(lambda x: x.offset_times if x else None)
+        
+        # Creates a column for subject name
+        self.df['subject_name'] = self.df['file name'].str.split('-').str[0]
+
+        # Create a new column that stores an array of winners for each row
+        winner_columns = [col for col in self.df.columns if 'winner' in col.lower()]
+        self.df['winner_array'] = self.df[winner_columns].apply(lambda row: row.values.tolist(), axis=1)
+        
+        # drops all other winner columns leaving only winner_array.
+        self.df.drop(columns=winner_columns, inplace=True)
+
+        # drops all rows without dopamine data.
+        self.df.dropna(subset=['trial'], inplace=True)
+        self.df.reset_index(drop=True, inplace=True)
+
+    def merge_data2(self):
+        """
+        Merges data from cohort 3 into a dataframe for analysis
+        """
+        # Changes file name to match the change in load_rtc2
+        self.df['file name'] = self.df.apply(lambda row: row['subject'] + '-' + '-'.join(row['file name'].split('-')[-2:]), axis=1)
+        self.df['trial'] = self.df.apply(lambda row: self.find_matching_trial(row['file name']), axis=1)
         self.df['sound cues'] = self.df['trial'].apply(lambda x: x.behaviors1.get('sound cues', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
         self.df['port entries'] = self.df['trial'].apply(lambda x: x.behaviors1.get('port entries', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
         self.df['sound cues onset'] = self.df['sound cues'].apply(lambda x: x.onset_times if x else None)
@@ -410,7 +442,7 @@ class Reward_Competition(Experiment):
             # Get valid indices where `filtered_winner_array` matches `subject_name`
             valid_indices = [i for i, winner in enumerate(row['filtered_winner_array']) if winner == row['subject_name']]
             
-            print(f"Row {row.name}: Subject {row['subject_name']} - Valid Indices: {valid_indices}")
+            # print(f"Row {row.name}: Subject {row['subject_name']} - Valid Indices: {valid_indices}")
 
             # If no indices match, return an empty list
             if not valid_indices:
@@ -475,6 +507,17 @@ class Reward_Competition(Experiment):
         df_filtered = df_copy[df_copy['filtered_sound_cues'].apply(len) > 0]
 
         return df_filtered
+
+    """*************************COMBINING COHORTS*************************"""
+    def combining_cohorts(self, df1):
+        filter_string = "pp"
+
+        # Filter df2 to only include rows where 'subject name' contains the filter_string
+        filtered_df2 = df1[df1['subject_name'].str.contains(filter_string, na=False)]
+
+        # Concatenate df1 and the filtered df2
+        final_df = pd.concat([self.df, filtered_df2], ignore_index=True)
+        self.df = final_df
 
 
     """*******************************LICKS********************************"""
@@ -581,16 +624,16 @@ class Reward_Competition(Experiment):
 
             for cue in filtered_sound_cues:
                 start_time = cue
-                end_time = cue + 10  # Default window end
+                end_time = cue + 6  # Default window end
 
                 # Extract initial window
                 mask = (timestamps >= start_time) & (timestamps <= end_time)
                 window_ts = timestamps[mask]
                 window_z = zscores[mask]
-
+                
                 if len(window_ts) < 2:
                     computed_metrics.append({"AUC": np.nan, "Max Peak": np.nan, "Time of Max Peak": np.nan, "Mean Z-score": np.nan, "Adjusted End": np.nan})
-                    continue  # Skip to next cue
+                # Skip to next cue
 
                 # Compute initial metrics
                 auc = np.trapz(window_z, window_ts)  
@@ -599,53 +642,10 @@ class Reward_Competition(Experiment):
                 peak_time = window_ts[max_idx]
                 mean_z = np.mean(window_z)
 
-                # Adaptive peak-following
-                if use_adaptive and max_peak >= 0:
-                    threshold = max_peak * peak_fall_fraction
-                    fall_idx = max_idx
-
-                    while fall_idx < len(window_z) and window_z[fall_idx] > threshold:
-                        fall_idx += 1
-
-                    if fall_idx < len(window_z):
-                        end_time = window_ts[fall_idx]  # Adjust end time
-                    elif allow_bout_extension:
-                        # Extend to the full timestamp range
-                        extended_mask = (timestamps >= start_time)
-                        extended_ts = timestamps[extended_mask]
-                        extended_z = zscores[extended_mask]
-
-                        peak_idx_ext = np.argmin(np.abs(extended_ts - peak_time))
-                        fall_idx_ext = peak_idx_ext
-
-                        while fall_idx_ext < len(extended_z) and extended_z[fall_idx_ext] > threshold:
-                            fall_idx_ext += 1
-
-                        if fall_idx_ext < len(extended_ts):
-                            end_time = extended_ts[fall_idx_ext]
-                        else:
-                            end_time = extended_ts[-1]
-
-                # Re-extract window with adjusted end time
-                final_mask = (timestamps >= start_time) & (timestamps <= end_time)
-                final_ts = timestamps[final_mask]
-                final_z = zscores[final_mask]
-
-                if len(final_ts) < 2:
-                    computed_metrics.append({"AUC": np.nan, "Max Peak": np.nan, "Time of Max Peak": np.nan, "Mean Z-score": np.nan, "Adjusted End": np.nan})
-                    continue
-
-                # Compute final metrics
-                auc = np.trapz(final_z, final_ts)
-                final_max_idx = np.argmax(final_z)
-                final_max_val = final_z[final_max_idx]
-                final_peak_time = final_ts[final_max_idx]
-                mean_z = np.mean(final_z)
-
                 computed_metrics.append({
                     "AUC": auc,
-                    "Max Peak": final_max_val,
-                    "Time of Max Peak": final_peak_time,
+                    "Max Peak": max_peak,
+                    "Time of Max Peak": peak_time,
                     "Mean Z-score": mean_z,
                     "Adjusted End": end_time  # Store adjusted end
                 })
@@ -788,6 +788,7 @@ class Reward_Competition(Experiment):
             df = self.df
         df = df.groupby(['subject_name'], as_index=False).agg({
             'Rank': 'first',  # Keeps the Rank column
+            'Cage': 'first',
             'Lick AUC Mean': 'mean',
             'Lick Max Peak Mean': 'mean',
             'Lick Mean Z-score Mean': 'mean',
@@ -1112,13 +1113,16 @@ class Reward_Competition(Experiment):
                                   bar_color1, figsize, metric_name, ylim, 
                                   yticks_increment, title3, directory_path, pad_inches,
                                   'Win', 'Lose')
+        
+    def heatmaps(self):
+        pass    
 
-    def plot_dom(self, condition='winning'):
-        pass
+    """***************************FINDING DOMINANT/SUBORDINATES**************************"""
+    def extract_dom(self):
+        highest_rank_per_cage = self.df.loc[self.df.groupby('cage')['Rank'].idxmax()]
 
-    def plot_sub(self, condition='winning'):
-        pass
-
+    def extract_sub(self):
+        lowest_rank_per_cage = self.df.loc[self.df.groupby('cage')['Rank'].idxmin()]
 
     """********************************MISC*************************************"""
     def drop_unnecessary(self, df=None):
@@ -1126,7 +1130,7 @@ class Reward_Competition(Experiment):
             df = self.df
         # drops lots of unnecessary column to allow for easier observations
         df.drop(columns=['file name', 'port entries onset', 'port entries offset', 'sound cues',
-                              'sound cues', 'port entries', 'winner_array', 'filtered_port_entries'], inplace=True)
+                              'sound cues', 'port entries', 'winner_array', 'filtered_port_entries', 'subject'], inplace=True)
         
     def first_last(self, df=None):
         """
