@@ -3,7 +3,8 @@ import pandas as pd
 import tdt
 import matplotlib.pyplot as plt
 import os
-from scipy.signal import butter, filtfilt
+from scipy.signal import butter, filtfilt, find_peaks
+
 
 from sklearn.linear_model import LinearRegression
 
@@ -294,7 +295,7 @@ class Trial:
 
 
     '''********************************** BEHAVIORS **********************************'''
-    def extract_bouts_and_behaviors(self, csv_path, bout_definitions):
+    def extract_bouts_and_behaviors(self, csv_path, bout_definitions, first_only=False):
         """
         Reads an aggregated behavior CSV from csv_path, extracts behavior events occurring within bouts,
         and stores the result as a DataFrame in self.behaviors.
@@ -303,26 +304,19 @@ class Trial:
         can be provided to handle different naming conventions.
 
         Parameters:
-        - csv_path (str): File path to the CSV containing the behavior data.
-        - bout_definitions (list of dict): A list where each dict defines a bout type with keys:
-            - 'prefix': A string used to label bouts (e.g., "s1", "s2", "x", etc.).
-            - 'introduced': The name of the introduced event (e.g., "s1_Introduced", "X_Introduced", etc.).
-            - 'removed': The name of the removed event (e.g., "s1_Removed", "X_Removed", etc.).
+            csv_path (str): File path to the CSV containing the behavior data.
+            bout_definitions (list of dict): A list where each dict defines a bout type with keys:
+                - 'prefix': A string used to label bouts (e.g., "s1", "s2", "x").
+                - 'introduced': The name of the introduced event (e.g., "s1_Introduced", "X_Introduced", etc.).
+                - 'removed': The name of the removed event (e.g., "s1_Removed", "X_Removed", etc.).
+            first_only (bool): If True, only the first event (by event start) in each bout is kept.
+                            If False (default), all events within each bout are retained.
 
         The resulting DataFrame will have one row per behavior event (that is not a boundary event)
-        with the following columns:
-        - Bout: Bout label (e.g., "s1-1", "s2-1", etc.).
-        - Behavior: The behavior name.
-        - Event_Start: Event start time.
-        - Event_End: Event end time.
-        - Duration (s): Duration of the event (Stop - Start).
-        - First Investigation: Indicates if this was the first investigation event in the bout.
+        unless first_only is True, in which case there will be one row per bout.
         """
-
         # 1. Read CSV and ensure numeric columns
         data = pd.read_csv(csv_path)
-
-        # Ensure 'Start (s)' and 'Stop (s)' are numeric
         data['Start (s)'] = pd.to_numeric(data['Start (s)'], errors='coerce')
         data['Stop (s)'] = pd.to_numeric(data['Stop (s)'], errors='coerce')
 
@@ -335,53 +329,57 @@ class Trial:
         }
 
         # 4. Helper function to extract events within each bout
-        def extract_bout_events(df, introduced_behavior, removed_behavior, bout_prefix):
+        def extract_bout_events(df, introduced_behavior, removed_behavior, bout_prefix, first_only):
             introduced_df = df[df['Behavior'] == introduced_behavior].sort_values('Start (s)').reset_index(drop=True)
             removed_df = df[df['Behavior'] == removed_behavior].sort_values('Start (s)').reset_index(drop=True)
             num_bouts = min(len(introduced_df), len(removed_df))
-
             rows = []
+
             for i in range(num_bouts):
                 bout_label = f"{bout_prefix}-{i+1}"
                 bout_start = introduced_df.loc[i, 'Start (s)']
                 bout_end = removed_df.loc[i, 'Start (s)']
 
-                # Select only behaviors within this bout, excluding boundary behaviors
+                # Select only behaviors within this bout, excluding boundary behaviors.
                 subset = df[
                     (~df['Behavior'].isin(boundary_behaviors)) &
                     (df['Start (s)'] >= bout_start) & 
                     (df['Stop (s)'] <= bout_end)
-                ]
+                ].sort_values('Start (s)')
 
-                # Identify the first investigation event per bout
-                first_investigation = (
-                    subset[subset['Behavior'] == 'Investigation']
-                    .sort_values('Start (s)')
-                    .head(1)  # Keep only the first occurrence
-                )
-
-                for _, row in subset.iterrows():
-                    rows.append({
-                        'Bout': bout_label,
-                        'Behavior': row['Behavior'],
-                        'Event_Start': row['Start (s)'],
-                        'Event_End': row['Stop (s)'],
-                        'Duration (s)': row['Stop (s)'] - row['Start (s)'],
-                        'First Investigation': int(row['Behavior'] == 'Investigation' and not first_investigation.empty and row['Start (s)'] == first_investigation['Start (s)'].values[0])
-                    })
-
+                if first_only:
+                    if not subset.empty:
+                        first_row = subset.iloc[0]
+                        rows.append({
+                            'Bout': bout_label,
+                            'Behavior': first_row['Behavior'],
+                            'Event_Start': first_row['Start (s)'],
+                            'Event_End': first_row['Stop (s)'],
+                            'Duration (s)': first_row['Stop (s)'] - first_row['Start (s)']
+                        })
+                else:
+                    for _, row in subset.iterrows():
+                        rows.append({
+                            'Bout': bout_label,
+                            'Behavior': row['Behavior'],
+                            'Event_Start': row['Start (s)'],
+                            'Event_End': row['Stop (s)'],
+                            'Duration (s)': row['Stop (s)'] - row['Start (s)']
+                        })
             return rows
 
-        # 5. Extract behavior events for all bout definitions
+        # 5. Extract behavior events for all bout definitions.
         bout_rows = []
         for bout_def in bout_definitions:
             prefix = bout_def['prefix']
             introduced_behavior = bout_def['introduced']
             removed_behavior = bout_def['removed']
-            bout_rows.extend(extract_bout_events(data, introduced_behavior, removed_behavior, prefix))
+            bout_rows.extend(extract_bout_events(data, introduced_behavior, removed_behavior, prefix, first_only))
 
-        # 6. Store the resulting DataFrame in the instance
+        # 6. Store the resulting DataFrame in the instance.
         self.behaviors = pd.DataFrame(bout_rows)
+
+
 
     def combine_consecutive_behaviors(self, behavior_name='all', bout_time_threshold=1):
         """
@@ -568,140 +566,220 @@ class Trial:
 
             return baseline_start, baseline_end
         
+
+
+    def compute_event_induced_DA(self, pre_time=4, post_time=15):
+        """
+        Computes the peri-event z-scored DA signal for each event in self.behaviors.
+        Each event's DA signal is baseline-corrected by subtracting the mean z-score
+        from the pre-event period. Two new columns are added to self.behaviors:
+        - 'Event_Time_Axis': A common time axis (relative to event onset).
+        - 'Event_Zscore': The baseline-corrected z-score signal, interpolated onto the common time axis.
+        
+        This version uses np.interp without left/right arguments, so any time points outside the 
+        real data range are clamped to the first/last available value.
+        
+        Parameters:
+        - pre_time (float): Seconds to include before event onset.
+        - post_time (float): Seconds to include after event onset.
+        """
+        if self.behaviors is None or self.behaviors.empty:
+            print(f"Trial {self.subject_name}: No behavior events available to compute event-induced DA.")
+            return
+
+        # Calculate a common time axis based on the average sampling interval.
+        dt = np.mean(np.diff(self.timestamps))
+        common_time_axis = np.arange(-pre_time, post_time, dt)
+
+        # Lists to store the common time axis and the interpolated z-score signal for each event.
+        event_time_list = []
+        event_zscore_list = []
+
+        # Process each event in the behaviors DataFrame.
+        for idx, row in self.behaviors.iterrows():
+            event_start = row['Event_Start']
+            window_start = event_start - pre_time
+            window_end = event_start + post_time
+
+            # Identify indices within the peri-event window.
+            mask = (self.timestamps >= window_start) & (self.timestamps <= window_end)
+            if not np.any(mask):
+                # If no data is available, fill with NaNs.
+                event_time_list.append(np.full(common_time_axis.shape, np.nan))
+                event_zscore_list.append(np.full(common_time_axis.shape, np.nan))
+                continue
+
+            # Create a time axis relative to the event onset.
+            rel_time = self.timestamps[mask] - event_start
+            signal = self.zscore[mask]
+
+            # Compute baseline using the pre-event portion.
+            pre_mask = rel_time < 0
+            baseline = np.nanmean(signal[pre_mask]) if np.any(pre_mask) else 0
+
+            # Baseline-correct the signal.
+            corrected_signal = signal - baseline
+
+            # Interpolate the corrected signal onto the common time axis.
+            # Removing left/right arguments clamps values to the boundaries.
+            interp_signal = np.interp(common_time_axis, rel_time, corrected_signal)
+
+            event_time_list.append(common_time_axis)
+            event_zscore_list.append(interp_signal)
+
+        # Save the computed arrays as new columns in the behaviors DataFrame.
+        self.behaviors['Event_Time_Axis'] = event_time_list
+        self.behaviors['Event_Zscore'] = event_zscore_list
+
+
+
     def compute_da_metrics(self, 
-                            use_fractional=False, 
-                            max_bout_duration=30, 
-                            use_adaptive=False, 
-                            peak_fall_fraction=0.5,
-                            allow_bout_extension=False,
-                            first=False):
+                        use_fractional=False, 
+                        max_bout_duration=30, 
+                        use_adaptive=False, 
+                        allow_bout_extension=False,
+                        mode='standard'):
         """
         Computes DA metrics for each behavior event (row) in self.behaviors.
 
-        If `first=True`, the behavior DataFrame is filtered to contain only the first investigation per bout before 
-        computing DA metrics.
+        Modes:
+        - mode='standard': Metrics are computed using self.timestamps and self.zscore,
+            with the window defined from Event_Start to Event_End (with optional fractional and adaptive adjustments).
+        - mode='EI': Metrics are computed using event-induced data stored in 
+            'Event_Time_Axis' and 'Event_Zscore' (precomputed via compute_event_induced_DA()). 
+            In this mode the initial window is 0 (event onset) to the event duration (from 'Duration (s)' column),
+            and then use_fractional and use_adaptive are applied to adjust that effective end.
 
         Metrics computed:
-        - AUC: Area under the z-score curve (using trapezoidal integration)
-        - Max Peak: Maximum z-score in the window
-        - Time of Max Peak: Timestamp corresponding to the maximum z-score
-        - Mean Z-score: Mean z-score over the window
-
-        Windowing logic:
-        1. Fractional Bout Window (if use_fractional=True):  
-            If the bout duration exceeds max_bout_duration seconds, only the first max_bout_duration 
-            seconds are used.
-        2. Adaptive Peak-Following (if use_adaptive=True):  
-            If the peak is positive, the window is adjusted so that, starting from the peak,
-            it continues until the z-score falls below (peak * peak_fall_fraction).  
-            If no fall is found within the current window and allow_bout_extension is True, the search 
-            extends to the end of the recording.
-        3. If the peak is negative, adaptive processing is skipped and metrics are computed over the 
-            current window.
-
-        In addition, this function stores:
-        - 'Original End': the original bout end time from the CSV.
-        - 'Adjusted End': the end time after applying any window adjustments.
+        - AUC: Area under the z-score curve.
+        - Max Peak: Maximum z-score in the window.
+        - Time of Max Peak: Time at which the maximum occurs (relative to event onset in EI mode, absolute in standard mode).
+        - Mean Z-score: Mean z-score over the window.
+        
+        In both modes, the original event end is stored in 'Original End' and the final adjusted window end is stored in 'Adjusted End'.
 
         Parameters:
-        - use_fractional (bool): Whether to limit the window to max_bout_duration seconds.
-        - max_bout_duration (float): Maximum duration (in seconds) for the fractional window.
-        - use_adaptive (bool): Whether to apply the adaptive peak-following window.
-        - peak_fall_fraction (float): Fraction of the peak to define the fall threshold.
-        - allow_bout_extension (bool): Whether to extend the window past the bout’s official end if needed.
-        - first (bool): If True, only the first investigation event per bout is considered.
+        - use_fractional (bool): If True, limit the window to max_bout_duration seconds.
+        - max_bout_duration (float): Maximum allowed window duration (in seconds) if fractional.
+        - use_adaptive (bool): If True, adjust the window based on identifying the first local minimum following the peak.
+        - allow_bout_extension (bool): If True, extend the window if no local minimum is found.
+        - mode (str): Either 'standard' (default) or 'EI' for event-induced mode.
         """
         if self.behaviors.empty:
             return
 
-        # If first=True, filter the DataFrame to keep only the first investigation per bout
-        if first:
-            self.behaviors = (
-                self.behaviors[self.behaviors["Behavior"] == "Investigation"]
-                .sort_values("Event_Start")
-                .groupby("Bout", as_index=False)
-                .first()
-            )
-
-        # Ensure the metric columns exist
+        # Ensure metric columns exist.
         for col in ['AUC', 'Max Peak', 'Time of Max Peak', 'Mean Z-score', 'Original End', 'Adjusted End']:
             if col not in self.behaviors.columns:
                 self.behaviors[col] = np.nan
 
-        # Global end time (last timestamp) for potential extension
-        global_end_time = self.timestamps[-1]
+        standard_end_time = self.timestamps[-1]
 
-        # Process each behavior event (each row in self.behaviors)
-        for i, row in self.behaviors.iterrows():
-            start_time = row['Event_Start']
-            orig_end_time = row['Event_End']
-            end_time = orig_end_time  # default window end
+        if mode == 'standard':
+            # standard mode: using self.timestamps and self.zscore.
+            for i, row in self.behaviors.iterrows():
+                start_time = row['Event_Start']
+                orig_end_time = row['Event_End']
+                end_time = orig_end_time  # default window end
 
-            # Store the original bout end time
-            self.behaviors.loc[i, 'Original End'] = orig_end_time
+                self.behaviors.loc[i, 'Original End'] = orig_end_time
 
-            # 1) Fractional Bout Window: truncate if duration exceeds max_bout_duration
-            if use_fractional:
-                bout_duration = orig_end_time - start_time
-                if bout_duration > max_bout_duration:
-                    end_time = start_time + max_bout_duration
-            # (If not using fractional, end_time remains orig_end_time)
+                # Apply fractional window truncation.
+                if use_fractional:
+                    bout_duration = orig_end_time - start_time
+                    if bout_duration > max_bout_duration:
+                        end_time = start_time + max_bout_duration
 
-            # 2) Extract the current window from self.timestamps and self.zscore
-            mask = (self.timestamps >= start_time) & (self.timestamps <= end_time)
-            window_ts = self.timestamps[mask]
-            window_z = self.zscore[mask]
-            if len(window_ts) < 2:
-                continue
+                # Extract current window.
+                mask = (self.timestamps >= start_time) & (self.timestamps <= end_time)
+                window_ts = self.timestamps[mask]
+                window_z = self.zscore[mask]
+                if len(window_ts) < 2:
+                    continue
 
-            # 3) Adaptive Peak-Following Window: if enabled and peak is nonnegative
-            if use_adaptive:
-                max_idx = np.argmax(window_z)
-                max_val = window_z[max_idx]
-                peak_time = window_ts[max_idx]
-                if max_val >= 0:
-                    threshold = max_val * peak_fall_fraction
-                    fall_idx = max_idx
-                    while fall_idx < len(window_z) and window_z[fall_idx] > threshold:
-                        fall_idx += 1
-
-                    if fall_idx < len(window_z):
-                        end_time = window_ts[fall_idx]
+                # Adaptive adjustment using local minimum detection.
+                if use_adaptive:
+                    peak_idx = np.argmax(window_z)
+                    max_val = window_z[peak_idx]
+                    # Find local minima in the segment after the peak.
+                    local_mins, _ = find_peaks(-window_z[peak_idx:])
+                    if local_mins.size > 0:
+                        # The first local minimum following the peak determines the new window end.
+                        end_time = window_ts[peak_idx + local_mins[0]]
                     elif allow_bout_extension:
-                        # Extend window to global end and search again
-                        extended_mask = (self.timestamps >= start_time) & (self.timestamps <= global_end_time)
+                        # If no local minimum is found, extend to the end of available data.
+                        extended_mask = (self.timestamps >= start_time) & (self.timestamps <= standard_end_time)
                         extended_ts = self.timestamps[extended_mask]
-                        extended_z = self.zscore[extended_mask]
-                        # Find the index closest to peak_time in the extended window
-                        peak_idx_ext = np.argmin(np.abs(extended_ts - peak_time))
-                        fall_idx_ext = peak_idx_ext
-                        while fall_idx_ext < len(extended_z) and extended_z[fall_idx_ext] > threshold:
-                            fall_idx_ext += 1
-                        if fall_idx_ext < len(extended_ts):
-                            end_time = extended_ts[fall_idx_ext]
-                        else:
+                        if len(extended_ts) > 0:
                             end_time = extended_ts[-1]
-                    # Else: if adaptive is enabled but no fall is found and extension is not allowed,
-                    # keep the current end_time.
-                # If max_val is negative, adaptive processing is skipped.
+                        else:
+                            end_time = end_time
 
-            # 4) Re-extract the final window using the (possibly) updated end_time
-            final_mask = (self.timestamps >= start_time) & (self.timestamps <= end_time)
-            final_ts = self.timestamps[final_mask]
-            final_z = self.zscore[final_mask]
-            if len(final_ts) < 2:
-                continue
+                # Re-extract final window.
+                final_mask = (self.timestamps >= start_time) & (self.timestamps <= end_time)
+                final_ts = self.timestamps[final_mask]
+                final_z = self.zscore[final_mask]
+                if len(final_ts) < 2:
+                    continue
 
-            # 5) Compute final metrics
-            auc = np.trapz(final_z, final_ts)
-            mean_z = np.mean(final_z)
-            final_max_idx = np.argmax(final_z)
-            final_max_val = final_z[final_max_idx]
-            final_peak_time = final_ts[final_max_idx]
+                auc = np.trapz(final_z, final_ts)
+                mean_z = np.mean(final_z)
+                final_max_idx = np.argmax(final_z)
+                final_max_val = final_z[final_max_idx]
+                final_peak_time = final_ts[final_max_idx]
 
-            # 6) Save metrics and adjusted end time into the DataFrame
-            self.behaviors.loc[i, 'AUC'] = auc
-            self.behaviors.loc[i, 'Max Peak'] = final_max_val
-            self.behaviors.loc[i, 'Time of Max Peak'] = final_peak_time
-            self.behaviors.loc[i, 'Mean Z-score'] = mean_z
-            self.behaviors.loc[i, 'Adjusted End'] = end_time
+                self.behaviors.loc[i, 'AUC'] = auc
+                self.behaviors.loc[i, 'Max Peak'] = final_max_val
+                self.behaviors.loc[i, 'Time of Max Peak'] = final_peak_time
+                self.behaviors.loc[i, 'Mean Z-score'] = mean_z
+                self.behaviors.loc[i, 'Adjusted End'] = end_time
+
+        elif mode == 'EI':
+            # EI mode: use event-induced data.
+            if 'Event_Time_Axis' not in self.behaviors.columns or 'Event_Zscore' not in self.behaviors.columns:
+                print("Event-induced data not found in behaviors. Please run compute_event_induced_DA() first.")
+                return
+
+            for i, row in self.behaviors.iterrows():
+                time_axis = row['Event_Time_Axis']  # Relative to event onset.
+                event_zscore = row['Event_Zscore']    # Baseline-corrected signal.
+                # Initial effective end is the event duration.
+                effective_end = row['Duration (s)']
+                if use_fractional and effective_end > max_bout_duration:
+                    effective_end = max_bout_duration
+
+                mask = (time_axis >= 0) & (time_axis <= effective_end)
+                if not np.any(mask):
+                    continue
+                final_time = time_axis[mask]
+                final_z = event_zscore[mask]
+
+                # Adaptive adjustment using local minimum detection.
+                if use_adaptive:
+                    peak_idx = np.argmax(final_z)
+                    max_val = final_z[peak_idx]
+                    local_mins, _ = find_peaks(-final_z[peak_idx:])
+                    if local_mins.size > 0:
+                        effective_end = final_time[peak_idx + local_mins[0]]
+                    elif allow_bout_extension:
+                        effective_end = np.max(time_axis[time_axis >= 0])
+                # Recompute final window with updated effective_end.
+                mask = (time_axis >= 0) & (time_axis <= effective_end)
+                final_time = time_axis[mask]
+                final_z = event_zscore[mask]
+                if len(final_time) < 2:
+                    continue
+
+                auc = np.trapz(final_z, final_time)
+                mean_z = np.mean(final_z)
+                final_max_idx = np.argmax(final_z)
+                final_max_val = final_z[final_max_idx]
+                final_peak_time = final_time[final_max_idx]
+
+                self.behaviors.loc[i, 'AUC'] = auc
+                self.behaviors.loc[i, 'Max Peak'] = final_max_val
+                self.behaviors.loc[i, 'Time of Max Peak'] = final_peak_time
+                self.behaviors.loc[i, 'Mean Z-score'] = mean_z
+                self.behaviors.loc[i, 'Adjusted End'] = effective_end
+
+

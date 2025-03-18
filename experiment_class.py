@@ -53,32 +53,34 @@ class Experiment:
             trial.verify_signal()
 
 
-    def group_extract_manual_annotations(self, bout_definitions, first = False):
+    def group_extract_manual_annotations(self, bout_definitions, first_only=True):
         """
         Extracts behavior bouts and annotations for all trials in the experiment.
 
         This function:
-        1. Iterates through `self.trials`, looking for behavior CSV files in `self.behavior_folder_path`.
-        2. Calls `extract_bouts_and_behaviors` for each trial.
-        3. Stores the behavior data inside each `Trial` object.
+        1. Iterates through self.trials, looking for behavior CSV files in self.behavior_folder_path.
+        2. Calls extract_bouts_and_behaviors for each trial.
+        3. Stores the behavior data inside each Trial object.
 
         Parameters:
         - bout_definitions (list of dict): List defining each bout with:
             - 'prefix': Label used for the bout (e.g., "s1", "s2", "x").
             - 'introduced': Name of the behavior marking the start of the bout.
             - 'removed': Name of the behavior marking the end of the bout.
+        - first_only (bool): If True, only the first event in each bout is kept;
+                            if False, all events within each bout are retained.
         """
-
         for trial_name, trial in self.trials.items():
             csv_path = os.path.join(self.behavior_folder_path, f"{trial_name}.csv")
-
             if os.path.exists(csv_path):
                 print(f"Processing behaviors for {trial_name}...")
-                trial.extract_bouts_and_behaviors(csv_path, bout_definitions)
+                trial.extract_bouts_and_behaviors(csv_path, bout_definitions, first_only=first_only)
                 trial.combine_consecutive_behaviors(behavior_name='all', bout_time_threshold=1)
+                # Optionally, you can remove short behaviors:
                 # trial.remove_short_behaviors(behavior_name='all', min_duration=0.3)
             else:
                 print(f"Warning: No CSV found for {trial_name} in {self.behavior_folder_path}. Skipping.")
+
 
 
 
@@ -110,19 +112,18 @@ class Experiment:
         plt.show()
 
 
-    def compute_all_da_metrics(self, use_fractional=False, max_bout_duration=30, 
-                           use_adaptive=False, peak_fall_fraction=0.5, 
-                           allow_bout_extension=False,first = False):
+    def compute_all_da_metrics(self, use_fractional=False, max_bout_duration=10, 
+                            use_adaptive=False, allow_bout_extension=False, mode='standard'):
         """
         Iterates over all trials in the experiment and computes DA metrics with the specified windowing options.
-
+        
         Parameters:
-        - use_fractional (bool): Whether to use fractional analysis.
-        - max_bout_duration (int): Maximum duration of a bout in seconds.
-        - use_adaptive (bool): Whether to use adaptive windowing.
-        - peak_fall_fraction (float): Fraction of peak fall to use.
-        - allow_bout_extension (bool): Whether to allow bout extension.
-        - first (bool): If True, only the first investigation per bout is considered.
+        - use_fractional (bool): Whether to limit the window to a maximum duration.
+        - max_bout_duration (int): Maximum allowed window duration (in seconds) if fractional analysis is applied.
+        - use_adaptive (bool): Whether to adjust the window using adaptive windowing (via local minimum detection).
+        - allow_bout_extension (bool): Whether to extend the window if no local minimum is found.
+        - mode (str): Either 'standard' to compute metrics using the full standard DA signal, or 'EI' to compute metrics
+                        using the event-induced data (i.e. the precomputed 'Event_Time_Axis' and 'Event_Zscore' columns).
         """
         for trial_name, trial in self.trials.items():
             if hasattr(trial, 'compute_da_metrics'):
@@ -130,9 +131,24 @@ class Experiment:
                 trial.compute_da_metrics(use_fractional=use_fractional,
                                         max_bout_duration=max_bout_duration,
                                         use_adaptive=use_adaptive,
-                                        peak_fall_fraction=peak_fall_fraction,
                                         allow_bout_extension=allow_bout_extension,
-                                        first = first)
+                                        mode=mode)
             else:
                 print(f"Warning: Trial '{trial_name}' does not have compute_da_metrics method.")
+
+
+
+    def compute_all_event_induced_DA(self, pre_time=4, post_time=15):
+        """
+        Iterates over all trials in the experiment and computes the event-induced DA signals
+        for each trial by calling each Trial's compute_event_induced_DA() method.
+        
+        Parameters:
+        - pre_time (float): Seconds to include before event onset.
+        - post_time (float): Seconds to include after event onset.
+        """
+        for trial_name, trial in self.trials.items():
+            print(f"Computing event-induced DA for trial {trial_name} ...")
+            trial.compute_event_induced_DA(pre_time=pre_time, post_time=post_time)
+
 
