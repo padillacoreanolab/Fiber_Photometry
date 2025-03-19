@@ -4,12 +4,14 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(parent_dir)
 
 from experiment_class import Experiment
+from scipy.stats import pearsonr
 from trial_class import Trial
 import math
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 import pandas as pd
-from scipy.stats import linregress
+from scipy.stats import ttest_ind
 
 class Reward_Competition(Experiment):
     def __init__(self, experiment_folder_path, behavior_folder_path):
@@ -202,25 +204,41 @@ class Reward_Competition(Experiment):
         Merges all data into a dataframe for analysis.
         """
         self.df['trial'] = self.df.apply(lambda row: self.find_matching_trial(row['file name']), axis=1)
-        self.df['sound cues'] = self.df['trial'].apply(lambda x: x.behaviors1.get('sound cues', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
-        self.df['port entries'] = self.df['trial'].apply(lambda x: x.behaviors1.get('port entries', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
+
+        # Debugging: Check how many trials fail to match
+        print("Total rows:", len(self.df))
+        print("Rows with missing trials:", self.df['trial'].isna().sum())
+
+        # Replace None values temporarily instead of dropping them
+        self.df['trial'] = self.df['trial'].fillna("No Match Found")
+
+        # Handle behaviors safely
+        self.df['sound cues'] = self.df['trial'].apply(
+            lambda x: x.behaviors1.get('sound cues', None) 
+            if isinstance(x, object) and hasattr(x, 'behaviors1') else None
+        )
+        self.df['port entries'] = self.df['trial'].apply(
+            lambda x: x.behaviors1.get('port entries', None) 
+            if isinstance(x, object) and hasattr(x, 'behaviors1') else None
+        )
         self.df['sound cues onset'] = self.df['sound cues'].apply(lambda x: x.onset_times if x else None)
         self.df['port entries onset'] = self.df['port entries'].apply(lambda x: x.onset_times if x else None)
         self.df['port entries offset'] = self.df['port entries'].apply(lambda x: x.offset_times if x else None)
-        
+
         # Creates a column for subject name
         self.df['subject_name'] = self.df['file name'].str.split('-').str[0]
 
         # Create a new column that stores an array of winners for each row
         winner_columns = [col for col in self.df.columns if 'winner' in col.lower()]
         self.df['winner_array'] = self.df[winner_columns].apply(lambda row: row.values.tolist(), axis=1)
-        
-        # drops all other winner columns leaving only winner_array.
+
+        # Drops all other winner columns leaving only winner_array.
         self.df.drop(columns=winner_columns, inplace=True)
 
-        # drops all rows without dopamine data.
-        self.df.dropna(subset=['trial'], inplace=True)
+        # Drop rows without dopamine data only at the end
+        self.df = self.df[self.df['trial'] != "No Match Found"]
         self.df.reset_index(drop=True, inplace=True)
+
 
     def merge_data2(self):
         """
@@ -229,6 +247,11 @@ class Reward_Competition(Experiment):
         # Changes file name to match the change in load_rtc2
         self.df['file name'] = self.df.apply(lambda row: row['subject'] + '-' + '-'.join(row['file name'].split('-')[-2:]), axis=1)
         self.df['trial'] = self.df.apply(lambda row: self.find_matching_trial(row['file name']), axis=1)
+        
+        # Debugging: Check how many trials fail to match
+        print("Total rows:", len(self.df))
+        print("Rows with missing trials:", self.df['trial'].isna().sum())
+
         self.df['sound cues'] = self.df['trial'].apply(lambda x: x.behaviors1.get('sound cues', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
         self.df['port entries'] = self.df['trial'].apply(lambda x: x.behaviors1.get('port entries', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
         self.df['sound cues onset'] = self.df['sound cues'].apply(lambda x: x.onset_times if x else None)
@@ -510,7 +533,7 @@ class Reward_Competition(Experiment):
 
     """*************************COMBINING COHORTS*************************"""
     def combining_cohorts(self, df1):
-        filter_string = "pp"
+        filter_string = "p"
 
         # Filter df2 to only include rows where 'subject name' contains the filter_string
         filtered_df2 = df1[df1['subject_name'].str.contains(filter_string, na=False)]
@@ -607,12 +630,76 @@ class Reward_Competition(Experiment):
         # Apply the function to the DataFrame and create a new column with the results
         df['closest_lick_offset'] = df.apply(compute_lick_metrics, axis=1)
     """*********************************CALCULATING DOPAMINE RESPONSE***********************************"""
+    def compute_ei(self, df=None, pre_time=4, post_time=6):
+        """
+        Computes the peri-event z-scored DA signal for each event in self.behaviors.
+        Each event's DA signal is baseline-corrected by subtracting the mean z-score
+        from the pre-event period. Two new columns are added to self.behaviors:
+        - 'Event_Time_Axis': A common time axis (relative to event onset).
+        - 'Event_Zscore': The baseline-corrected z-score signal, interpolated onto the common time axis.
+        
+        This version uses np.interp without left/right arguments, so any time points outside the 
+        real data range are clamped to the first/last available value.
+        
+        Parameters:
+        - pre_time (float): Seconds to include before event onset.
+        - post_time (float): Seconds to include after event onset.
+        """
+        if df is None:
+            df = self.df
+        if df is None or df.empty:
+            print(f"Trial {trial_obj.subject_name}: No behavior events available to compute event-induced DA.")
+            return
+
+        # Calculate a common time axis based on the average sampling interval.
+        dt = np.mean(np.diff(self.timestamps))
+        common_time_axis = np.arange(-pre_time, post_time, dt)
+
+        # Lists to store the common time axis and the interpolated z-score signal for each event.
+        event_time_list = []
+        event_zscore_list = []
+
+        # Process each event in the behaviors DataFrame.
+        for idx, row in self.behaviors.iterrows():
+            event_start = row['Event_Start']
+            window_start = event_start - pre_time
+            window_end = event_start + post_time
+
+            # Identify indices within the peri-event window.
+            mask = (self.timestamps >= window_start) & (self.timestamps <= window_end)
+            if not np.any(mask):
+                # If no data is available, fill with NaNs.
+                event_time_list.append(np.full(common_time_axis.shape, np.nan))
+                event_zscore_list.append(np.full(common_time_axis.shape, np.nan))
+                continue
+
+            # Create a time axis relative to the event onset.
+            rel_time = self.timestamps[mask] - event_start
+            signal = self.zscore[mask]
+
+            # Compute baseline using the pre-event portion.
+            pre_mask = rel_time < 0
+            baseline = np.nanmean(signal[pre_mask]) if np.any(pre_mask) else 0
+
+            # Baseline-correct the signal.
+            corrected_signal = signal - baseline
+
+            # Interpolate the corrected signal onto the common time axis.
+            # Removing left/right arguments clamps values to the boundaries.
+            interp_signal = np.interp(common_time_axis, rel_time, corrected_signal)
+
+            event_time_list.append(common_time_axis)
+            event_zscore_list.append(interp_signal)
+
+        # Save the computed arrays as new columns in the behaviors DataFrame.
+        self.behaviors['Event_Time_Axis'] = event_time_list
+        self.behaviors['Event_Zscore'] = event_zscore_list
+
+
     def compute_tone_da(self, df=None):
         if df is None:
             df = self.df
-        def compute_da_metrics_for_trial(trial_obj, filtered_sound_cues, 
-                                        use_adaptive=True, peak_fall_fraction=0.5, 
-                                        allow_bout_extension=False):
+        def compute_da_metrics_for_trial(trial_obj, filtered_sound_cues):
             """Compute DA metrics (AUC, Max Peak, Time of Max Peak, Mean Z-score) for each sound cue, using adaptive peak-following."""
             """if not hasattr(trial_obj, "timestamps") or not hasattr(trial_obj, "zscore"):
                 return np.nan"""  # Handle missing attributes
@@ -653,15 +740,12 @@ class Reward_Competition(Experiment):
 
         # Apply function across all trials
         df["computed_metrics"] = df.apply(
-            lambda row: compute_da_metrics_for_trial(row["trial"], row["filtered_sound_cues"], 
-                                                    use_adaptive=True, peak_fall_fraction=0.5, 
-                                                    allow_bout_extension=False), axis=1)
+            lambda row: compute_da_metrics_for_trial(row["trial"], row["filtered_sound_cues"]), axis=1)
         df["Tone AUC"] = df["computed_metrics"].apply(lambda x: [item.get("AUC", np.nan) for item in x] if isinstance(x, list) else np.nan)
         df["Tone Max Peak"] = df["computed_metrics"].apply(lambda x: [item.get("Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
         df["Tone Time of Max Peak"] = df["computed_metrics"].apply(lambda x: [item.get("Time of Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
         df["Tone Mean Z-score"] = df["computed_metrics"].apply(lambda x: [item.get("Mean Z-score", np.nan) for item in x] if isinstance(x, list) else np.nan)
         df["Tone Adjusted End"] = df["computed_metrics"].apply(lambda x: [item.get("Adjusted End", np.nan) for item in x] if isinstance(x, list) else np.nan)
-
         # Drop the "computed_metrics" column if it's no longer needed
         df.drop(columns=["computed_metrics"], inplace=True)
                 
@@ -769,7 +853,9 @@ class Reward_Competition(Experiment):
         df["Lick Time of Max Peak"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Time of Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
         df["Lick Mean Z-score"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Mean Z-score", np.nan) for item in x] if isinstance(x, list) else np.nan)
         df["Lick Adjusted End"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Adjusted End", np.nan) for item in x] if isinstance(x, list) else np.nan)
+        print([item.get("AUC", np.nan) for item in df["lick_computed_metrics"].iloc[0]])
 
+        print(df["lick_computed_metrics"])
         # Drop the "lick_computed_metrics" column if it's no longer needed
         df.drop(columns=["lick_computed_metrics"], inplace=True)
 
@@ -806,7 +892,7 @@ class Reward_Competition(Experiment):
             'Tone Max Peak First': 'mean',
             'Tone Max Peak Last': 'mean',
             'Tone Mean Z-score First': 'mean',
-            'Tone Mean Z-score Last': 'mean'
+            'Tone Mean Z-score Last': 'mean',
         })
         final_df = df
         return final_df
@@ -814,6 +900,8 @@ class Reward_Competition(Experiment):
     """*******************************PLOTTING**********************************"""
     def ploting_side_by_side(self, df, df1, mean_values, sem_values, mean_values1, sem_values1, bar_color, figsize, metric_name,
                         ylim, yticks_increment, title, directory_path, pad_inches, label1, label2):    
+        print(df)
+        print(df1)
         # Define bar width for side-by-side bars with gap between them
         bar_width = 0.35  # Width of each bar
         gap = 0.075  # Adjust this value to control the gap between the bars
@@ -856,6 +944,54 @@ class Reward_Competition(Experiment):
             label=label2,  # Label for legend
             error_kw=dict(elinewidth=4, capthick=4, capsize=10, zorder=5)
         )
+
+        p_values = []
+        print(df.columns)
+        for col in df.columns:
+            print(f"Processing column: {col}")
+            
+            # Check if 'Last' column exists in df1, corresponding to the 'First' column in df
+            col_last = col.replace('First', 'Last')  # Create the 'Last' column name
+            
+            # Check if the 'Last' column is in df1
+            if col_last in df1.columns:
+                print(f"df: {df[col]}")
+                print(f"df1: {df1[col_last]}")
+                
+                # Run t-test between the 'First' and 'Last' columns
+                t_stat, p_value = ttest_ind(df[col], df1[col_last], nan_policy='omit', equal_var=False)
+                p_values.append(p_value)
+                print(f"T-test for {col} and {col_last}: t={t_stat:.3f}, p={p_value:.3e}")  # Print results
+            else:
+                print(f"Column {col_last} not found in df1. Skipping t-test for {col}.")
+
+        # Function to convert p-values to asterisks
+        def get_p_value_asterisks(p_value):
+            if p_value < 0.001:
+                return "***"
+            elif p_value < 0.01:
+                return "**"
+            elif p_value < 0.05:
+                return "*"
+            else:
+                return None
+
+        # Get the top y-limit to position the significance bar
+        y_top = ax.get_ylim()[1]  # Position at 95% of max y-limit
+
+        # Add significance annotations (only for significant p-values)
+        for i, p_value in enumerate(p_values):
+            p_text = get_p_value_asterisks(p_value)  # Convert p-value to asterisk notation
+
+            if p_text:  # Only add bar if significant
+                x1 = x[i] - bar_width / 2 - gap / 2  # Left bar
+                x2 = x[i] + bar_width / 2 + gap / 2  # Right bar
+
+                # Draw the black significance bar
+                ax.plot([x1, x2], [y_top, y_top], color='black', linewidth=6)
+
+                # Add asterisk annotation above the bar
+                ax.text((x1 + x2) / 2, y_top + 0.02, p_text, ha='center', fontsize=40, fontweight='bold')
 
         # Set x-ticks in the center of each grouped pair of bars
         # Define the positions for the x-ticks of both bars
@@ -916,7 +1052,7 @@ class Reward_Competition(Experiment):
         plt.show()
 
     # Response is tone or lick, metric_name is for AUC, Max Peak, or Mean Z-score
-    def plot_da_tone_lick(self, method, metric_name, directory_path, condition='Winning',  
+    def plot_da_first_last(self, df, metric_name, directory_path, condition='Winning',  
                     brain_region='mPFC',  # New parameter to specify the brain region
                     custom_xtick_labels=None, 
                     custom_xtick_colors=None, 
@@ -930,19 +1066,17 @@ class Reward_Competition(Experiment):
         Customizable plotting function that plots a single brain region (NAc or mPFC) for both lick and tone.
         Can use metrics Max Peak, Mean Z-score, and AUC
         """
-        
+        if df is None:
+            df = self.df
         # Filtering data frame to only keep specified metrics
-        def filter_by_metric(df):
-            metric_columns = df.filter(like=metric_name + method).columns
-            if len(metric_columns) != 2:
-                raise ValueError(f"Expected exactly 2 columns, but found {len(metric_columns)}.")
+        def filter_by_metric(df, metric_name):
+            print(df.columns)
+            # Filter DataFrame columns based on the 'like' condition
+            first_column = df[['subject_name', f'Tone {metric_name} First']]
+            last_column = df[['subject_name', f'Tone {metric_name} Last']]
 
-            # Create two DataFrames, keeping 'subject_name'
-            df1 = df[['subject_name', metric_columns[0]]].copy()
-            df2 = df[['subject_name', metric_columns[1]]].copy()
+            return first_column, last_column
 
-            return df1, df2
-        
         # spliting and copying dataframe into two dataframes for each brain region 
         def split_by_subject(df1, df2):            
             # Filter out the 'subject_name' column and keep only the relevant columns for response and metric_name
@@ -954,24 +1088,23 @@ class Reward_Competition(Experiment):
             # Return filtered dataframes and subject_name column
             return df_n, df_p, df_n1, df_p1
 
-        filtered_df, filtered_df1 = filter_by_metric(self.df)
+        first_df, last_df = filter_by_metric(df, metric_name)
 
         # Split data into NAc and mPFC, with subject names
-        df_nac, df_mpfc, df_nac1, df_mpfc1 = split_by_subject(filtered_df, filtered_df1)
+        df_nac_f, df_mpfc_f, df_nac_l, df_mpfc_l = split_by_subject(first_df, last_df)
+
+        print(df_nac_f.columns)
+        print(df_nac_l.columns)
 
         # Select the data for the desired brain region
         if brain_region == 'NAc':
-            df = df_nac
-            df1 = df_nac1 
-            mean_values = df_nac.mean()
-            sem_values = df_nac.sem()
+            df = df_nac_f
+            df1 = df_nac_l
             title_suffix = 'NAc'
             bar_color = nac_color
         elif brain_region == 'mPFC':
-            df = df_mpfc
-            df1 = df_mpfc1
-            mean_values = df_mpfc.mean()
-            sem_values = df_mpfc.sem()
+            df = df_mpfc_f
+            df1 = df_mpfc_l
             title_suffix = 'mPFC'
             bar_color = mpfc_color
         else:
@@ -982,20 +1115,16 @@ class Reward_Competition(Experiment):
         # Ensure the dataframe contains only numeric data (in case of any non-numeric columns)
         df = df.apply(pd.to_numeric, errors='coerce')
 
-        label1 = 'Tone'
-        label2 = 'Lick'
+        label1 = 'First'
+        label2 = 'Last'
         # Calculate the mean and SEM values for the entire dataframe
-        # Tone
+        # First
         mean_values = df.mean()
         sem_values = df.sem()
 
-        # Lick
+        # Last
         mean_values1 = df1.mean()
         sem_values1 = df1.sem()
-
-        # Example: renaming specific columns
-        df.rename(columns={'Tone ' + metric_name: 'Tone'}, inplace=True)
-        df1.rename(columns={'Lick ' + metric_name: 'Lick'}, inplace=True)
 
         self.ploting_side_by_side(df, df1, mean_values, sem_values, mean_values1, sem_values1,
                                   bar_color, figsize, metric_name, ylim, 
@@ -1064,7 +1193,6 @@ class Reward_Competition(Experiment):
         # plot 1: NAc Lick
         # win
         mean_values = win_df_n.mean()
-        print(mean_values)
         sem_values = win_df_n.sem()
         # lose
         mean_values1 = lose_df_n.mean()
@@ -1113,24 +1241,92 @@ class Reward_Competition(Experiment):
                                   bar_color1, figsize, metric_name, ylim, 
                                   yticks_increment, title3, directory_path, pad_inches,
                                   'Win', 'Lose')
-        
+    def peth_graphs(self):
+        pass
+
     def heatmaps(self):
         pass    
 
-    """***************************FINDING DOMINANT/SUBORDINATES**************************"""
-    def extract_dom(self):
-        highest_rank_per_cage = self.df.loc[self.df.groupby('cage')['Rank'].idxmax()]
+    def scatter_dominance(self, directory_path, df, metric_name, condition, pad_inches=0.1):
+        """
+        Scatter plot of dominance rank in a cage.
+        """
+        def filter_by_metric(df, metric_name):
+            metric_columns = df.columns[df.columns == f'Tone {metric_name} Mean']
+            print(metric_columns)
+            
+            # Create two DataFrames, keeping 'subject_name'
+            df_tone = df[['subject_name', 'Cage', 'Rank'] + metric_columns.tolist()].copy()
+            return df_tone
+        
+        # spliting and copying dataframe into two dataframes for each brain region 
+        def split_by_subject(df1):            
+            # Filter out the 'subject_name' column and keep only the relevant columns for response and metric_name
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            
+            """df_n1 = df2[df2['subject_name'].str.startswith('n')].drop(columns=['subject_name'])
+            df_p1 = df2[df2['subject_name'].str.startswith('p')].drop(columns=['subject_name'])"""
+            # Return filtered dataframes and subject_name column
+            return df_n, df_p
+        
+        df_tone = filter_by_metric(df, metric_name)
+        df_tone_n, df_tone_p = split_by_subject(df_tone)
 
-    def extract_sub(self):
-        lowest_rank_per_cage = self.df.loc[self.df.groupby('cage')['Rank'].idxmin()]
+        df_sorted_n = df_tone_n.sort_values(by=['Rank'])
+        df_sorted_p = df_tone_p.sort_values(by=['Rank'])
+        print(df_sorted_n)
+        print(df_sorted_p)
 
+        def scatter_plot(directory_path, df_sorted, metric_value, brain_region):
+            if brain_region == "mPFC":
+                color = '#FFAF00'
+            else:
+                color = '#15616F'
+
+            # Drop rows where 'Rank' is NaN
+            df_sorted = df_sorted.dropna(subset=['Rank'])
+            x = df_sorted['Rank']
+            y = df_sorted[f'Tone {metric_value} Mean']
+            if len(x) > 1:  # Pearson requires at least 2 points
+                r_value, p_value = pearsonr(x, y)
+            else:
+                r_value, p_value = float('nan'), float('nan')  # Handle cases with insufficient data
+            
+            n_value = len(df_sorted)
+
+            # Create the scatter plot with a regression line
+            plt.figure(figsize=(8, 6))
+            sns.scatterplot(data=df_sorted, x='Rank', y=f'Tone {metric_value} Mean', color=color, s=100)
+
+            # Add a regression line with R², and remove the shading (confidence interval)
+            sns.regplot(data=df_sorted, x='Rank', y=f'Tone {metric_value} Mean', scatter=False, color='black', line_kws={'lw': 2}, ci=None)
+
+            # Set the x-axis ticks to be separated by increments of 1
+            plt.xticks(ticks=range(int(df_sorted['Rank'].min()), int(df_sorted['Rank'].max()) + 1, 1))
+
+            # Labels and title
+            plt.xlabel('Rank')
+            plt.ylabel('Tone Mean AUC')
+            plt.title(f'{condition} {metric_value} Tone Response to Rank')
+            title = f'{metric_value} DA response Rank ({brain_region})'
+            save_path = os.path.join(str(directory_path) + '\\' + f'{title}.png')
+            plt.savefig(save_path, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
+            return r_value, p_value, n_value
+
+        r_nac, p_nac, n_nac = scatter_plot(df_sorted_n, metric_value=metric_name, brain_region="NAc")
+        r_mpfc, p_mpfc, n_mpfc = scatter_plot(df_sorted_p, metric_value=metric_name, brain_region="mPFC")
+        print(f"NAc: r={r_nac:.3f}, p={p_nac:.3f}, n={n_nac}")
+        print(f"mPFC: r={r_mpfc:.3f}, p={p_mpfc:.3f}, n={n_mpfc}")
+
+        
     """********************************MISC*************************************"""
     def drop_unnecessary(self, df=None):
         if df is None:
             df = self.df
         # drops lots of unnecessary column to allow for easier observations
         df.drop(columns=['file name', 'port entries onset', 'port entries offset', 'sound cues',
-                              'sound cues', 'port entries', 'winner_array', 'filtered_port_entries', 'subject'], inplace=True)
+                              'sound cues', 'port entries', 'winner_array', 'filtered_port_entries'], inplace=True)
         
     def first_last(self, df=None):
         """
@@ -1156,3 +1352,6 @@ class Reward_Competition(Experiment):
 
         df['Tone Mean Z-score First'] = df['Tone Mean Z-score'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
         df['Tone Mean Z-score Last'] = df['Tone Mean Z-score'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+
+        """df['ei_tone First'] = df['ei_tone'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        df['ei_tone Last'] = df['ei_tone'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)"""
