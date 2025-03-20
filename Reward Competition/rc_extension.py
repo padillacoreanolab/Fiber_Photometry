@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 from scipy.stats import ttest_ind
+from scipy.signal import butter, filtfilt, find_peaks
 
 class Reward_Competition(Experiment):
     def __init__(self, experiment_folder_path, behavior_folder_path):
@@ -538,8 +539,11 @@ class Reward_Competition(Experiment):
         # Filter df2 to only include rows where 'subject name' contains the filter_string
         filtered_df2 = df1[df1['subject_name'].str.contains(filter_string, na=False)]
 
-        # Concatenate df1 and the filtered df2
-        final_df = pd.concat([self.df, filtered_df2], ignore_index=True)
+        # Filter rows where 'subject_name' is either 'n4' or 'n7'
+        filtered_n4_n7 = df1[df1['subject_name'].isin(['n4', 'n7'])]
+
+        # Concatenate df1 and the filtered rows
+        final_df = pd.concat([self.df, filtered_df2, filtered_n4_n7], ignore_index=True)
         self.df = final_df
 
 
@@ -629,74 +633,91 @@ class Reward_Competition(Experiment):
 
         # Apply the function to the DataFrame and create a new column with the results
         df['closest_lick_offset'] = df.apply(compute_lick_metrics, axis=1)
+
+    def compute_duration(self, df=None):
+        if df is None:
+            df = self.df
+        df["duration"] = df.apply(lambda row: np.array(row["closest_lick_offset"]) - np.array(row["first_lick_after_sound_cue"]), axis=1)
+
     """*********************************CALCULATING DOPAMINE RESPONSE***********************************"""
-    def compute_ei(self, df=None, pre_time=4, post_time=6):
+    def compute_event_induced_DA(self, df=None, pre_time=4, post_time=6):
         """
-        Computes the peri-event z-scored DA signal for each event in self.behaviors.
+        Computes the peri-event z-scored DA signal for each event in the dataframe.
         Each event's DA signal is baseline-corrected by subtracting the mean z-score
-        from the pre-event period. Two new columns are added to self.behaviors:
+        from the pre-event period. Two new columns are added to the dataframe:
         - 'Event_Time_Axis': A common time axis (relative to event onset).
         - 'Event_Zscore': The baseline-corrected z-score signal, interpolated onto the common time axis.
-        
-        This version uses np.interp without left/right arguments, so any time points outside the 
-        real data range are clamped to the first/last available value.
-        
+
         Parameters:
         - pre_time (float): Seconds to include before event onset.
         - post_time (float): Seconds to include after event onset.
         """
         if df is None:
-            df = self.df
-        if df is None or df.empty:
-            print(f"Trial {trial_obj.subject_name}: No behavior events available to compute event-induced DA.")
+            df=self.df
+        if df.empty:
+            print("Dataframe is empty. No behavior events available to compute event-induced DA.")
             return
 
-        # Calculate a common time axis based on the average sampling interval.
-        dt = np.mean(np.diff(self.timestamps))
-        common_time_axis = np.arange(-pre_time, post_time, dt)
-
         # Lists to store the common time axis and the interpolated z-score signal for each event.
-        event_time_list = []
-        event_zscore_list = []
+        event_time_axes = []
+        event_zscores = []
 
-        # Process each event in the behaviors DataFrame.
-        for idx, row in self.behaviors.iterrows():
-            event_start = row['Event_Start']
-            window_start = event_start - pre_time
-            window_end = event_start + post_time
+        # Process each row in the dataframe.
+        for idx, row in df.iterrows():
+            trial_obj = row['trial']  # Extract trial_obj from the row
+            sound_cues = row['filtered_sound_cues']  # Extract sound_cues (event start times)
 
-            # Identify indices within the peri-event window.
-            mask = (self.timestamps >= window_start) & (self.timestamps <= window_end)
-            if not np.any(mask):
-                # If no data is available, fill with NaNs.
-                event_time_list.append(np.full(common_time_axis.shape, np.nan))
-                event_zscore_list.append(np.full(common_time_axis.shape, np.nan))
-                continue
+            # Convert 'timestamps' and 'zscore' to numpy arrays
+            timestamps = np.array(trial_obj.timestamps)
+            zscore = np.array(trial_obj.zscore)
 
-            # Create a time axis relative to the event onset.
-            rel_time = self.timestamps[mask] - event_start
-            signal = self.zscore[mask]
+            # Compute dt for this specific trial
+            dt = np.mean(np.diff(timestamps))  # Average time step for this trial
+            common_time_axis = np.arange(-pre_time, post_time, dt)  # Unique for each row
 
-            # Compute baseline using the pre-event portion.
-            pre_mask = rel_time < 0
-            baseline = np.nanmean(signal[pre_mask]) if np.any(pre_mask) else 0
+            # Store results per trial
+            trial_event_times = []
+            trial_event_zscores = []
 
-            # Baseline-correct the signal.
-            corrected_signal = signal - baseline
+            # Process each sound cue (event start) in the sound_cues array for the current row
+            for event_start in sound_cues:
+                window_start = event_start - pre_time
+                window_end = event_start + post_time
 
-            # Interpolate the corrected signal onto the common time axis.
-            # Removing left/right arguments clamps values to the boundaries.
-            interp_signal = np.interp(common_time_axis, rel_time, corrected_signal)
+                # Identify indices within the peri-event window.
+                mask = (timestamps >= window_start) & (timestamps <= window_end)
+                if not np.any(mask):
+                    # If no data is available, fill with NaNs.
+                    trial_event_times.append(np.full(common_time_axis.shape, np.nan))
+                    trial_event_zscores.append(np.full(common_time_axis.shape, np.nan))
+                    continue
 
-            event_time_list.append(common_time_axis)
-            event_zscore_list.append(interp_signal)
+                # Create a time axis relative to the event onset.
+                rel_time = timestamps[mask] - event_start
+                signal = zscore[mask]
 
-        # Save the computed arrays as new columns in the behaviors DataFrame.
-        self.behaviors['Event_Time_Axis'] = event_time_list
-        self.behaviors['Event_Zscore'] = event_zscore_list
+                # Compute baseline using the pre-event portion.
+                pre_mask = rel_time < 0
+                baseline = np.nanmean(signal[pre_mask]) if np.any(pre_mask) else 0
 
+                # Baseline-correct the signal.
+                corrected_signal = signal - baseline
 
-    def compute_tone_da(self, df=None):
+                # Interpolate the corrected signal onto the common time axis.
+                interp_signal = np.interp(common_time_axis, rel_time, corrected_signal)
+
+                trial_event_times.append(common_time_axis)
+                trial_event_zscores.append(interp_signal)
+
+            # Store results for this trial in the dataframe
+            event_time_axes.append(trial_event_times)
+            event_zscores.append(trial_event_zscores)
+
+        # Save computed arrays as new columns in the dataframe.
+        df['Event_Time_Axis'] = event_time_axes
+        df['Event_Zscore'] = event_zscores
+
+    def compute_tone_da(self, df=None, mode='standard'):
         if df is None:
             df = self.df
         def compute_da_metrics_for_trial(trial_obj, filtered_sound_cues):
@@ -708,7 +729,6 @@ class Reward_Competition(Experiment):
             zscores = np.array(trial_obj.zscore)  
 
             computed_metrics = []
-
             for cue in filtered_sound_cues:
                 start_time = cue
                 end_time = cue + 6  # Default window end
@@ -737,25 +757,93 @@ class Reward_Competition(Experiment):
                     "Adjusted End": end_time  # Store adjusted end
                 })
             return computed_metrics
+        def compute_ei(df):
+            # EI mode: use event-induced data.
+            if 'Event_Time_Axis' not in df.columns or 'Event_Zscore' not in df.columns:
+                print("Event-induced data not found in behaviors. Please run compute_event_induced_DA() first.")
+                return df
 
-        # Apply function across all trials
-        df["computed_metrics"] = df.apply(
-            lambda row: compute_da_metrics_for_trial(row["trial"], row["filtered_sound_cues"]), axis=1)
-        df["Tone AUC"] = df["computed_metrics"].apply(lambda x: [item.get("AUC", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        df["Tone Max Peak"] = df["computed_metrics"].apply(lambda x: [item.get("Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        df["Tone Time of Max Peak"] = df["computed_metrics"].apply(lambda x: [item.get("Time of Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        df["Tone Mean Z-score"] = df["computed_metrics"].apply(lambda x: [item.get("Mean Z-score", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        df["Tone Adjusted End"] = df["computed_metrics"].apply(lambda x: [item.get("Adjusted End", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        # Drop the "computed_metrics" column if it's no longer needed
-        df.drop(columns=["computed_metrics"], inplace=True)
+            # Lists to store computed arrays for each row
+            mean_zscores_all = []
+            auc_values_all = []
+            max_peaks_all = []
+            peak_times_all = []
+
+            for i, row in df.iterrows():
+                # Extract all trials (lists) within the row
+                time_axes = np.array(row['Event_Time_Axis'])  # 2D array (list of lists)
+                event_zscores = np.array(row['Event_Zscore'])  # 2D array (list of lists)
+
+                # Lists to store per-trial metrics
+                mean_zscores = []
+                auc_values = []
+                max_peaks = []
+                peak_times = []
+
+                for time_axis, event_zscore in zip(time_axes, event_zscores):
+                    time_axis = np.array(time_axis)
+                    event_zscore = np.array(event_zscore)
+
+                    # Mask for time_axis >= 0
+                    mask = time_axis >= 0
+                    if not np.any(mask):
+                        mean_zscores.append(np.nan)
+                        auc_values.append(np.nan)
+                        max_peaks.append(np.nan)
+                        peak_times.append(np.nan)
+                        continue
+
+                    final_time = time_axis[mask]
+                    final_z = event_zscore[mask]
+
+                    # Compute metrics
+                    mean_z = np.mean(final_z)
+                    auc = np.trapz(final_z, final_time)
+                    max_idx = np.argmax(final_z)
+                    max_peak = final_z[max_idx]
+                    peak_time = final_time[max_idx]
+
+                    # Append results for this trial
+                    mean_zscores.append(mean_z)
+                    auc_values.append(auc)
+                    max_peaks.append(max_peak)
+                    peak_times.append(peak_time)
+
+                # Append lists of results for this row
+                mean_zscores_all.append(mean_zscores)
+                auc_values_all.append(auc_values)
+                max_peaks_all.append(max_peaks)
+                peak_times_all.append(peak_times)
+
+            # Store computed values as lists inside new DataFrame columns
+            df['Mean Z-score EI'] = mean_zscores_all
+            df['AUC EI'] = auc_values_all
+            df['Max Peak EI'] = max_peaks_all
+            df['Time of Max Peak EI'] = peak_times_all
+            return df
+
+        if mode == 'standard':
+            # Apply function across all trials
+            df["computed_metrics"] = df.apply(
+                lambda row: compute_da_metrics_for_trial(row["trial"], row["filtered_sound_cues"]), axis=1)
+            df["Tone AUC"] = df["computed_metrics"].apply(lambda x: [item.get("AUC", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df["Tone Max Peak"] = df["computed_metrics"].apply(lambda x: [item.get("Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df["Tone Time of Max Peak"] = df["computed_metrics"].apply(lambda x: [item.get("Time of Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df["Tone Mean Z-score"] = df["computed_metrics"].apply(lambda x: [item.get("Mean Z-score", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df["Tone Adjusted End"] = df["computed_metrics"].apply(lambda x: [item.get("Adjusted End", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            # Drop the "computed_metrics" column if it's no longer needed
+            df.drop(columns=["computed_metrics"], inplace=True)
+        else:
+            compute_ei(df)
                 
-    def compute_lick_da(self, df=None):
+    def compute_lick_da(self, df=None, mode='standard'):
         if df is None:
             df = self.df
         """Iterate through trials in the dataframe and compute DA metrics for each lick trial."""
         
         def compute_da_metrics_for_lick(trial_obj, first_lick_after_tones, closest_port_entry_offsets, 
-                                        use_adaptive=True, peak_fall_fraction=0.5, allow_bout_extension=False):
+                                        use_adaptive=False, peak_fall_fraction=0.5, allow_bout_extension=False,
+                                        use_fractional=False, max_bout_duration=15):
             """Compute DA metrics (AUC, Max Peak, Time of Max Peak, Mean Z-score) for a single trial, 
             iterating over multiple first_lick_after_tone and closest_port_entry_offset values."""
             
@@ -763,7 +851,6 @@ class Reward_Competition(Experiment):
             zscores = np.array(trial_obj.zscore)  
 
             computed_metrics = []
-
             for first_lick_after_tone, closest_port_entry_offset in zip(first_lick_after_tones, closest_port_entry_offsets):
                 # Ensure timestamps array is not empty and start_time is before end_time
                 if len(timestamps) == 0 or first_lick_after_tone >= closest_port_entry_offset: 
@@ -840,24 +927,86 @@ class Reward_Competition(Experiment):
                 })
 
             return computed_metrics
+        def compute_ei(df):
+            # EI mode: use event-induced data.
+            if 'Event_Time_Axis' not in df.columns or 'Event_Zscore' not in df.columns:
+                print("Event-induced data not found in behaviors. Please run compute_event_induced_DA() first.")
+                return df
 
-        # Apply the function across all trials
-        df["lick_computed_metrics"] = df.apply(
-            lambda row: compute_da_metrics_for_lick(row["trial"], row["first_lick_after_sound_cue"], 
-                                                    row["closest_lick_offset"], use_adaptive=True, 
-                                                    peak_fall_fraction=0.5, allow_bout_extension=False), axis=1)
+            # Lists to store computed arrays for each row
+            mean_zscores_all = []
+            auc_values_all = []
+            max_peaks_all = []
+            peak_times_all = []
 
-        # Extract the individual DA metrics into new columns
-        df["Lick AUC"] = df["lick_computed_metrics"].apply(lambda x: [item.get("AUC", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        df["Lick Max Peak"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        df["Lick Time of Max Peak"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Time of Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        df["Lick Mean Z-score"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Mean Z-score", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        df["Lick Adjusted End"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Adjusted End", np.nan) for item in x] if isinstance(x, list) else np.nan)
-        print([item.get("AUC", np.nan) for item in df["lick_computed_metrics"].iloc[0]])
+            for i, row in df.iterrows():
+                # Extract all trials (lists) within the row
+                time_axes = np.array(row['Event_Time_Axis'])  # 2D array (list of lists)
+                event_zscores = np.array(row['Event_Zscore'])  # 2D array (list of lists)
 
-        print(df["lick_computed_metrics"])
-        # Drop the "lick_computed_metrics" column if it's no longer needed
-        df.drop(columns=["lick_computed_metrics"], inplace=True)
+                # Lists to store per-trial metrics
+                mean_zscores = []
+                auc_values = []
+                max_peaks = []
+                peak_times = []
+
+                for time_axis, event_zscore in zip(time_axes, event_zscores):
+                    time_axis = np.array(time_axis)
+                    event_zscore = np.array(event_zscore)
+
+                    # Mask for time_axis >= 0
+                    mask = time_axis >= 0
+                    if not np.any(mask):
+                        mean_zscores.append(np.nan)
+                        auc_values.append(np.nan)
+                        max_peaks.append(np.nan)
+                        peak_times.append(np.nan)
+                        continue
+
+                    final_time = time_axis[mask]
+                    final_z = event_zscore[mask]
+
+                    # Compute metrics
+                    mean_z = np.mean(final_z)
+                    auc = np.trapz(final_z, final_time)
+                    max_idx = np.argmax(final_z)
+                    max_peak = final_z[max_idx]
+                    peak_time = final_time[max_idx]
+
+                    # Append results for this trial
+                    mean_zscores.append(mean_z)
+                    auc_values.append(auc)
+                    max_peaks.append(max_peak)
+                    peak_times.append(peak_time)
+
+                # Append lists of results for this row
+                mean_zscores_all.append(mean_zscores)
+                auc_values_all.append(auc_values)
+                max_peaks_all.append(max_peaks)
+                peak_times_all.append(peak_times)
+
+            # Store computed values as lists inside new DataFrame columns
+            df['Lick Mean Z-score EI'] = mean_zscores_all
+            df['Lick AUC EI'] = auc_values_all
+            df['Lick Max Peak EI'] = max_peaks_all
+            df['Lick Time of Max Peak EI'] = peak_times_all
+            return df
+
+        if mode == 'standard':
+            # Apply the function across all trials
+            df["lick_computed_metrics"] = df.apply(
+                lambda row: compute_da_metrics_for_lick(row["trial"], row["first_lick_after_sound_cue"], 
+                                                        row["closest_lick_offset"], use_adaptive=True, 
+                                                        peak_fall_fraction=0.5, allow_bout_extension=False), axis=1)
+            # Extract the individual DA metrics into new columns
+            df["Lick AUC"] = df["lick_computed_metrics"].apply(lambda x: [item.get("AUC", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df["Lick Max Peak"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df["Lick Time of Max Peak"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Time of Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df["Lick Mean Z-score"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Mean Z-score", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df["Lick Adjusted End"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Adjusted End", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df.drop(columns=["lick_computed_metrics"], inplace=True)
+        else:
+            compute_ei(df)
 
     def find_means(self, df):
         if df is None:
@@ -868,6 +1017,12 @@ class Reward_Competition(Experiment):
         df["Tone AUC Mean"] = df["Tone AUC"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
         df["Tone Max Peak Mean"] = df["Tone Max Peak"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
         df["Tone Mean Z-score Mean"] = df["Tone Mean Z-score"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Lick AUC Mean EI"] = df["Lick AUC EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Lick Max Peak Mean EI"] = df["Lick Max Peak EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Lick Mean Z-score Mean EI"] = df["Lick Mean Z-score EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Tone AUC Mean EI"] = df["AUC EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Tone Max Peak Mean EI"] = df["Max Peak EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Tone Mean Z-score Mean EI"] = df["Mean Z-score EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
 
     def find_overall_mean(self, df):
         if df is None:
@@ -893,6 +1048,24 @@ class Reward_Competition(Experiment):
             'Tone Max Peak Last': 'mean',
             'Tone Mean Z-score First': 'mean',
             'Tone Mean Z-score Last': 'mean',
+            "Lick AUC Mean EI": 'mean',
+            "Lick Max Peak Mean EI": 'mean',
+            "Lick Mean Z-score Mean EI": 'mean',
+            "Tone AUC Mean EI": 'mean',
+            "Tone Max Peak Mean EI": 'mean',
+            "Tone Mean Z-score Mean EI": 'mean',
+            "Lick AUC EI First": 'mean',
+            "Lick Max Peak EI First": 'mean',
+            "Lick Max Peak EI First": 'mean',
+            "Tone AUC EI First": 'mean',
+            "Tone Max Peak EI First": 'mean',
+            "Tone Mean Z-score EI First": 'mean',
+            "Lick AUC EI Last": 'mean',
+            "Lick Max Peak EI Last": 'mean',
+            "Lick Max Peak EI Last": 'mean',
+            "Tone AUC EI Last": 'mean',
+            "Tone Max Peak EI Last": 'mean',
+            "Tone Mean Z-score EI Last": 'mean',
         })
         final_df = df
         return final_df
@@ -945,54 +1118,6 @@ class Reward_Competition(Experiment):
             error_kw=dict(elinewidth=4, capthick=4, capsize=10, zorder=5)
         )
 
-        p_values = []
-        print(df.columns)
-        for col in df.columns:
-            print(f"Processing column: {col}")
-            
-            # Check if 'Last' column exists in df1, corresponding to the 'First' column in df
-            col_last = col.replace('First', 'Last')  # Create the 'Last' column name
-            
-            # Check if the 'Last' column is in df1
-            if col_last in df1.columns:
-                print(f"df: {df[col]}")
-                print(f"df1: {df1[col_last]}")
-                
-                # Run t-test between the 'First' and 'Last' columns
-                t_stat, p_value = ttest_ind(df[col], df1[col_last], nan_policy='omit', equal_var=False)
-                p_values.append(p_value)
-                print(f"T-test for {col} and {col_last}: t={t_stat:.3f}, p={p_value:.3e}")  # Print results
-            else:
-                print(f"Column {col_last} not found in df1. Skipping t-test for {col}.")
-
-        # Function to convert p-values to asterisks
-        def get_p_value_asterisks(p_value):
-            if p_value < 0.001:
-                return "***"
-            elif p_value < 0.01:
-                return "**"
-            elif p_value < 0.05:
-                return "*"
-            else:
-                return None
-
-        # Get the top y-limit to position the significance bar
-        y_top = ax.get_ylim()[1]  # Position at 95% of max y-limit
-
-        # Add significance annotations (only for significant p-values)
-        for i, p_value in enumerate(p_values):
-            p_text = get_p_value_asterisks(p_value)  # Convert p-value to asterisk notation
-
-            if p_text:  # Only add bar if significant
-                x1 = x[i] - bar_width / 2 - gap / 2  # Left bar
-                x2 = x[i] + bar_width / 2 + gap / 2  # Right bar
-
-                # Draw the black significance bar
-                ax.plot([x1, x2], [y_top, y_top], color='black', linewidth=6)
-
-                # Add asterisk annotation above the bar
-                ax.text((x1 + x2) / 2, y_top + 0.02, p_text, ha='center', fontsize=40, fontweight='bold')
-
         # Set x-ticks in the center of each grouped pair of bars
         # Define the positions for the x-ticks of both bars
         x_left = x - bar_width / 2 - gap / 2  # Position for Tone
@@ -1044,6 +1169,54 @@ class Reward_Competition(Experiment):
         ax.spines['left'].set_linewidth(5)
         ax.spines['bottom'].set_linewidth(5)
 
+        p_values = []
+        print(df.columns)
+        for col in df.columns:
+            print(f"Processing column: {col}")
+            
+            # Check if 'Last' column exists in df1, corresponding to the 'First' column in df
+            col_last = col.replace('First', 'Last')  # Create the 'Last' column name
+            
+            # Check if the 'Last' column is in df1
+            if col_last in df1.columns:
+                print(f"df: {df[col]}")
+                print(f"df1: {df1[col_last]}")
+                
+                # Run t-test between the 'First' and 'Last' columns
+                t_stat, p_value = ttest_ind(df[col], df1[col_last], nan_policy='omit', equal_var=False)
+                p_values.append(p_value)
+                print(f"T-test for {col} and {col_last}: t={t_stat:.3f}, p={p_value:.3e}")  # Print results
+            else:
+                print(f"Column {col_last} not found in df1. Skipping t-test for {col}.")
+
+        # Function to convert p-values to asterisks
+        def get_p_value_asterisks(p_value):
+            if p_value < 0.001:
+                return "***"
+            elif p_value < 0.01:
+                return "**"
+            elif p_value < 0.05:
+                return "*"
+            else:
+                return None
+
+        # Get the top y-limit to position the significance bar
+        y_top = ax.get_ylim()[1] * 0.95  # Position at 95% of max y-limit
+
+        # Add significance annotations (only for significant p-values)
+        for i, p_value in enumerate(p_values):
+            p_text = get_p_value_asterisks(p_value)  # Convert p-value to asterisk notation
+
+            if p_text:  # Only add bar if significant
+                x1 = x[i] - bar_width / 2 - gap / 2  # Left bar
+                x2 = x[i] + bar_width / 2 + gap / 2  # Right bar
+
+                # Draw the black significance bar
+                ax.plot([x1, x2], [y_top, y_top], color='black', linewidth=6)
+
+                # Add asterisk annotation above the bar
+                ax.text((x1 + x2) / 2, y_top + 0.02, p_text, ha='center', fontsize=40, fontweight='bold')
+
         # Add title
         plt.title(title, fontsize=40, fontweight='bold', pad=24)
 
@@ -1070,7 +1243,6 @@ class Reward_Competition(Experiment):
             df = self.df
         # Filtering data frame to only keep specified metrics
         def filter_by_metric(df, metric_name):
-            print(df.columns)
             # Filter DataFrame columns based on the 'like' condition
             first_column = df[['subject_name', f'Tone {metric_name} First']]
             last_column = df[['subject_name', f'Tone {metric_name} Last']]
@@ -1092,9 +1264,6 @@ class Reward_Competition(Experiment):
 
         # Split data into NAc and mPFC, with subject names
         df_nac_f, df_mpfc_f, df_nac_l, df_mpfc_l = split_by_subject(first_df, last_df)
-
-        print(df_nac_f.columns)
-        print(df_nac_l.columns)
 
         # Select the data for the desired brain region
         if brain_region == 'NAc':
@@ -1151,10 +1320,10 @@ class Reward_Competition(Experiment):
         label2 = 'Lose'
 
         def filter_by_metric(df):
-            metric_columns = df.filter(like=metric_name + method).columns
-            print(metric_columns)
+            metric_columns = [col for col in df.columns if col.endswith(metric_name + method) and ('Lick' in col or 'Tone' in col)]
+            
             if len(metric_columns) != 2:
-                raise ValueError(f"Expected exactly 2 columns, but found {len(metric_columns)}.")
+                raise ValueError(f"Expected exactly 2 columns, but found {len(metric_columns)}: {metric_columns}")
 
             # Create two DataFrames, keeping 'subject_name'
             df1 = df[['subject_name', metric_columns[0]]].copy()
@@ -1247,14 +1416,13 @@ class Reward_Competition(Experiment):
     def heatmaps(self):
         pass    
 
-    def scatter_dominance(self, directory_path, df, metric_name, condition, pad_inches=0.1):
+    def scatter_dominance(self, directory_path, df, metric_name, method, condition, pad_inches=0.1):
         """
         Scatter plot of dominance rank in a cage.
         """
         def filter_by_metric(df, metric_name):
-            metric_columns = df.columns[df.columns == f'Tone {metric_name} Mean']
-            print(metric_columns)
-            
+            metric_columns = df.columns[df.columns == f'Tone {metric_name} Mean {method}']
+
             # Create two DataFrames, keeping 'subject_name'
             df_tone = df[['subject_name', 'Cage', 'Rank'] + metric_columns.tolist()].copy()
             return df_tone
@@ -1275,8 +1443,6 @@ class Reward_Competition(Experiment):
 
         df_sorted_n = df_tone_n.sort_values(by=['Rank'])
         df_sorted_p = df_tone_p.sort_values(by=['Rank'])
-        print(df_sorted_n)
-        print(df_sorted_p)
 
         def scatter_plot(directory_path, df_sorted, metric_value, brain_region):
             if brain_region == "mPFC":
@@ -1314,8 +1480,8 @@ class Reward_Competition(Experiment):
             plt.savefig(save_path, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
             return r_value, p_value, n_value
 
-        r_nac, p_nac, n_nac = scatter_plot(df_sorted_n, metric_value=metric_name, brain_region="NAc")
-        r_mpfc, p_mpfc, n_mpfc = scatter_plot(df_sorted_p, metric_value=metric_name, brain_region="mPFC")
+        r_nac, p_nac, n_nac = scatter_plot(directory_path, df_sorted_n, metric_value=metric_name, brain_region="NAc")
+        r_mpfc, p_mpfc, n_mpfc = scatter_plot(directory_path, df_sorted_p, metric_value=metric_name, brain_region="mPFC")
         print(f"NAc: r={r_nac:.3f}, p={p_nac:.3f}, n={n_nac}")
         print(f"mPFC: r={r_mpfc:.3f}, p={p_mpfc:.3f}, n={n_mpfc}")
 
@@ -1353,5 +1519,20 @@ class Reward_Competition(Experiment):
         df['Tone Mean Z-score First'] = df['Tone Mean Z-score'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
         df['Tone Mean Z-score Last'] = df['Tone Mean Z-score'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
 
-        """df['ei_tone First'] = df['ei_tone'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
-        df['ei_tone Last'] = df['ei_tone'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)"""
+        df['Tone AUC EI First'] = df['AUC EI'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        df['Tone AUC EI Last'] = df['AUC EI'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+
+        df['Tone Max Peak EI First'] = df['Max Peak EI'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        df['Tone Max Peak EI Last'] = df['Max Peak EI'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+        
+        df['Tone Mean Z-score EI First'] = df['Mean Z-score EI'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        df['Tone Mean Z-score EI Last'] = df['Mean Z-score EI'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)  
+
+        df['Lick AUC EI First'] = df['Lick AUC EI'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        df['Lick AUC EI Last'] = df['Lick AUC EI'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+
+        df['Lick Max Peak EI First'] = df['Lick Max Peak EI'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        df['Lick Max Peak EI Last'] = df['Lick Max Peak EI'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+        
+        df['Lick Mean Z-score EI First'] = df['Lick Mean Z-score EI'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        df['Lick Mean Z-score EI Last'] = df['Lick Mean Z-score EI'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)      
