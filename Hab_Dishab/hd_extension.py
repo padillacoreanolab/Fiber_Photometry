@@ -1,234 +1,198 @@
 import numpy as np
 import pandas as pd
-import tdt
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
-import re
-import os
-from scipy.signal import butter, filtfilt
 from scipy.stats import ttest_rel
 from sklearn.linear_model import LinearRegression
 from trial_class import *
 
 import matplotlib.pyplot as plt
-import re
 
 # Behavior ---------------------------------------------------------------------------------------
 # Behavior Processing
 def get_trial_dataframes(experiment):
     """
-    Given an Experiment object, return a list of DataFrames,
-    where each DataFrame corresponds to the .behaviors of each trial.
+    Given an Experiment object, return a dictionary where:
+    - Keys are subject IDs (Trial.subject_name).
+    - Values are DataFrames corresponding to the behaviors of each trial.
     """
-    # Extract all trial IDs from the experiment
-    trial_ids = list(experiment.trials.keys())
+    trial_data = {}
 
-    # Retrieve a DataFrame of behaviors for each trial
-    trial_dataframes = [experiment.trials[tid].behaviors for tid in trial_ids]
+    for trial in experiment.trials.values():
+        subject_id = trial.subject_name  # Extract subject ID
+        trial_data[subject_id] = trial.behaviors  # Store behaviors DataFrame
 
-    return trial_dataframes
+    return trial_data
 
-def create_subject_summary_df(dfs):
+def create_metadata_dataframe(trial_data, behavior="Investigation"):
     """
-    Takes in a list of DataFrames (each CSV is one subject),
-    and assigns a unique Subject ID (1 to N) to each DataFrame.
-    
-    For each subject:
-      - Total Investigation Time = sum of "Duration (s)"
-      - Average Bout Duration = total_investigation_time / number_of_bouts
-    
-    Returns a single DataFrame with columns:
-      ['Bout', 'Subject', 'Behavior', 'Duration (s)',
-       'Total Investigation Time', 'Average Bout Duration']
-    """
-    processed_list = []
-    subject_id = 1
-    
-    for df in dfs:
-        temp_df = df.copy()
-        
-        # Assign this entire CSV to one Subject
-        temp_df["Subject"] = subject_id
-        
-        # Calculate sums and average for this subject
-        total_invest_time = temp_df["Duration (s)"].sum()
-        num_bouts = temp_df["Bout"].nunique()  # how many unique bouts in this CSV
-        avg_bout_dur = total_invest_time / num_bouts if num_bouts else 0
-        
-        # Attach these values to every row
-        temp_df["Total Investigation Time"] = total_invest_time
-        temp_df["Average Bout Duration"] = avg_bout_dur
-        
-        processed_list.append(temp_df)
-        subject_id += 1  # next CSV -> next Subject
-    
-    # Concatenate all into a single DataFrame
-    final_df = pd.concat(processed_list, ignore_index=True)
-    return final_df
-
-def process_investigation_data(df, 
-                               behavior_name='Investigation', 
-                               gap_threshold=1.0, 
-                               min_duration=0.5,
-                               desired_bouts=None,
-                               agg_func='sum'):
-    """
-    Merge consecutive Investigation events within 'gap_threshold' seconds,
-    remove events shorter than 'min_duration', then group/pivot by Subject & Bout.
-    
     Parameters
     ----------
-    df : pd.DataFrame
-        Must have columns: [Subject, Behavior, Bout, Event_Start, Event_End, Duration (s)]
-    behavior_name : str
-        Which behavior to combine/filter (default 'Investigation').
-    gap_threshold : float
-        Max gap (in seconds) to consider consecutive events mergeable.
-    min_duration : float
-        Minimum duration below which events are removed.
-    desired_bouts : list or None
-        Which bouts to keep (if None, keep all).
-    agg_func : {'sum', 'mean'}
-        How to combine the durations in the final group step.
-        
+    trial_data : dict
+        Dictionary of { subject_id : DataFrame }, 
+        where each DataFrame has columns: 
+        [Bout, Behavior, Event_Start, Event_End, Duration (s)], etc.
+    
+    behavior : str, optional
+        The behavior type to filter for (default = "Investigation").
+
     Returns
     -------
-    pivot_df : pd.DataFrame
-        Pivoted DataFrame of aggregated durations by Subject × Bout.
+    pd.DataFrame
+        Metadata DataFrame with columns:
+        [Subject, Bout, Behavior, Total Investigation Time, Average Bout Duration]
+        Only includes rows for the specified behavior.
     """
     
-    #--- 1) Keep only rows matching the specified behavior ---
-    df = df[df["Behavior"] == behavior_name].copy()
+    all_subjects_list = []
+
+    # Loop through each subject and its corresponding DataFrame
+    for subject_id, df in trial_data.items():
+        
+        # 1) Filter to keep only the chosen behavior
+        df_filtered = df[df["Behavior"] == behavior].copy()
+        
+        # If there's no data for this subject after filtering, skip
+        if df_filtered.empty:
+            continue
+
+        # 2) Group by (Bout, Behavior) and aggregate Duration (s)
+        grouped = (
+            df_filtered.groupby(["Bout", "Behavior"], as_index=False)["Duration (s)"]
+                      .agg(["sum", "count"])  # sum => total time, count => number of rows
+        )
+        
+        # 3) Rename columns for clarity
+        grouped.columns = ["Bout", "Behavior", "Total Investigation Time", "RowCount"]
+        
+        # 4) Calculate average bout duration = total / number of rows in that group
+        grouped["Average Bout Duration"] = (
+            grouped["Total Investigation Time"] / grouped["RowCount"]
+        )
+        
+        # 5) Add subject column
+        grouped["Subject"] = subject_id
+        
+        # 6) Reorder columns for final output
+        grouped = grouped[
+            ["Subject", "Bout", "Behavior",
+             "Total Investigation Time", "Average Bout Duration"]
+        ]
+        
+        all_subjects_list.append(grouped)
+
+    # 7) Concatenate all subjects' metadata into a single DataFrame
+    final_df = pd.concat(all_subjects_list, ignore_index=True)
     
-    #--- 2) Sort so consecutive events are truly consecutive by subject & start time ---
-    df.sort_values(["Subject", "Event_Start"], inplace=True)
-    df.reset_index(drop=True, inplace=True)
-    
-    #--- 3) Identify which rows should *not* merge with their predecessor ---
-    df["new_block"] = (
-        (df["Subject"] != df["Subject"].shift(1)) |
-        (df["Event_Start"] - df["Event_End"].shift(1) > gap_threshold)
-    )
-    df["group_id"] = df["new_block"].cumsum()
-    
-    #--- 4) Merge consecutive events in each group_id ---
-    merged = (
-        df.groupby("group_id", as_index=False)
-          .agg({
-              "Subject":      "first",
-              "Behavior":     "first",
-              "Bout":         "first",  # Uses the first bout label in the block
-              "Event_Start":  "min",
-              "Event_End":    "max",
-              "Duration (s)": "sum"
-          })
-    )
-    
-    #--- 5) Remove events shorter than min_duration ---
-    merged = merged[merged["Duration (s)"] >= min_duration].copy()
-    
-    #--- 6) Filter by desired bouts (if provided) ---
-    if desired_bouts is not None:
-        merged = merged[merged["Bout"].isin(desired_bouts)]
-    
-    #--- 7) Group by Subject & Bout with either sum or mean, then pivot ---
-    if agg_func == 'sum':
-        grouped_df = merged.groupby(["Subject", "Bout"], as_index=False)["Duration (s)"].sum()
-    elif agg_func == 'mean':
-        grouped_df = merged.groupby(["Subject", "Bout"], as_index=False)["Duration (s)"].mean()
-    else:
-        raise ValueError("agg_func must be either 'sum' or 'mean'")
-    
-    pivot_df = (
-        grouped_df
-        .pivot(index="Subject", columns="Bout", values="Duration (s)")
-        .fillna(0)
-    )
-    
-    return pivot_df
+    return final_df
 
 
-# Behavior Plotting
-def plot_y_across_bouts_gray(df,  
-                             title='Mean Across Bouts', 
-                             ylabel='Mean Value', 
-                             custom_xtick_labels=None, 
-                             custom_xtick_colors=None, 
-                             ylim=None, 
-                             bar_color='#00B7D7',
-                             yticks_increment=None, 
-                             xlabel='Agent',
-                             figsize=(12,7), 
-                             pad_inches=0.1):
+
+def plot_behavior_times_across_bouts_gray(metadata_df,
+                                          y_col="Total Investigation Time",
+                                          behavior=None,
+                                          title='Mean Across Bouts',
+                                          ylabel=None,
+                                          custom_xtick_labels=None,
+                                          custom_xtick_colors=None,
+                                          ylim=None,
+                                          bar_color='#00B7D7',
+                                          yticks_increment=None,
+                                          xlabel='Agent',
+                                          figsize=(12,7),
+                                          pad_inches=0.1,
+                                          save=False,
+                                          save_name=None):
     """
-    Plots the mean values during investigations or other events across bouts with error bars for SEM,
-    and individual subject lines connecting the bouts. All subjects are plotted in gray.
-
+    Plots a bar chart with error bars (SEM) and individual subject lines in gray,
+    based on a metadata DataFrame containing columns:
+      [Subject, Bout, Behavior, Total Investigation Time, Average Bout Duration].
+    
     Parameters:
-        - df (DataFrame): A DataFrame where rows are subjects, and bouts are columns.
-                          Values should represent the mean values (e.g., mean DA, investigation times)
-                          for each subject and bout.
+        - metadata_df (pd.DataFrame): DataFrame with columns:
+          [Subject, Bout, Behavior, Total Investigation Time, Average Bout Duration].
+        - y_col (str): Which column to plot on the y-axis.
+                       (e.g., "Total Investigation Time" or "Average Bout Duration")
+        - behavior (str or None): If provided, filters the DataFrame to only rows with that behavior.
         - title (str): The title for the plot.
-        - ylabel (str): The label for the y-axis.
-        - custom_xtick_labels (list): A list of custom x-tick labels. If not provided, defaults to the column names.
-        - custom_xtick_colors (list): A list of colors for the x-tick labels. Must be the same length as custom_xtick_labels.
-        - ylim (tuple): A tuple (min, max) to set the y-axis limits. If None, the limits are set automatically based on the data.
-        - bar_color (str): The color to use for the bars (default is cyan).
-        - yticks_increment (float): Increment amount for the y-axis ticks.
-        - xlabel (str): The label for the x-axis.
-        - figsize (tuple): The figure size.
+        - ylabel (str or None): Label for the y-axis. If None, defaults to y_col.
+        - custom_xtick_labels (list or None): Custom x-tick labels; if not provided, uses the bout names.
+        - custom_xtick_colors (list or None): A list of colors for the x-tick labels.
+        - ylim (tuple or None): (min, max) for y-axis. If None, determined automatically.
+        - bar_color (str): Color for the bars.
+        - yticks_increment (float or None): Increment for y-axis ticks.
+        - xlabel (str): Label for the x-axis.
+        - figsize (tuple): Figure size.
         - pad_inches (float): Padding around the figure when saving.
+        - save (bool): If True, saves the image to disk.
+        - save_name (str or None): Full file path (with filename and extension) where the image should be saved.
+                                   Required if save is True.
     """
-    # Calculate the mean and SEM for each bout (across all subjects)
-    mean_values = df.mean()
-    sem_values = df.sem()
+    # 1) Optionally filter by behavior
+    if behavior is not None:
+        metadata_df = metadata_df[metadata_df["Behavior"] == behavior].copy()
+        if metadata_df.empty:
+            raise ValueError(f"No data found for behavior='{behavior}'.")
 
-    # Create the plot
+    # 2) Check if the desired y_col exists
+    if y_col not in metadata_df.columns:
+        raise ValueError(f"'{y_col}' not found in metadata_df columns.")
+
+    # 3) Pivot the DataFrame: rows -> Subjects, columns -> Bout, values -> y_col
+    pivot_df = metadata_df.pivot(index="Subject", columns="Bout", values=y_col)
+
+    # 4) Calculate mean and SEM across subjects for each bout
+    mean_values = pivot_df.mean()
+    sem_values = pivot_df.sem()
+
+    # 5) Create the plot
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Plot the bar plot with error bars (mean and SEM) without adding it to the legend
+    # 6) Bar plot with error bars (SEM)
     bars = ax.bar(
-        df.columns, 
+        pivot_df.columns, 
         mean_values, 
         yerr=sem_values, 
-        capsize=6,               # Increase capsize for larger error bars
-        color=bar_color,         # Customizable bar color
+        capsize=6,
+        color=bar_color,
         edgecolor='black', 
-        linewidth=5,             # Thicker and darker bar outlines
+        linewidth=5,
         width=0.6,
-        error_kw=dict(elinewidth=3, capthick=3, zorder=5)  # Thicker error bars and make them appear above circles
+        error_kw=dict(elinewidth=3, capthick=3, zorder=5)
     )
 
-    # Plot all subject lines in gray with connecting markers
-    for i, subject in enumerate(df.index):
-        ax.plot(df.columns, df.loc[subject], linestyle='-', color='gray', alpha=0.5, linewidth=2.5, zorder=1)
+    # 7) Plot individual subject data in gray (lines and unfilled circles)
+    for subject in pivot_df.index:
+        ax.plot(pivot_df.columns, pivot_df.loc[subject],
+                linestyle='-', color='gray', alpha=0.5,
+                linewidth=2.5, zorder=1)
+        ax.scatter(pivot_df.columns, pivot_df.loc[subject],
+                   facecolors='none', edgecolors='gray',
+                   s=120, alpha=0.6, linewidth=4, zorder=2)
 
-    # Plot unfilled circle markers with larger size, in gray
-    for i, subject in enumerate(df.index):
-        ax.scatter(df.columns, df.loc[subject], facecolors='none', edgecolors='gray', s=120, alpha=0.6, linewidth=4, zorder=2)
-
-    # Add labels, title, and format the axes
+    # 8) Set axis labels and title
+    if ylabel is None:
+        ylabel = y_col
     ax.set_ylabel(ylabel, fontsize=30, labelpad=12)
     ax.set_xlabel(xlabel, fontsize=30, labelpad=12)
     ax.set_title(title, fontsize=16)
 
-    # Set x-ticks to match the bout labels
-    ax.set_xticks(np.arange(len(df.columns)))
+    # 9) Set x-ticks and labels
+    ax.set_xticks(np.arange(len(pivot_df.columns)))
     if custom_xtick_labels is not None:
         ax.set_xticklabels(custom_xtick_labels, fontsize=28)
         if custom_xtick_colors is not None:
             for tick, color in zip(ax.get_xticklabels(), custom_xtick_colors):
                 tick.set_color(color)
     else:
-        ax.set_xticklabels(df.columns, fontsize=26)
+        ax.set_xticklabels(pivot_df.columns, fontsize=26)
 
-    # Increase the font size of y-axis and x-axis tick numbers
+    # Increase tick label sizes
     ax.tick_params(axis='y', labelsize=30)
     ax.tick_params(axis='x', labelsize=30)
 
-    # Automatically set the y-limits based on the data range if ylim is not provided
+    # 10) Set y-axis limits
     if ylim is None:
-        all_values = np.concatenate([df.values.flatten(), mean_values.values.flatten()])
+        all_values = np.concatenate([pivot_df.values.flatten(), mean_values.values.flatten()])
         min_val = np.nanmin(all_values)
         max_val = np.nanmax(all_values)
         lower_ylim = 0 if min_val > 0 else min_val * 1.1
@@ -241,22 +205,41 @@ def plot_y_across_bouts_gray(df,
         if ylim[0] < 0:
             ax.axhline(0, color='black', linestyle='--', linewidth=2, zorder=1)
 
-    # Set y-ticks based on yticks_increment if provided
+    # 11) Set y-ticks if an increment is provided
     if yticks_increment is not None:
         y_min, y_max = ax.get_ylim()
         y_ticks = np.arange(np.floor(y_min), np.ceil(y_max) + yticks_increment, yticks_increment)
         ax.set_yticks(y_ticks)
 
-    # Remove the right and top spines, and adjust the left and bottom spines' linewidth
+    # 12) Remove right & top spines; thicken left & bottom spines
     ax.spines['right'].set_visible(False)
     ax.spines['top'].set_visible(False)
     ax.spines['left'].set_linewidth(5)
     ax.spines['bottom'].set_linewidth(5)
 
-    # Save the figure and display the plot
-    # plt.savefig(f'{title}{ylabel[0]}.png', transparent=True, bbox_inches='tight', pad_inches=pad_inches)
+    # 13) Adjust layout, and save the figure if requested
     plt.tight_layout()
+    if save:
+        if save_name is None:
+            raise ValueError("save_name must be provided if save is True.")
+        plt.savefig(save_name, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
+    
     plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # DA ---------------------------------------------------------------------------------------
@@ -670,7 +653,6 @@ def plot_da_metrics_color_oneplot(experiment,
     
     plt.tight_layout()
     plt.show()
-
 
 
 
