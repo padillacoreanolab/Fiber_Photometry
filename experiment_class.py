@@ -113,23 +113,141 @@ class Experiment:
         plt.show()
 
 
-    def compute_all_da_metrics(self, use_fractional=False, max_bout_duration=10, 
+    def plot_first_behavior_PETHs(self, selected_bouts=None):
+        """
+        Plots the first Investigation PETHs for all trials in the experiment.
+        
+        For each trial, the method:
+          - Filters rows where 'Behavior' equals 'Investigation'.
+          - (Optionally) Further filters the data to only include bouts listed in 'selected_bouts'.
+          - Groups the data by 'Bout' and selects the first event in each bout.
+          - Plots the investigation trace (Relative_Time_Axis vs. Relative_Zscore) with:
+              • a dashed black line at x = 0 (Investigation Start),
+              • a dashed blue line at x = Duration (s) (Investigation End),
+              • a dashed red line at x = Time of Max Peak.
+              
+        The y-axis limits are determined dynamically based on the global minimum and maximum values 
+        across all plotted bouts (with an extra margin of 1 added to each end). Each subplot displays 
+        its own y-axis tick numbers.
+        
+        Parameters:
+          selected_bouts (list, optional): A list of bout identifiers to include. If None, all bouts are plotted.
+        """
+        trial_first_data = []  # list to store each trial's first investigation DataFrame
+        trial_names = []       # list to track trial names
+        max_bouts = 0          # maximum number of bouts across trials
+
+        # Loop over each trial and extract first-investigation events.
+        for trial_name, trial in self.trials.items():
+            if not hasattr(trial, 'behaviors'):
+                continue
+            # Filter for Investigation events.
+            df_invest = trial.behaviors[trial.behaviors["Behavior"] == "Investigation"].copy()
+            
+            # If a selection of bouts is provided, filter to include only those bouts.
+            if selected_bouts is not None:
+                df_invest = df_invest[df_invest["Bout"].isin(selected_bouts)]
+            
+            # Group by 'Bout' and take the first event in each group.
+            df_first_invest = df_invest.groupby("Bout", as_index=False).first()
+            trial_first_data.append(df_first_invest)
+            trial_names.append(trial_name)
+            if len(df_first_invest) > max_bouts:
+                max_bouts = len(df_first_invest)
+
+        if len(trial_first_data) == 0:
+            print("No trial data available for plotting first investigation behaviors.")
+            return
+
+        # Determine global y-axis limits from all Relative_Zscore data.
+        global_min = np.inf
+        global_max = -np.inf
+        for df_first in trial_first_data:
+            for _, row in df_first.iterrows():
+                y_data = row["Relative_Zscore"]
+                current_min = np.min(y_data)
+                current_max = np.max(y_data)
+                if current_min < global_min:
+                    global_min = current_min
+                if current_max > global_max:
+                    global_max = current_max
+
+        ymin = global_min - 1
+        ymax = global_max + 1
+
+        n_rows = len(trial_first_data)
+        n_cols = max_bouts
+
+        # Create a grid of subplots without sharing y axes so each shows its own y-axis numbers.
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
+        # Ensure axes is a 2D array for consistent indexing.
+        if n_rows == 1 and n_cols == 1:
+            axes = [[axes]]
+        elif n_rows == 1:
+            axes = [axes]
+        elif n_cols == 1:
+            axes = [[ax] for ax in axes]
+
+        # Loop over each trial (row) and each bout (column) to plot.
+        for row_idx, (df_first, trial_name) in enumerate(zip(trial_first_data, trial_names)):
+            for col_idx in range(n_cols):
+                ax = axes[row_idx][col_idx]
+                # Only plot if data for this bout exists.
+                if col_idx < len(df_first):
+                    data_row = df_first.iloc[col_idx]
+
+                    # Extract time and Z-score arrays.
+                    x = data_row["Relative_Time_Axis"]
+                    y = data_row["Relative_Zscore"]
+
+                    # Plot the investigation trace.
+                    ax.plot(x, y, label=f"Bout: {data_row['Bout']}")
+                    # Plot vertical dashed lines:
+                    # Start (x = 0)
+                    ax.axvline(x=0, color='black', linestyle='--', label="Start")
+                    # End (x = Duration (s))
+                    ax.axvline(x=data_row["Duration (s)"], color='blue', linestyle='--', label="End")
+                    # Time of Max Peak (x = Time of Max Peak)
+                    ax.axvline(x=data_row["Time of Max Peak"], color='red', linestyle='--', label="Max Peak")
+                    
+                    # Set y-axis limits based on computed global min and max.
+                    ax.set_ylim([ymin, ymax])
+                    ax.set_xlabel("Relative Time (s)")
+                    ax.set_title(f"Trial {trial_name} - Bout {data_row['Bout']}")
+
+                    # Ensure y-axis tick labels are visible on every subplot.
+                    ax.tick_params(axis='y', labelleft=True)
+                    # Add y-label and legend for the first column.
+                    if col_idx == 0:
+                        ax.set_ylabel("Z-score")
+                        ax.legend()
+                else:
+                    ax.axis('off')
+
+        plt.tight_layout()
+        plt.show()
+
+
+
+    '''********************************** DOPAMINE SHIZ **********************************'''
+    def compute_all_da_metrics(self, use_max_length=False, max_bout_duration=10, 
                             use_adaptive=False, allow_bout_extension=False, mode='standard'):
         """
         Iterates over all trials in the experiment and computes DA metrics with the specified windowing options.
         
         Parameters:
-        - use_fractional (bool): Whether to limit the window to a maximum duration.
+        - use_max_length (bool): Whether to limit the window to a maximum duration.
         - max_bout_duration (int): Maximum allowed window duration (in seconds) if fractional analysis is applied.
         - use_adaptive (bool): Whether to adjust the window using adaptive windowing (via local minimum detection).
         - allow_bout_extension (bool): Whether to extend the window if no local minimum is found.
         - mode (str): Either 'standard' to compute metrics using the full standard DA signal, or 'EI' to compute metrics
                         using the event-induced data (i.e. the precomputed 'Event_Time_Axis' and 'Event_Zscore' columns).
         """
+        
         for trial_name, trial in self.trials.items():
             if hasattr(trial, 'compute_da_metrics'):
                 print(f"Computing DA metrics for {trial_name} ...")
-                trial.compute_da_metrics(use_fractional=use_fractional,
+                trial.compute_da_metrics(use_max_length=use_max_length,
                                         max_bout_duration=max_bout_duration,
                                         use_adaptive=use_adaptive,
                                         allow_bout_extension=allow_bout_extension,

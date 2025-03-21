@@ -4,8 +4,8 @@ import matplotlib.pyplot as plt
 from scipy.stats import ttest_rel
 from sklearn.linear_model import LinearRegression
 from trial_class import *
+import seaborn as sns
 
-import matplotlib.pyplot as plt
 
 # Behavior ---------------------------------------------------------------------------------------
 # Behavior Processing
@@ -23,7 +23,8 @@ def get_trial_dataframes(experiment):
 
     return trial_data
 
-def create_metadata_dataframe(trial_data, behavior="Investigation"):
+
+def create_metadata_dataframe(trial_data, behavior="Investigation", desired_bouts=None):
     """
     Parameters
     ----------
@@ -35,55 +36,60 @@ def create_metadata_dataframe(trial_data, behavior="Investigation"):
     behavior : str, optional
         The behavior type to filter for (default = "Investigation").
 
+    desired_bouts : list or None, optional
+        A list of bout labels to keep. If None, all bouts present in the subject's DataFrame are retained.
+
     Returns
     -------
     pd.DataFrame
         Metadata DataFrame with columns:
         [Subject, Bout, Behavior, Total Investigation Time, Average Bout Duration]
-        Only includes rows for the specified behavior.
+        For each subject and bout in the specified list (or all bouts if None),
+        if the subject never exhibits the specified behavior, a row is included with 
+        Total Investigation Time and Average Bout Duration set to 0.
     """
     
-    all_subjects_list = []
+    metadata_rows = []
 
     # Loop through each subject and its corresponding DataFrame
     for subject_id, df in trial_data.items():
-        
-        # 1) Filter to keep only the chosen behavior
-        df_filtered = df[df["Behavior"] == behavior].copy()
-        
-        # If there's no data for this subject after filtering, skip
-        if df_filtered.empty:
-            continue
+        # Determine which bouts to include: use the desired list if provided,
+        # otherwise use all unique bout labels from the DataFrame.
+        if desired_bouts is not None:
+            bouts = desired_bouts
+        else:
+            bouts = df["Bout"].unique()
 
-        # 2) Group by (Bout, Behavior) and aggregate Duration (s)
-        grouped = (
-            df_filtered.groupby(["Bout", "Behavior"], as_index=False)["Duration (s)"]
-                      .agg(["sum", "count"])  # sum => total time, count => number of rows
-        )
-        
-        # 3) Rename columns for clarity
-        grouped.columns = ["Bout", "Behavior", "Total Investigation Time", "RowCount"]
-        
-        # 4) Calculate average bout duration = total / number of rows in that group
-        grouped["Average Bout Duration"] = (
-            grouped["Total Investigation Time"] / grouped["RowCount"]
-        )
-        
-        # 5) Add subject column
-        grouped["Subject"] = subject_id
-        
-        # 6) Reorder columns for final output
-        grouped = grouped[
-            ["Subject", "Bout", "Behavior",
-             "Total Investigation Time", "Average Bout Duration"]
-        ]
-        
-        all_subjects_list.append(grouped)
+        # Process each bout for the current subject.
+        for bout in bouts:
+            # Filter the subject's DataFrame for the current bout.
+            df_bout = df[df["Bout"] == bout]
+            # Then, filter for the specified behavior.
+            df_behavior = df_bout[df_bout["Behavior"] == behavior]
+            
+            if df_behavior.empty:
+                # If no investigation events are present in this bout, set metrics to 0.
+                total_investigation_time = 0
+                average_bout_duration = 0
+            else:
+                # Compute total investigation time and average bout duration.
+                total_investigation_time = df_behavior["Duration (s)"].sum()
+                count = df_behavior["Duration (s)"].count()
+                average_bout_duration = total_investigation_time / count if count > 0 else 0
+            
+            metadata_rows.append({
+                "Subject": subject_id,
+                "Bout": bout,
+                "Behavior": behavior,
+                "Total Investigation Time": total_investigation_time,
+                "Average Bout Duration": average_bout_duration
+            })
 
-    # 7) Concatenate all subjects' metadata into a single DataFrame
-    final_df = pd.concat(all_subjects_list, ignore_index=True)
+    # Concatenate all rows into a single DataFrame.
+    final_df = pd.DataFrame(metadata_rows)
     
     return final_df
+
 
 
 
@@ -218,6 +224,136 @@ def plot_behavior_times_across_bouts_gray(metadata_df,
     ax.spines['bottom'].set_linewidth(5)
 
     # 13) Adjust layout, and save the figure if requested
+    plt.tight_layout()
+    if save:
+        if save_name is None:
+            raise ValueError("save_name must be provided if save is True.")
+        plt.savefig(save_name, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
+    
+    plt.show()
+
+
+
+
+def plot_behavior_times_across_bouts_colored(metadata_df,
+                                             y_col="Total Investigation Time",
+                                             behavior=None,
+                                             title='Mean Across Bouts',
+                                             ylabel=None,
+                                             custom_xtick_labels=None,
+                                             custom_xtick_colors=None,
+                                             ylim=None,
+                                             bar_color='#00B7D7',
+                                             yticks_increment=None,
+                                             xlabel='Agent',
+                                             figsize=(12,7),
+                                             pad_inches=0.1,
+                                             save=False,
+                                             save_name=None):
+    """
+    Plots a bar chart with error bars (SEM) and individual subject lines in **color** (instead of gray),
+    and provides a legend mapping subjects to their respective colors.
+    """
+
+    # 1) Optionally filter by behavior
+    if behavior is not None:
+        metadata_df = metadata_df[metadata_df["Behavior"] == behavior].copy()
+        if metadata_df.empty:
+            raise ValueError(f"No data found for behavior='{behavior}'.")
+
+    # 2) Check if the desired y_col exists
+    if y_col not in metadata_df.columns:
+        raise ValueError(f"'{y_col}' not found in metadata_df columns.")
+
+    # 3) Pivot the DataFrame: rows -> Subjects, columns -> Bout, values -> y_col
+    pivot_df = metadata_df.pivot(index="Subject", columns="Bout", values=y_col)
+
+    # 4) Generate unique colors for each subject
+    subjects = pivot_df.index
+    colors = sns.color_palette("husl", n_colors=len(subjects))  # Generate distinct colors
+    subject_color_map = dict(zip(subjects, colors))  # Map each subject to a color
+
+    # 5) Calculate mean and SEM across subjects for each bout
+    mean_values = pivot_df.mean()
+    sem_values = pivot_df.sem()
+
+    # 6) Create the plot
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # 7) Bar plot with error bars (SEM)
+    bars = ax.bar(
+        pivot_df.columns, 
+        mean_values, 
+        yerr=sem_values, 
+        capsize=6,
+        color=bar_color,
+        edgecolor='black', 
+        linewidth=5,
+        width=0.6,
+        error_kw=dict(elinewidth=3, capthick=3, zorder=5)
+    )
+
+    # 8) Plot each subject's data in **color** rather than gray
+    for subject in pivot_df.index:
+        ax.plot(pivot_df.columns, pivot_df.loc[subject],
+                linestyle='-', color=subject_color_map[subject], alpha=0.8,
+                linewidth=2.5, zorder=1, label=subject)
+        ax.scatter(pivot_df.columns, pivot_df.loc[subject],
+                   facecolors='none', edgecolors=subject_color_map[subject],
+                   s=120, alpha=0.9, linewidth=4, zorder=2)
+
+    # 9) Set axis labels and title
+    if ylabel is None:
+        ylabel = y_col
+    ax.set_ylabel(ylabel, fontsize=30, labelpad=12)
+    ax.set_xlabel(xlabel, fontsize=30, labelpad=12)
+    ax.set_title(title, fontsize=16)
+
+    # 10) Set x-ticks and labels
+    ax.set_xticks(np.arange(len(pivot_df.columns)))
+    if custom_xtick_labels is not None:
+        ax.set_xticklabels(custom_xtick_labels, fontsize=28)
+        if custom_xtick_colors is not None:
+            for tick, color in zip(ax.get_xticklabels(), custom_xtick_colors):
+                tick.set_color(color)
+    else:
+        ax.set_xticklabels(pivot_df.columns, fontsize=26)
+
+    # Increase tick label sizes
+    ax.tick_params(axis='y', labelsize=30)
+    ax.tick_params(axis='x', labelsize=30)
+
+    # 11) Set y-axis limits
+    if ylim is None:
+        all_values = np.concatenate([pivot_df.values.flatten(), mean_values.values.flatten()])
+        min_val = np.nanmin(all_values)
+        max_val = np.nanmax(all_values)
+        lower_ylim = 0 if min_val > 0 else min_val * 1.1
+        upper_ylim = max_val * 1.1
+        ax.set_ylim(lower_ylim, upper_ylim)
+        if lower_ylim < 0:
+            ax.axhline(0, color='black', linestyle='--', linewidth=2, zorder=1)
+    else:
+        ax.set_ylim(ylim)
+        if ylim[0] < 0:
+            ax.axhline(0, color='black', linestyle='--', linewidth=2, zorder=1)
+
+    # 12) Set y-ticks if an increment is provided
+    if yticks_increment is not None:
+        y_min, y_max = ax.get_ylim()
+        y_ticks = np.arange(np.floor(y_min), np.ceil(y_max) + yticks_increment, yticks_increment)
+        ax.set_yticks(y_ticks)
+
+    # 13) Remove right & top spines; thicken left & bottom spines
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.spines['left'].set_linewidth(5)
+    ax.spines['bottom'].set_linewidth(5)
+
+    # 14) Add legend for subjects
+    ax.legend(title="Subjects", fontsize=18, title_fontsize=20, loc='upper right', bbox_to_anchor=(1.2, 1))
+
+    # 15) Adjust layout and save the figure if requested
     plt.tight_layout()
     if save:
         if save_name is None:
