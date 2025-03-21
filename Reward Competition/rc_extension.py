@@ -429,6 +429,8 @@ class Reward_Competition(Experiment):
         """
         Extracts tangles, removes the corresponding indices from arrays in other columns, and processes the dataframe.
         """
+        self.df['tangles'] = [[] for _ in range(len(self.df))]
+        
         # Extract 'tangles'
         self.df['tangles_array'] = self.df['trial'].apply(
             lambda x: x.behaviors1.get('tangles', []) if isinstance(x, object) and hasattr(x, 'behaviors1') else []
@@ -640,82 +642,81 @@ class Reward_Competition(Experiment):
         df["duration"] = df.apply(lambda row: np.array(row["closest_lick_offset"]) - np.array(row["first_lick_after_sound_cue"]), axis=1)
 
     """*********************************CALCULATING DOPAMINE RESPONSE***********************************"""
-    def compute_event_induced_DA(self, df=None, pre_time=4, post_time=6):
-        """
-        Computes the peri-event z-scored DA signal for each event in the dataframe.
-        Each event's DA signal is baseline-corrected by subtracting the mean z-score
-        from the pre-event period. Two new columns are added to the dataframe:
-        - 'Event_Time_Axis': A common time axis (relative to event onset).
-        - 'Event_Zscore': The baseline-corrected z-score signal, interpolated onto the common time axis.
-
-        Parameters:
-        - pre_time (float): Seconds to include before event onset.
-        - post_time (float): Seconds to include after event onset.
-        """
+    def compute_event_induced_DA(self, df=None, pre_time=4, post_time=10):
         if df is None:
-            df=self.df
-        if df.empty:
-            print("Dataframe is empty. No behavior events available to compute event-induced DA.")
+            df = self.df
+        min_dt = np.inf
+        for _, row in df.iterrows():
+            trial_obj = row['trial']
+            timestamps = np.array(trial_obj.timestamps)
+            if len(timestamps) > 1:
+                dt = np.min(np.diff(timestamps))  # Find the smallest sampling interval
+                min_dt = min(min_dt, dt)
+
+        if min_dt == np.inf:
+            print("No valid timestamps found to determine dt.")
             return
 
-        # Lists to store the common time axis and the interpolated z-score signal for each event.
-        event_time_axes = []
+        # Define a single global time axis for all trials
+        common_time_axis = np.arange(-pre_time, post_time, min_dt)
         event_zscores = []
+        event_time_list = []
 
-        # Process each row in the dataframe.
-        for idx, row in df.iterrows():
-            trial_obj = row['trial']  # Extract trial_obj from the row
-            sound_cues = row['filtered_sound_cues']  # Extract sound_cues (event start times)
+        # Process each row in the dataframe
+        for _, row in df.iterrows():
+            trial_obj = row['trial']
+            sound_cues = row['filtered_sound_cues']  # Event start times
 
-            # Convert 'timestamps' and 'zscore' to numpy arrays
+            # Convert to numpy arrays
             timestamps = np.array(trial_obj.timestamps)
             zscore = np.array(trial_obj.zscore)
 
-            # Compute dt for this specific trial
-            dt = np.mean(np.diff(timestamps))  # Average time step for this trial
-            common_time_axis = np.arange(-pre_time, post_time, dt)  # Unique for each row
+            if len(sound_cues) == 0:
+                print(f"Warning: No sound cues for trial {trial_obj}")
+                event_zscores.append([np.full(common_time_axis.shape, np.nan)])
+                event_time_list.append([np.full(common_time_axis.shape, np.nan)])
+                continue
 
-            # Store results per trial
-            trial_event_times = []
             trial_event_zscores = []
+            trial_event_times = []
 
-            # Process each sound cue (event start) in the sound_cues array for the current row
+            # Process each event start time
             for event_start in sound_cues:
                 window_start = event_start - pre_time
                 window_end = event_start + post_time
 
-                # Identify indices within the peri-event window.
+                # Find relevant indices
                 mask = (timestamps >= window_start) & (timestamps <= window_end)
                 if not np.any(mask):
-                    # If no data is available, fill with NaNs.
-                    trial_event_times.append(np.full(common_time_axis.shape, np.nan))
+                    print(f"Warning: No timestamps found for event at {event_start}")
                     trial_event_zscores.append(np.full(common_time_axis.shape, np.nan))
+                    trial_event_times.append(np.full(common_time_axis.shape, np.nan))
                     continue
 
-                # Create a time axis relative to the event onset.
+                # Time relative to event onset
                 rel_time = timestamps[mask] - event_start
                 signal = zscore[mask]
 
-                # Compute baseline using the pre-event portion.
+                # Compute baseline (pre-event mean)
                 pre_mask = rel_time < 0
                 baseline = np.nanmean(signal[pre_mask]) if np.any(pre_mask) else 0
 
-                # Baseline-correct the signal.
+                # Baseline-correct the signal
                 corrected_signal = signal - baseline
 
-                # Interpolate the corrected signal onto the common time axis.
+                # Interpolate onto the common time axis
                 interp_signal = np.interp(common_time_axis, rel_time, corrected_signal)
 
-                trial_event_times.append(common_time_axis)
                 trial_event_zscores.append(interp_signal)
+                trial_event_times.append(common_time_axis.copy())  # Store a copy for each event
 
-            # Store results for this trial in the dataframe
-            event_time_axes.append(trial_event_times)
             event_zscores.append(trial_event_zscores)
+            event_time_list.append(trial_event_times)
 
-        # Save computed arrays as new columns in the dataframe.
-        df['Event_Time_Axis'] = event_time_axes
+        # Store results in the dataframe
+        df['Event_Time_Axis'] = event_time_list  # Now structured identically to Event_Zscore
         df['Event_Zscore'] = event_zscores
+
 
     def compute_tone_da(self, df=None, mode='standard'):
         if df is None:
@@ -737,10 +738,12 @@ class Reward_Competition(Experiment):
                 mask = (timestamps >= start_time) & (timestamps <= end_time)
                 window_ts = timestamps[mask]
                 window_z = zscores[mask]
+                print(window_z)
                 
                 if len(window_ts) < 2:
                     computed_metrics.append({"AUC": np.nan, "Max Peak": np.nan, "Time of Max Peak": np.nan, "Mean Z-score": np.nan, "Adjusted End": np.nan})
-                # Skip to next cue
+                    continue
+                    # Skip to next cue
 
                 # Compute initial metrics
                 auc = np.trapz(window_z, window_ts)  
@@ -771,7 +774,7 @@ class Reward_Competition(Experiment):
 
             for i, row in df.iterrows():
                 # Extract all trials (lists) within the row
-                time_axes = np.array(row['Event_Time_Axis'])  # 2D array (list of lists)
+                time_axes = np.array(row['Event_Time_Axis'])  # 1D array
                 event_zscores = np.array(row['Event_Zscore'])  # 2D array (list of lists)
 
                 # Lists to store per-trial metrics
@@ -785,7 +788,7 @@ class Reward_Competition(Experiment):
                     event_zscore = np.array(event_zscore)
 
                     # Mask for time_axis >= 0
-                    mask = time_axis >= 0
+                    mask = (time_axis >= 0) & (time_axis <= 6)
                     if not np.any(mask):
                         mean_zscores.append(np.nan)
                         auc_values.append(np.nan)
@@ -1225,7 +1228,7 @@ class Reward_Competition(Experiment):
         plt.show()
 
     # Response is tone or lick, metric_name is for AUC, Max Peak, or Mean Z-score
-    def plot_da_first_last(self, df, metric_name, directory_path, condition='Winning',  
+    def plot_da_first_last(self, df, metric_name, method, directory_path, condition='Winning',  
                     brain_region='mPFC',  # New parameter to specify the brain region
                     custom_xtick_labels=None, 
                     custom_xtick_colors=None, 
@@ -1244,8 +1247,8 @@ class Reward_Competition(Experiment):
         # Filtering data frame to only keep specified metrics
         def filter_by_metric(df, metric_name):
             # Filter DataFrame columns based on the 'like' condition
-            first_column = df[['subject_name', f'Tone {metric_name} First']]
-            last_column = df[['subject_name', f'Tone {metric_name} Last']]
+            first_column = df[['subject_name', f'Tone {metric_name}{method} First']]
+            last_column = df[['subject_name', f'Tone {metric_name}{method} Last']]
 
             return first_column, last_column
 
@@ -1279,7 +1282,7 @@ class Reward_Competition(Experiment):
         else:
             raise ValueError("brain_region must be either 'NAc' or 'mPFC'")
 
-        title = metric_name + ' ' + condition + f' DA ({title_suffix})'
+        title = metric_name + method + ' ' + condition + f' DA ({title_suffix})'
 
         # Ensure the dataframe contains only numeric data (in case of any non-numeric columns)
         df = df.apply(pd.to_numeric, errors='coerce')
@@ -1410,8 +1413,105 @@ class Reward_Competition(Experiment):
                                   bar_color1, figsize, metric_name, ylim, 
                                   yticks_increment, title3, directory_path, pad_inches,
                                   'Win', 'Lose')
-    def peth_graphs(self):
+
+    def plot_traces():
         pass
+    
+    # plots EI peth for every event
+    def rc_plot_peth_per_event(self, df, i, directory_path, title='PETH graph for n trials', signal_type='zscore', 
+                            error_type='sem', display_pre_time=4, display_post_time=10, yticks_interval=2):
+        """
+        Plots the PETH for each event index (e.g., each sound cue) across all trials in one figure with subplots.
+        """
+        if df is None:
+            df = self.df
+        # Determine the indices for the display range
+        time_axis = df.iloc[i]['Event_Time_Axis'][0]
+        display_start_idx = np.searchsorted(time_axis, -display_pre_time)
+        display_end_idx = np.searchsorted(time_axis, display_post_time)
+        time_axis = time_axis[display_start_idx:display_end_idx]
+
+        num_events = 19
+
+        # Create subplots arranged horizontally
+        fig, axes = plt.subplots(1, num_events, figsize=(5 * num_events, 5), sharey=True)
+        print(len(df.iloc[i]['Event_Zscore']))
+        for idx, event_index in enumerate(range(num_events)):
+            ax = axes[idx]
+            event_traces = df.iloc[i]['Event_Zscore'][event_index]
+            
+            # Check if event_traces is empty
+            if event_traces.size == 0:
+                print(f"No data for event {event_index + 1}")
+                continue
+            
+            # Convert list of traces to numpy array
+            event_traces = np.array(event_traces)
+            
+            # Ensure event_traces is 2D (if only one trace, add a new axis to make it 2D)
+            if event_traces.ndim == 1:
+                event_traces = np.expand_dims(event_traces, axis=0)  # Convert 1D array to 2D
+            
+            # Truncate the traces to the display range
+            event_traces = event_traces[:, display_start_idx:display_end_idx]
+
+            # Plot the traces (without error bars)
+            ax.plot(time_axis, event_traces.T, color='b', label=f'Event {event_index + 1}', linewidth=1.5)  # Transpose for proper plotting
+            ax.axvline(0, color='black', linestyle='--', label='Event onset')
+
+            # Set the x-ticks to show only the last time, 0, and the very end time
+            ax.set_xticks([time_axis[0], 0, time_axis[-1]])
+            ax.set_xticklabels([f'{time_axis[0]:.1f}', '0', f'{time_axis[-1]:.1f}'], fontsize=12)
+
+            # Set the y-tick labels with specified interval
+            if idx == 0:
+                y_min, y_max = ax.get_ylim()
+                y_ticks = np.arange(np.floor(y_min / yticks_interval) * yticks_interval,
+                                    np.ceil(y_max / yticks_interval) * yticks_interval + yticks_interval,
+                                    yticks_interval)
+                ax.set_yticks(y_ticks)
+                ax.set_yticklabels([f'{y:.0f}' for y in y_ticks], fontsize=12)
+            else:
+                ax.set_yticks([])  # Hide y-ticks for other subplots
+
+            ax.set_xlabel('Time (s)', fontsize=14)
+            if idx == 0:
+                ax.set_ylabel(f'{signal_type.capitalize()} dFF', fontsize=14)
+
+            # Set the title for each event
+            ax.set_title(f'Event {event_index + 1}', fontsize=14)
+
+            # Remove the right and top spines for each subplot
+            ax.spines['right'].set_visible(False)
+            ax.spines['top'].set_visible(False)
+
+        # Adjust layout and add a common title
+        plt.suptitle(title, fontsize=16)
+        save_path = os.path.join(str(directory_path) + '\\' + str(i) + 'all_PETH.png')
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.show()
+
+
+    def apply_rc_plot_peth(self, df, directory_path, title='PETH graph for n trials', 
+                       signal_type='zscore', error_type='sem', display_pre_time=4, 
+                       display_post_time=10, yticks_interval=2):
+        """
+        Applies the rc_plot_peth_per_event function to all rows in the DataFrame.
+        """
+        # Loop through all rows in the DataFrame
+        for i, row in df.iterrows():
+            # Call the plotting function for each row
+            self.rc_plot_peth_per_event(
+                df, 
+                i, 
+                directory_path,
+                title=title, 
+                signal_type=signal_type, 
+                error_type=error_type, 
+                display_pre_time=display_pre_time, 
+                display_post_time=display_post_time, 
+                yticks_interval=yticks_interval
+            )
 
     def heatmaps(self):
         pass    
@@ -1421,10 +1521,11 @@ class Reward_Competition(Experiment):
         Scatter plot of dominance rank in a cage.
         """
         def filter_by_metric(df, metric_name):
-            metric_columns = df.columns[df.columns == f'Tone {metric_name} Mean {method}']
+            metric_columns = df.columns[df.columns == f'Tone {metric_name} Mean{method}']
 
             # Create two DataFrames, keeping 'subject_name'
             df_tone = df[['subject_name', 'Cage', 'Rank'] + metric_columns.tolist()].copy()
+            print(df_tone)
             return df_tone
         
         # spliting and copying dataframe into two dataframes for each brain region 
@@ -1444,7 +1545,7 @@ class Reward_Competition(Experiment):
         df_sorted_n = df_tone_n.sort_values(by=['Rank'])
         df_sorted_p = df_tone_p.sort_values(by=['Rank'])
 
-        def scatter_plot(directory_path, df_sorted, metric_value, brain_region):
+        def scatter_plot(directory_path, df_sorted, method, metric_value, brain_region):
             if brain_region == "mPFC":
                 color = '#FFAF00'
             else:
@@ -1453,7 +1554,7 @@ class Reward_Competition(Experiment):
             # Drop rows where 'Rank' is NaN
             df_sorted = df_sorted.dropna(subset=['Rank'])
             x = df_sorted['Rank']
-            y = df_sorted[f'Tone {metric_value} Mean']
+            y = df_sorted[f'Tone {metric_value} Mean{method}']
             if len(x) > 1:  # Pearson requires at least 2 points
                 r_value, p_value = pearsonr(x, y)
             else:
@@ -1463,10 +1564,10 @@ class Reward_Competition(Experiment):
 
             # Create the scatter plot with a regression line
             plt.figure(figsize=(8, 6))
-            sns.scatterplot(data=df_sorted, x='Rank', y=f'Tone {metric_value} Mean', color=color, s=100)
+            sns.scatterplot(data=df_sorted, x='Rank', y=f'Tone {metric_value} Mean{method}', color=color, s=100)
 
             # Add a regression line with R², and remove the shading (confidence interval)
-            sns.regplot(data=df_sorted, x='Rank', y=f'Tone {metric_value} Mean', scatter=False, color='black', line_kws={'lw': 2}, ci=None)
+            sns.regplot(data=df_sorted, x='Rank', y=f'Tone {metric_value} Mean{method}', scatter=False, color='black', line_kws={'lw': 2}, ci=None)
 
             # Set the x-axis ticks to be separated by increments of 1
             plt.xticks(ticks=range(int(df_sorted['Rank'].min()), int(df_sorted['Rank'].max()) + 1, 1))
@@ -1480,8 +1581,8 @@ class Reward_Competition(Experiment):
             plt.savefig(save_path, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
             return r_value, p_value, n_value
 
-        r_nac, p_nac, n_nac = scatter_plot(directory_path, df_sorted_n, metric_value=metric_name, brain_region="NAc")
-        r_mpfc, p_mpfc, n_mpfc = scatter_plot(directory_path, df_sorted_p, metric_value=metric_name, brain_region="mPFC")
+        r_nac, p_nac, n_nac = scatter_plot(directory_path, df_sorted_n, method=method, metric_value=metric_name, brain_region="NAc")
+        r_mpfc, p_mpfc, n_mpfc = scatter_plot(directory_path, df_sorted_p, method=method, metric_value=metric_name, brain_region="mPFC")
         print(f"NAc: r={r_nac:.3f}, p={p_nac:.3f}, n={n_nac}")
         print(f"mPFC: r={r_mpfc:.3f}, p={p_mpfc:.3f}, n={n_mpfc}")
 
@@ -1535,4 +1636,4 @@ class Reward_Competition(Experiment):
         df['Lick Max Peak EI Last'] = df['Lick Max Peak EI'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
         
         df['Lick Mean Z-score EI First'] = df['Lick Mean Z-score EI'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
-        df['Lick Mean Z-score EI Last'] = df['Lick Mean Z-score EI'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)      
+        df['Lick Mean Z-score EI Last'] = df['Lick Mean Z-score EI'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)     
