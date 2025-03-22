@@ -271,3 +271,12 @@ class Experiment:
             trial.compute_event_induced_DA(pre_time=pre_time, post_time=post_time)
 
 
+
+    '''********************************** MISC **********************************'''
+    def reset_all_behaviors(self):
+        """
+        Sets each trial's 'behaviors' DataFrame to empty, so you can re-run
+        group_extract_manual_annotations with different parameters.
+        """
+        for trial in self.trials.values():
+            trial.behaviors = pd.DataFrame()
