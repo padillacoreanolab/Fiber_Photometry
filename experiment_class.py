@@ -82,20 +82,6 @@ class Experiment:
             else:
                 print(f"Warning: No CSV found for {trial_name} in {self.behavior_folder_path}. Skipping.")
 
-    def group_extract_manual_annotations_updated(self, bout_definitions, first_only=True):
-        """
-        Extracts bouts for all trials in the experiment.
-        """
-        import os
-        for trial_name, trial in self.trials.items():
-            csv_path = os.path.join(self.behavior_folder_path, f"{trial_name}.csv")
-            if os.path.exists(csv_path):
-                print(f"Processing behaviors for {trial_name}...")
-                trial.extract_bouts_and_behaviors_updated(csv_path, bout_definitions, first_only=first_only)
-            else:
-                print(f"⚠️ CSV not found for trial '{trial_name}'. Skipping.")
-
-
     '''********************************** PLOTTING **********************************'''
     def plot_all_traces(experiment, behavior_name='all'): 
         """
