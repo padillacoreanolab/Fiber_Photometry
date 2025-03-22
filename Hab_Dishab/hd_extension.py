@@ -91,8 +91,6 @@ def create_metadata_dataframe(trial_data, behavior="Investigation", desired_bout
     return final_df
 
 
-
-
 def plot_behavior_times_across_bouts_gray(metadata_df,
                                           y_col="Total Investigation Time",
                                           behavior=None,
@@ -233,8 +231,6 @@ def plot_behavior_times_across_bouts_gray(metadata_df,
     plt.show()
 
 
-
-
 def plot_behavior_times_across_bouts_colored(metadata_df,
                                              y_col="Total Investigation Time",
                                              behavior=None,
@@ -361,21 +357,6 @@ def plot_behavior_times_across_bouts_colored(metadata_df,
         plt.savefig(save_name, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
     
     plt.show()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # DA ---------------------------------------------------------------------------------------

@@ -12,6 +12,8 @@ from trial_class import *
 import matplotlib.pyplot as plt
 import re
 from scipy.stats import ttest_rel
+from scipy.stats import linregress
+import matplotlib.cm as cm
 
 # Behavior Processing
 # Grabs dataframes from the experiment object
@@ -387,7 +389,9 @@ def plot_da_metrics_combined_oneplot_integrated(experiment,
                                                 bar_color="#00B7D7", 
                                                 yticks_increment=None, 
                                                 figsize=(14,8), 
-                                                pad_inches=0.1):
+                                                pad_inches=0.1,
+                                                save=False,
+                                                save_name=None):
     """
     Plots DA metrics across specific bouts for all trials in the experiment.
     If p-value < 0.05, it adds a horizontal significance line + asterisk above bars.
@@ -538,11 +542,16 @@ def plot_da_metrics_combined_oneplot_integrated(experiment,
                     # Move the next line slightly higher to avoid overlap
                     current_y += line_spacing
 
-    plt.savefig(f'{title}{ylabel[0]}.png', transparent=True, bbox_inches='tight', pad_inches=pad_inches)
-    plt.tight_layout(pad=pad_inches)
+    # 13) Adjust layout, and save the figure if requested
+    plt.tight_layout()
+    if save:
+        if save_name is None:
+            raise ValueError("save_name must be provided if save is True.")
+        plt.savefig(save_name, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
+    
     plt.show()
 
-# Plots event-induced DA vs. bout durationo plots
+# Plots event-induced DA vs. bout duration plots
 def plot_da_vs_duration_by_agent(experiment, 
                                  agents_of_interest, 
                                  agent_colors, 
@@ -554,7 +563,9 @@ def plot_da_vs_duration_by_agent(experiment,
                                  yticks_increment=None,
                                  xlabel = None,
                                  legend_loc='upper left',
-                                 pad_inches=0.1):  # New parameter
+                                 pad_inches=0.1,
+                                 save=None,
+                                 save_name=None):  # New parameter
     """
     Plot correlation between event-induced DA (Mean Z-score, AUC, or Max Peak) 
     and bout duration for selected agents.
@@ -656,9 +667,11 @@ def plot_da_vs_duration_by_agent(experiment,
                        frameon=True, facecolor='white', edgecolor='lightgray', fancybox=False)
     legend.get_frame().set_alpha(0.8)
 
-    plt.tight_layout(pad=pad_inches)
-    plt.savefig(f'{title}.png', transparent=True, bbox_inches='tight', pad_inches=pad_inches)
-    plt.show()
+    plt.tight_layout()
+    if save:
+        if save_name is None:
+            raise ValueError("save_name must be provided if save is True.")
+        plt.savefig(save_name, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
 
     return points_df
 
@@ -673,7 +686,9 @@ def plot_da_vs_duration_by_agent_colored(experiment,
                                  yticks_increment=None,
                                  xlabel=None,
                                  legend_loc='upper left',
-                                 pad_inches=0.1):
+                                 pad_inches=0.1,
+                                 save=None,
+                                 save_name=None):
     """
     Plot correlation between event-induced DA and bout duration for each subject with unique colors.
     """
@@ -782,8 +797,11 @@ def plot_da_vs_duration_by_agent_colored(experiment,
                        edgecolor='lightgray', fancybox=False)
     legend.get_frame().set_alpha(0.8)
 
-    plt.tight_layout(pad=pad_inches)
-    plt.show()
+    plt.tight_layout()
+    if save:
+        if save_name is None:
+            raise ValueError("save_name must be provided if save is True.")
+        plt.savefig(save_name, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
 
     return points_df
 

@@ -360,6 +360,80 @@ class Trial:
         # 6. Store the resulting DataFrame in the instance.
         self.behaviors = pd.DataFrame(bout_rows)
 
+    def extract_bouts_and_behaviors_updated(self, csv_path, bout_definitions, first_only=True):
+        """
+            Extracts behavior bouts for a trial from Ethovision CSV, supporting flexible labels.
+            
+            Parameters:
+            - csv_path (str): Path to the behavior CSV file.
+            - bout_definitions (list of dict): Definitions of bout boundaries with flexible label support.
+            - first_only (bool): If True, only extract the first bout per trial.
+            """
+        import pandas as pd
+
+        data = pd.read_csv(csv_path)
+
+        if data.empty or 'Behavior' not in data.columns or 'Subject' not in data.columns:
+            print(f"⚠️ CSV at {csv_path} missing 'Behavior' or 'Subject' columns, or is empty.")
+            self.behaviors = pd.DataFrame()
+            return
+
+        # Keep rows where Subject is 'Subject' or 'No focal subject' (case-insensitive)
+        valid_subjects = ['subject', 'no focal subject']
+        data = data[data['Subject'].str.lower().isin(valid_subjects)].copy()
+
+        if data.empty:
+            print(f"⚠️ No valid 'Subject' or 'No focal subject' rows found in {csv_path}.")
+            self.behaviors = pd.DataFrame()
+            return
+
+        # Normalize 'Behavior' for matching
+        data['Behavior_LC'] = data['Behavior'].str.lower()
+
+        # Collect all introduced and removed labels from all bout_definitions
+        all_intros = set()
+        all_removes = set()
+        for bout_def in bout_definitions:
+            all_intros.update([label.lower() for label in bout_def['introduced']])
+            all_removes.update([label.lower() for label in bout_def['removed']])
+
+        events = []
+
+        for bout_def in bout_definitions:
+            prefix = bout_def['prefix']
+            introduced_labels = [label.lower() for label in bout_def['introduced']]
+            removed_labels = [label.lower() for label in bout_def['removed']]
+
+            intro_events = data[data['Behavior_LC'].isin(introduced_labels)]
+            remove_events = data[data['Behavior_LC'].isin(removed_labels)]
+
+            for idx, intro_row in intro_events.iterrows():
+                intro_time = intro_row['Start (s)']
+                valid_removes = remove_events[remove_events['Start (s)'] > intro_time]
+
+                if valid_removes.empty:
+                    continue
+
+                first_remove = valid_removes.iloc[0]
+                remove_time = first_remove['Start (s)']
+
+                bout_data = {
+                    'Behavior': f"{prefix} Investigation",
+                    'Start (s)': intro_time,
+                    'Stop (s)': remove_time,
+                    'Duration (s)': remove_time - intro_time
+                }
+                events.append(bout_data)
+
+                if first_only:
+                    break  # Stop after first bout for this trial
+
+        self.behaviors = pd.DataFrame(events)
+
+        if not self.behaviors.empty:
+            print(f"✅ Extracted {len(self.behaviors)} bouts for trial from {csv_path}.")
+        else:
+            print(f"⚠️ No bouts extracted for trial from {csv_path}.")
 
 
     def combine_consecutive_behaviors(self, behavior_name='all', bout_time_threshold=1):
