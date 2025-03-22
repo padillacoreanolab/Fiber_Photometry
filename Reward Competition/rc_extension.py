@@ -643,6 +643,10 @@ class Reward_Competition(Experiment):
 
     """*********************************CALCULATING DOPAMINE RESPONSE***********************************"""
     def compute_event_induced_DA(self, df=None, pre_time=4, post_time=10):
+        """
+        Computes the event-induced DA of a behavior by taking the 4 seconds before the onset of the behavior and normalizing the rest
+        of the signal to it.
+        """
         if df is None:
             df = self.df
         min_dt = np.inf
@@ -1326,7 +1330,7 @@ class Reward_Competition(Experiment):
                     figsize=(7,7),  
                     pad_inches=0.1):
         """
-        Customizable plotting function that plots a single brain region (NAc or mPFC) for both lick and tone.
+        Customizable plotting function that plots a single brain region (NAc or mPFC) for first and last win/loss.
         Can use metrics Max Peak, Mean Z-score, and AUC
         """
         if df is None:
@@ -1340,7 +1344,7 @@ class Reward_Competition(Experiment):
             return first_column, last_column
 
         # spliting and copying dataframe into two dataframes for each brain region 
-        def split_by_subject(df1, df2):            
+        def split_by_subjects(df1, df2):            
             # Filter out the 'subject_name' column and keep only the relevant columns for response and metric_name
             df_n = df1[df1['subject_name'].str.startswith('n')].drop(columns=['subject_name'])
             df_p = df1[df1['subject_name'].str.startswith('p')].drop(columns=['subject_name'])
@@ -1353,7 +1357,7 @@ class Reward_Competition(Experiment):
         first_df, last_df = filter_by_metric(df, metric_name)
 
         # Split data into NAc and mPFC, with subject names
-        df_nac_f, df_mpfc_f, df_nac_l, df_mpfc_l = split_by_subject(first_df, last_df)
+        df_nac_f, df_mpfc_f, df_nac_l, df_mpfc_l = split_by_subjects(first_df, last_df)
 
         # Select the data for the desired brain region
         if brain_region == 'NAc':
@@ -1408,6 +1412,13 @@ class Reward_Competition(Experiment):
         bar_color1 = mpfc_color
         label1 = 'Win'
         label2 = 'Lose'
+        def split_by_subject(df1):            
+            # Filter out the 'subject_name' column and keep only the relevant columns for response and metric_name
+            df_n = df1[df1['subject_name'].str.startswith('n')].drop(columns=['subject_name'])
+            df_p = df1[df1['subject_name'].str.startswith('p')].drop(columns=['subject_name'])
+
+            # Return filtered dataframes and subject_name column
+            return df_n, df_p
 
         def filter_by_metric(df):
             metric_columns = [col for col in df.columns if col.endswith(metric_name + method) and ('Lick' in col or 'Tone' in col)]
@@ -1420,17 +1431,6 @@ class Reward_Competition(Experiment):
             df2 = df[['subject_name', metric_columns[1]]].copy()
 
             return df1, df2
-        
-        # spliting and copying dataframe into two dataframes for each brain region 
-        def split_by_subject(df1):            
-            # Filter out the 'subject_name' column and keep only the relevant columns for response and metric_name
-            df_n = df1[df1['subject_name'].str.startswith('n')].drop(columns=['subject_name'])
-            df_p = df1[df1['subject_name'].str.startswith('p')].drop(columns=['subject_name'])
-            
-            """df_n1 = df2[df2['subject_name'].str.startswith('n')].drop(columns=['subject_name'])
-            df_p1 = df2[df2['subject_name'].str.startswith('p')].drop(columns=['subject_name'])"""
-            # Return filtered dataframes and subject_name column
-            return df_n, df_p
 
         win_df, win_df1 = filter_by_metric(df_winning)
         # win_df = lick
@@ -1500,9 +1500,6 @@ class Reward_Competition(Experiment):
                                   bar_color1, figsize, metric_name, ylim, 
                                   yticks_increment, title3, directory_path, pad_inches,
                                   'Win', 'Lose')
-
-    def plot_traces():
-        pass
     
     """# plots EI peth for every event
     def rc_plot_peth_per_event(self, df, i, directory_path, title='PETH graph for n trials', signal_type='zscore', 
@@ -1604,8 +1601,9 @@ class Reward_Competition(Experiment):
         """
         Plots the PETH of the first and last bouts of either win or loss.
         """
+        y_axis_limits = None  # Set y-axis limits as a tuple (min, max). Set to None for auto-scaling.
         # Splitting either mPFC or NAc subjects
-        def split_by_subject(df1, region=brain_region):            
+        def split_by_subject(df1, region):            
             df_n = df1[df1['subject_name'].str.startswith('n')]
             df_p = df1[df1['subject_name'].str.startswith('p')]
             # Return filtered dataframes and subject_name column
@@ -1613,13 +1611,16 @@ class Reward_Competition(Experiment):
                 return df_p
             else:
                 return df_n
-        y_axis_limits = None  # Set y-axis limits as a tuple (min, max). Set to None for auto-scaling.
 
         df = split_by_subject(df, brain_region)
         if brain_region == 'mPFC':
             color = '#FFAF00'
+            y_max = 1
+            y_min = -0.5
         else:
             color = '#15616F'
+            y_max = 6
+            y_min = -1
         # Initialize data structures
         common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
         first_events = []
@@ -1668,11 +1669,8 @@ class Reward_Competition(Experiment):
 
             ax.set_title(title, fontsize=18)
             ax.set_xlabel('Time (s)', fontsize=14)
-            ax.set_xticks([common_time_axis[0], 0, 6, common_time_axis[-1]])
-            ax.set_xticklabels(['-4', '0', '6', '10'], fontsize=12)
-
-            y_min = np.min(mean_peth - sem_peth)
-            y_max = np.max(mean_peth + sem_peth)
+            ax.set_xticks([common_time_axis[0], 0, 4, common_time_axis[-1]])
+            ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=12)
 
             # Add a margin to make sure the mean trace doesn't go out of bounds
             margin = 0.1 * (y_max - y_min)  # You can adjust this factor for a larger/smaller margin
@@ -1714,12 +1712,15 @@ class Reward_Competition(Experiment):
             new_time_axis = time_axis.reshape(num_bins, bin_size).mean(axis=1)
 
             return downsampled_data, new_time_axis
-
-        def split_by_subject(df1, region=brain_region):            
+        # Splitting either mPFC or NAc subjects
+        def split_by_subject(df1, region):            
             df_n = df1[df1['subject_name'].str.startswith('n')]
             df_p = df1[df1['subject_name'].str.startswith('p')]
-            return df_p if region == 'mPFC' else df_n
-
+            # Return filtered dataframes and subject_name column
+            if region == 'mPFC':
+                return df_p
+            else:
+                return df_n
         df = split_by_subject(df, brain_region)
 
         # Extract data
@@ -1763,8 +1764,8 @@ class Reward_Competition(Experiment):
 
         # Set x-axis labels only on the bottom plot
         axes[-1].set_xlabel('Time (s)', fontsize=12)
-        axes[-1].set_xticks([common_time_axis[0], 0, 6, common_time_axis[-1]])
-        axes[-1].set_xticklabels(['-4', '0', '6', '10'], fontsize=10)
+        axes[-1].set_xticks([common_time_axis[0], 0, 4, common_time_axis[-1]])
+        axes[-1].set_xticklabels(['-4', '0', '4', '10'], fontsize=10)
 
         # Add colorbar to represent Z-score intensity
         cbar = fig.colorbar(cax, ax=axes, orientation='vertical', shrink=0.7, label='Z-score')
@@ -1802,7 +1803,7 @@ class Reward_Competition(Experiment):
         df_sorted_n = df_tone_n.sort_values(by=['Rank'])
         df_sorted_p = df_tone_p.sort_values(by=['Rank'])
 
-        def scatter_plot(directory_path, df_sorted, method, metric_value, brain_region):
+        def scatter_plot(directory_path, df_sorted, method, metric_value, condition, brain_region):
             if brain_region == "mPFC":
                 color = '#FFAF00'
             else:
@@ -1833,13 +1834,13 @@ class Reward_Competition(Experiment):
             plt.xlabel('Rank')
             plt.ylabel('Tone Mean AUC')
             plt.title(f'{condition} {metric_value} Tone Response to Rank')
-            title = f'{metric_value} DA response Rank ({brain_region})'
+            title = f'{metric_value} {condition} DA response Rank ({brain_region})'
             save_path = os.path.join(str(directory_path) + '\\' + f'{title}.png')
             plt.savefig(save_path, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
             return r_value, p_value, n_value
 
-        r_nac, p_nac, n_nac = scatter_plot(directory_path, df_sorted_n, method=method, metric_value=metric_name, brain_region="NAc")
-        r_mpfc, p_mpfc, n_mpfc = scatter_plot(directory_path, df_sorted_p, method=method, metric_value=metric_name, brain_region="mPFC")
+        r_nac, p_nac, n_nac = scatter_plot(directory_path, df_sorted_n, method=method, metric_value=metric_name, condition=condition, brain_region="NAc")
+        r_mpfc, p_mpfc, n_mpfc = scatter_plot(directory_path, df_sorted_p, method=method, metric_value=metric_name, condition=condition, brain_region="mPFC")
         print(f"NAc: r={r_nac:.3f}, p={p_nac:.3f}, n={n_nac}")
         print(f"mPFC: r={r_mpfc:.3f}, p={p_mpfc:.3f}, n={n_mpfc}")
 
