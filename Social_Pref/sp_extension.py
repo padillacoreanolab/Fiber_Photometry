@@ -99,7 +99,7 @@ def fix_behavior_data_for_experiment(experiment, csv_base_path):
     print(f"Fixed trials: {fixed_trials}")
     print(f"Skipped trials: {skipped_trials}")
  
- def plot_custom_sniff_cup_assignments(experiment, 
+def plot_custom_sniff_cup_assignments(experiment, 
                                       assignment_csv_path,
                                       bar_color='#cccccc', 
                                       figsize=(6, 8),
