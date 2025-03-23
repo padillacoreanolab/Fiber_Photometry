@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 from scipy.stats import ttest_ind
-from scipy.signal import butter, filtfilt, find_peaks
+from matplotlib.colors import LinearSegmentedColormap
 
 class Reward_Competition(Experiment):
     def __init__(self, experiment_folder_path, behavior_folder_path):
@@ -102,10 +102,6 @@ class Reward_Competition(Experiment):
             trial.behaviors1['port entries'].offset_times = port_entries_offset[indices].tolist()
 
             self.combine_consecutive_behaviors1(behavior_name='all', bout_time_threshold=0.5)
-            """
-            Using csv_data
-            """
-
 
     """*********************************COMBINE CONSECUTIVE BEHAVIORS***********************************"""
     def combine_consecutive_behaviors1(self, behavior_name='all', bout_time_threshold=0.5, min_occurrences=1):
@@ -209,6 +205,9 @@ class Reward_Competition(Experiment):
         # Debugging: Check how many trials fail to match
         print("Total rows:", len(self.df))
         print("Rows with missing trials:", self.df['trial'].isna().sum())
+        missing_trials = self.df[self.df['trial'].isna()]
+        print("Rows with missing trials:")
+        print(missing_trials)
 
         # Replace None values temporarily instead of dropping them
         self.df['trial'] = self.df['trial'].fillna("No Match Found")
@@ -453,6 +452,11 @@ class Reward_Competition(Experiment):
         self.df['filtered_port_entry_offset'] = self.df.apply(
             lambda row: remove_indices_from_array(row['port entries offset'], row['tangles_array']), axis=1
         )
+        # Update 'win_or_lose' if the first value of 'tangles_array' is 1
+        self.df['first_bout'] = self.df.apply(
+            lambda row: 'tangle' if len(row['tangles_array']) > 0 and row['tangles_array'][0] == 1 else row['first_bout'], axis=1
+        )
+
         # drop the 'tangles_array' column if no longer needed
         self.df.drop(columns=['tangles_array'], inplace=True)
         self.df.drop(columns=['tangles'], inplace=True)
@@ -642,7 +646,7 @@ class Reward_Competition(Experiment):
         df["duration"] = df.apply(lambda row: np.array(row["closest_lick_offset"]) - np.array(row["first_lick_after_sound_cue"]), axis=1)
 
     """*********************************CALCULATING DOPAMINE RESPONSE***********************************"""
-    def compute_event_induced_DA(self, df=None, pre_time=4, post_time=10):
+    def compute_event_induced_DA(self, df=None, cue_type='filtered_sound_cues', pre_time=4, post_time=10):
         """
         Computes the event-induced DA of a behavior by taking the 4 seconds before the onset of the behavior and normalizing the rest
         of the signal to it.
@@ -669,7 +673,7 @@ class Reward_Competition(Experiment):
         # Process each row in the dataframe
         for _, row in df.iterrows():
             trial_obj = row['trial']
-            cues = row['filtered_sound_cues']  # Event start times
+            cues = row[cue_type]  # Event start times
 
             # Convert to numpy arrays
             timestamps = np.array(trial_obj.timestamps)
@@ -771,9 +775,9 @@ class Reward_Competition(Experiment):
                     print(f"Warning: Could not find corresponding sound cue for event {event_start}")
                     continue
 
-                # Define time window
-                window_start = cue_time - pre_time  # 4 seconds before sound cue
-                window_end = event_start + post_time  # 10 seconds after first lick
+                # Define time window                
+                window_start = cue_time - float(pre_time)  # 4 seconds before sound cue
+                window_end = event_start + float(post_time)  # 10 seconds after first lick
 
                 # Find relevant indices
                 mask = (timestamps >= window_start) & (timestamps <= window_end)
@@ -1019,7 +1023,6 @@ class Reward_Competition(Experiment):
                     "Mean Z-score": mean_z,
                     "Adjusted End": closest_port_entry_offset  # Store adjusted end
                 })
-
             return computed_metrics
         def compute_ei(df):
             # EI mode: use event-induced data.
@@ -1035,8 +1038,8 @@ class Reward_Competition(Experiment):
 
             for i, row in df.iterrows():
                 # Extract all trials (lists) within the row
-                time_axes = np.array(row['Lick Event_Time_Axis'])  # 2D array (list of lists)
-                event_zscores = np.array(row['Lick Event_Zscore'])  # 2D array (list of lists)
+                time_axes = [np.array(x) for x in row['Lick Event_Time_Axis']]   # 2D array (list of lists)
+                event_zscores = [np.array(x) for x in row['Lick Event_Zscore']]  # 2D array (list of lists)
 
                 # Lists to store per-trial metrics
                 mean_zscores = []
@@ -1100,7 +1103,7 @@ class Reward_Competition(Experiment):
             df["Lick Adjusted End"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Adjusted End", np.nan) for item in x] if isinstance(x, list) else np.nan)
             df.drop(columns=["lick_computed_metrics"], inplace=True)
         else:
-            compute_ei(df)
+            df = compute_ei(df)
 
     def find_means(self, df):
         if df is None:
@@ -1597,11 +1600,10 @@ class Reward_Competition(Experiment):
                 yticks_interval=yticks_interval
             )"""
 
-    def plot_specific_peth(self, df, condition, event_type, directory_path, brain_region):
+    def plot_specific_peth(self, df, condition, event_type, directory_path, brain_region, y_min, y_max):
         """
         Plots the PETH of the first and last bouts of either win or loss.
         """
-        y_axis_limits = None  # Set y-axis limits as a tuple (min, max). Set to None for auto-scaling.
         # Splitting either mPFC or NAc subjects
         def split_by_subject(df1, region):            
             df_n = df1[df1['subject_name'].str.startswith('n')]
@@ -1613,18 +1615,17 @@ class Reward_Competition(Experiment):
                 return df_n
 
         df = split_by_subject(df, brain_region)
+        bin_size = 100
         if brain_region == 'mPFC':
             color = '#FFAF00'
-            y_max = 1
-            y_min = -0.5
         else:
             color = '#15616F'
-            y_max = 6
-            y_min = -1
         # Initialize data structures
         common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
         first_events = []
         last_events = []
+        for i, row in df.iterrows():
+            print(f"Row {i}: Length of Z-score array: {len(row[f'{event_type} Event_Zscore'])}")
 
         for _, row in df.iterrows():
             z_scores = np.array(row[f'{event_type} Event_Zscore'])  # Shape: (num_1D_arrays, num_time_bins)
@@ -1645,6 +1646,11 @@ class Reward_Competition(Experiment):
         mean_last = np.mean(last_events, axis=0)
         sem_last = np.std(last_events, axis=0) / np.sqrt(last_events.shape[0])
 
+        mean_first, downsampled_time_axis = self.downsample_data(mean_first, common_time_axis, bin_size)
+        sem_first, _ = self.downsample_data(sem_first, common_time_axis, bin_size)
+        
+        mean_last, _ = self.downsample_data(mean_last, common_time_axis, bin_size)
+        sem_last, _ = self.downsample_data(sem_last, common_time_axis, bin_size)
         # Create figure with two subplots
         fig, axes = plt.subplots(1, 2, figsize=(10, 5), sharey=True)
 
@@ -1656,15 +1662,11 @@ class Reward_Competition(Experiment):
         axes[1].tick_params(axis='y', labelleft=True)
 
         for ax, mean_peth, sem_peth, title in zip(
-            axes, [mean_first, mean_last], [sem_first, sem_last], [f'First {condition} bout Z-Score', f'Last {condition} bout Z-Score']
+            axes, [mean_first, mean_last], [sem_first, sem_last], 
+            [f'First {condition} bout Z-Score', f'Last {condition} bout Z-Score']
         ):
-            global_min = min(np.min(mean_first - sem_first), np.min(mean_last - sem_last))
-            global_max = max(np.max(mean_first + sem_first), np.max(mean_last + sem_last))
-
-            # Add a margin for better visualization
-            margin = 0.1 * (global_max - global_min)
-            ax.plot(common_time_axis, mean_peth, color=color, label='Mean DA')
-            ax.fill_between(common_time_axis, mean_peth - sem_peth, mean_peth + sem_peth, color=color, alpha=0.4)
+            ax.plot(downsampled_time_axis, mean_peth, color=color, label='Mean DA')
+            ax.fill_between(downsampled_time_axis, mean_peth - sem_peth, mean_peth + sem_peth, color=color, alpha=0.4)
             ax.axvline(0, color='black', linestyle='--')  # Mark event onset
 
             ax.set_title(title, fontsize=18)
@@ -1673,9 +1675,9 @@ class Reward_Competition(Experiment):
             ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=12)
 
             # Add a margin to make sure the mean trace doesn't go out of bounds
-            margin = 0.1 * (y_max - y_min)  # You can adjust this factor for a larger/smaller margin
+            # margin = 0.1 * (y_max - y_min)  # You can adjust this factor for a larger/smaller margin
 
-            ax.set_ylim(global_min - margin, global_max + margin)
+            ax.set_ylim(y_max, y_min)
 
         save_path = os.path.join(str(directory_path) + '\\' + f'{brain_region}_{condition}_PETH.png')
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
@@ -1688,30 +1690,7 @@ class Reward_Competition(Experiment):
         Each heatmap represents **one single trial**, showing Z-score variations over time.
         """
         # Function to filter data by brain region
-        import numpy as np
-
-        def downsample_data(data, time_axis, bin_size=10):
-            """
-            Downsamples the time series data by averaging over bins of 'bin_size' points.
-            
-            Parameters:
-            - data (1D NumPy array): Original Z-score values.
-            - time_axis (1D NumPy array): Corresponding time points.
-            - bin_size (int): Number of original bins to merge into one.
-            
-            Returns:
-            - downsampled_data (1D NumPy array): Smoothed Z-score values.
-            - new_time_axis (1D NumPy array): Adjusted time points.
-            """
-            num_bins = len(data) // bin_size  # Number of new bins
-            data = data[:num_bins * bin_size]  # Trim excess points
-            time_axis = time_axis[:num_bins * bin_size]
-
-            # Reshape and compute mean for each bin
-            downsampled_data = data.reshape(num_bins, bin_size).mean(axis=1)
-            new_time_axis = time_axis.reshape(num_bins, bin_size).mean(axis=1)
-
-            return downsampled_data, new_time_axis
+        
         # Splitting either mPFC or NAc subjects
         def split_by_subject(df1, region):            
             df_n = df1[df1['subject_name'].str.startswith('n')]
@@ -1735,11 +1714,11 @@ class Reward_Competition(Experiment):
                 break  # Only need one subject's trials
 
         # Convert to 2D arrays (shape: (1, time_bins)) for heatmap
-        bin_size = 100  
+        bin_size = 125  
 
         # Downsample first and last trial data
-        first_trial, new_time_axis = downsample_data(first_trial, common_time_axis, bin_size)
-        last_trial, _ = downsample_data(last_trial, common_time_axis, bin_size)  
+        first_trial, new_time_axis = self.downsample_data(first_trial, common_time_axis, bin_size)
+        last_trial, _ = self.downsample_data(last_trial, common_time_axis, bin_size)  
 
         # Convert to 2D array for heatmap (since we have only one row)
         first_trial = first_trial[np.newaxis, :]
@@ -1749,11 +1728,16 @@ class Reward_Competition(Experiment):
 
         # Create figure with two subplots
         fig, axes = plt.subplots(2, 1, figsize=(10, 4), sharex=True)
+        if brain_region == "mPFC":
+            cmap = 'inferno'
+        else:
+            colors = ["#08306b", "#4292c6", "#deebf7", "#ffffff"]  
+            cmap = LinearSegmentedColormap.from_list("custom_blue", colors, N=256)
 
         for ax, trial_data, title in zip(axes, [first_trial, last_trial], 
                                         [f'First {condition} trial', f'Last {condition} trial']):
             # Plot heatmap
-            cax = ax.imshow(trial_data, aspect='auto', cmap='inferno', origin='upper',
+            cax = ax.imshow(trial_data, aspect='auto', cmap=cmap, origin='upper',
                             extent=[common_time_axis[0], common_time_axis[-1], 0, 1],
                             vmin=vmin, vmax=vmax)
 
@@ -1827,6 +1811,9 @@ class Reward_Competition(Experiment):
             # Add a regression line with R², and remove the shading (confidence interval)
             sns.regplot(data=df_sorted, x='Rank', y=f'Tone {metric_value} Mean{method}', scatter=False, color='black', line_kws={'lw': 2}, ci=None)
 
+            print(df_sorted['Rank'].isna().sum())
+            print(df_sorted[['Rank']].dropna().head())  # Show non-NaN values
+
             # Set the x-axis ticks to be separated by increments of 1
             plt.xticks(ticks=range(int(df_sorted['Rank'].min()), int(df_sorted['Rank'].max()) + 1, 1))
 
@@ -1846,6 +1833,29 @@ class Reward_Competition(Experiment):
 
         
     """********************************MISC*************************************"""
+    def downsample_data(self, data, time_axis, bin_size=10):
+            """
+            Downsamples the time series data by averaging over bins of 'bin_size' points.
+            
+            Parameters:
+            - data (1D NumPy array): Original Z-score values.
+            - time_axis (1D NumPy array): Corresponding time points.
+            - bin_size (int): Number of original bins to merge into one.
+            
+            Returns:
+            - downsampled_data (1D NumPy array): Smoothed Z-score values.
+            - new_time_axis (1D NumPy array): Adjusted time points.
+            """
+            num_bins = len(data) // bin_size  # Number of new bins
+            data = data[:num_bins * bin_size]  # Trim excess points
+            time_axis = time_axis[:num_bins * bin_size]
+
+            # Reshape and compute mean for each bin
+            downsampled_data = data.reshape(num_bins, bin_size).mean(axis=1)
+            new_time_axis = time_axis.reshape(num_bins, bin_size).mean(axis=1)
+
+            return downsampled_data, new_time_axis
+
     def drop_unnecessary(self, df=None):
         if df is None:
             df = self.df
@@ -1895,3 +1905,103 @@ class Reward_Competition(Experiment):
         
         df['Lick Mean Z-score EI First'] = df['Lick Mean Z-score EI'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
         df['Lick Mean Z-score EI Last'] = df['Lick Mean Z-score EI'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)     
+    
+    """*************************FIRST TONE STUFF*****************************"""
+    def keep_first_tone(self, df=None):
+        if df is None:
+            df = self.df
+        df['first_value'] = df['winner_array'].apply(lambda x: x[0] if len(x) > 0 else None)
+        df['first_tone'] = df['sound cues onset'].apply(lambda x: x[0] if len(x) > 0 else None).apply(lambda x: np.array([x]))
+        df['first_bout'] = df.apply(lambda row: 'win' if row['first_value'] == row['subject_name'] else 'lose', axis=1)
+
+    def first_winning(self, df=None):
+        if df is None:
+            df = self.df
+        df_win = df.loc[df['first_bout'] == 'win'].copy()
+        return df_win
+
+    def first_losing(self, df=None):
+        if df is None:
+            df = self.df
+        df_lose = df.loc[df['first_bout'] == 'lose'].copy()
+        return df_lose
+
+    def find_first_lick_after_first_cue(self, df=None):
+        """
+        Finds the first port entry occurring after 4 seconds following each sound cue.
+        If a port entry starts before 4 seconds but extends past it, 
+        the function selects the timestamp at 4 seconds after the sound cue.
+
+        Works for the first tone of the trial regardless of outcome.
+        """
+        if df is None:
+            df = self.df  # Default to self.df only if no DataFrame is provided
+
+        first_licks = []  # List to store results
+
+        for index, row in df.iterrows():  # Use df, not self.df
+            sound_cue_onset = row['first_tone']
+            port_entries_onsets = row['port_entries']
+            port_entries_offsets = row['port_entry_offset']
+
+            first_licks_per_row = []
+
+            for sc_onset in sound_cue_onset:
+                threshold_time = sc_onset + 4
+
+                future_licks_indices = np.where(port_entries_onsets >= threshold_time)[0]
+
+                if len(future_licks_indices) > 0:
+                    first_lick = port_entries_onsets[future_licks_indices[0]]
+                    break  # Stop after the first valid lick
+
+                ongoing_licks_indices = np.where((port_entries_onsets < threshold_time) & (port_entries_offsets > threshold_time))[0]
+
+                if len(ongoing_licks_indices) > 0:
+                    first_lick = threshold_time
+                    break  # Stop after the first valid lick
+
+        df["first_lick_after_sound_cue"] = first_licks  # Add to the given DataFrame
+        df["filtered_sound_cues"] = df["first_tone"]
+        return df  # Return the modified DataFrame
+
+    def find_first_means(self, df):
+        if df is None:
+            df = self.df
+        df["Lick AUC Mean"] = df["Lick AUC"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Lick Max Peak Mean"] = df["Lick Max Peak"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Lick Mean Z-score Mean"] = df["Lick Mean Z-score"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Tone AUC Mean"] = df["Tone AUC"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Tone Max Peak Mean"] = df["Tone Max Peak"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Tone Mean Z-score Mean"] = df["Tone Mean Z-score"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Tone AUC Mean EI"] = df["AUC EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Tone Max Peak Mean EI"] = df["Max Peak EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Tone Mean Z-score Mean EI"] = df["Mean Z-score EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Lick AUC Mean EI"] = df["Lick AUC EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Lick Max Peak Mean EI"] = df["Lick Max Peak EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        df["Lick Mean Z-score Mean EI"] = df["Lick Mean Z-score EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+
+    def finding_first_tone_means(self, df=None):
+        """
+        Finds the mean values of Global and EI DA for both lick and tone and grouping values together by subject. 
+        """
+        if df is None:
+            df = self.df
+        df = df.groupby(['subject_name'], as_index=False).agg({
+            'Rank': 'first',  # Keeps the Rank column
+            'Cage': 'first',
+            'Lick AUC Mean': 'mean',
+            'Lick Max Peak Mean': 'mean',
+            'Lick Mean Z-score Mean': 'mean',
+            'Tone AUC Mean': 'mean',
+            'Tone Max Peak Mean': 'mean',
+            'Tone Mean Z-score Mean': 'mean',
+            "Lick AUC Mean EI": 'mean',
+            "Lick Max Peak Mean EI": 'mean',
+            "Lick Mean Z-score Mean EI": 'mean',
+            "Tone AUC Mean EI": 'mean',
+            "Tone Max Peak Mean EI": 'mean',
+            "Tone Mean Z-score Mean EI": 'mean',
+        })
+        final_df = df
+        return final_df

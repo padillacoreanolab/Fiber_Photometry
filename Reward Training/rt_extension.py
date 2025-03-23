@@ -14,10 +14,26 @@ from scipy.stats import linregress
 class Reward_Training(Experiment):
     def __init__(self, experiment_folder_path, behavior_folder_path):
         super().__init__(experiment_folder_path, behavior_folder_path)
-        self.trials = {}  # Reset trials to avoid loading from parent class
-        self.load_rtc_trials()  # Load RTC trials instead
+        # self.trials = {}  # Reset trials to avoid loading from parent class
+        self.df = pd.DataFrame()
+        if "Cohort_1_2" in experiment_folder_path:
+            self.load_rtc1_trials()  # Load 1 RTC trial
+        else:
+            self.load_rtc2_trials() # load 2 trials for cohort 3
 
-    def load_rtc_trials(self):
+    def load_rtc1_trials(self):
+        # Loads each trial folder (block) as a TDTData object and extracts manual annotation behaviors.
+        
+        trial_folders = [folder for folder in os.listdir(self.experiment_folder_path)
+                        if os.path.isdir(os.path.join(self.experiment_folder_path, folder))]
+
+        for trial_folder in trial_folders:
+            trial_path = os.path.join(self.experiment_folder_path, trial_folder)
+            trial_obj = Trial(trial_path, '_465A', '_405A')
+
+            self.trials[trial_folder] = trial_obj
+
+    def load_rtc2_trials(self):
         """
         Load two streams of data and splits them into two trials.
         """
@@ -30,10 +46,10 @@ class Reward_Training(Experiment):
             trial_obj2 = Trial(trial_path, '_465C', '_405C')
             trial_name1 = trial_folder.split('_')[0]                # First mouse of rtc
             trial_name2 = trial_folder.split('_')[1].split('-')[0]  # Second mouse of rtc
-            self.trials[trial_name1] = trial_obj1
-            self.trials[trial_name2] = trial_obj2
-
-            # self.trials[trial_folder] = [trial_obj1, trial_obj2]
+            trial_folder1 = trial_name1 + '-' + '-'.join(trial_folder.split('_')[1].split('-')[1:])
+            trial_folder2 = trial_name2 + '-' + '-'.join(trial_folder.split('_')[1].split('-')[1:])
+            self.trials[trial_folder1] = trial_obj1
+            self.trials[trial_folder2] = trial_obj2
 
     def rt_processing(self, time_segments_to_remove=None):
         """
@@ -148,6 +164,80 @@ class Reward_Training(Experiment):
 
                 trial_obj.bout_dict = {}  # Reset bout dictionary after processing
 
+    '''*********************************CREATE DF*************************************'''
+    def merge_data1(self):
+        """
+        Merges all data into a dataframe for analysis.
+        """
+        self.df['trial'] = self.df.apply(lambda row: self.find_matching_trial(row['file name']), axis=1)
+
+        # Debugging: Check how many trials fail to match
+        print("Total rows:", len(self.df))
+        print("Rows with missing trials:", self.df['trial'].isna().sum())
+
+        # Replace None values temporarily instead of dropping them
+        self.df['trial'] = self.df['trial'].fillna("No Match Found")
+
+        # Handle behaviors safely
+        self.df['sound cues'] = self.df['trial'].apply(
+            lambda x: x.behaviors1.get('sound cues', None) 
+            if isinstance(x, object) and hasattr(x, 'behaviors1') else None
+        )
+        self.df['port entries'] = self.df['trial'].apply(
+            lambda x: x.behaviors1.get('port entries', None) 
+            if isinstance(x, object) and hasattr(x, 'behaviors1') else None
+        )
+        self.df['sound cues onset'] = self.df['sound cues'].apply(lambda x: x.onset_times if x else None)
+        self.df['port entries onset'] = self.df['port entries'].apply(lambda x: x.onset_times if x else None)
+        self.df['port entries offset'] = self.df['port entries'].apply(lambda x: x.offset_times if x else None)
+
+        # Creates a column for subject name
+        self.df['subject_name'] = self.df['file name'].str.split('-').str[0]
+
+        # Create a new column that stores an array of winners for each row
+        winner_columns = [col for col in self.df.columns if 'winner' in col.lower()]
+        self.df['winner_array'] = self.df[winner_columns].apply(lambda row: row.values.tolist(), axis=1)
+
+        # Drops all other winner columns leaving only winner_array.
+        self.df.drop(columns=winner_columns, inplace=True)
+
+        # Drop rows without dopamine data only at the end
+        self.df = self.df[self.df['trial'] != "No Match Found"]
+        self.df.reset_index(drop=True, inplace=True)
+
+
+    def merge_data2(self):
+        """
+        Merges data from cohort 3 into a dataframe for analysis
+        """
+        # Changes file name to match the change in load_rtc2
+        self.df['file name'] = self.df.apply(lambda row: row['subject'] + '-' + '-'.join(row['file name'].split('-')[-2:]), axis=1)
+        self.df['trial'] = self.df.apply(lambda row: self.find_matching_trial(row['file name']), axis=1)
+        
+        # Debugging: Check how many trials fail to match
+        print("Total rows:", len(self.df))
+        print("Rows with missing trials:", self.df['trial'].isna().sum())
+
+        self.df['sound cues'] = self.df['trial'].apply(lambda x: x.behaviors1.get('sound cues', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
+        self.df['port entries'] = self.df['trial'].apply(lambda x: x.behaviors1.get('port entries', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
+        self.df['sound cues onset'] = self.df['sound cues'].apply(lambda x: x.onset_times if x else None)
+        self.df['port entries onset'] = self.df['port entries'].apply(lambda x: x.onset_times if x else None)
+        self.df['port entries offset'] = self.df['port entries'].apply(lambda x: x.offset_times if x else None)
+        
+        # Creates a column for subject name
+        self.df['subject_name'] = self.df['file name'].str.split('-').str[0]
+
+        # Create a new column that stores an array of winners for each row
+        winner_columns = [col for col in self.df.columns if 'winner' in col.lower()]
+        self.df['winner_array'] = self.df[winner_columns].apply(lambda row: row.values.tolist(), axis=1)
+        
+        # drops all other winner columns leaving only winner_array.
+        self.df.drop(columns=winner_columns, inplace=True)
+
+        # drops all rows without dopamine data.
+        self.df.dropna(subset=['trial'], inplace=True)
+        self.df.reset_index(drop=True, inplace=True)
+
     '''********************************** PETH **********************************'''
     def rt_compute_peth_per_event(self, behavior_name='sound cues', n_events=None, pre_time=5, post_time=5, bin_size=0.1):
         """
@@ -176,8 +266,6 @@ class Reward_Training(Experiment):
                     num_events = len(block_data.behaviors1[behavior_name].onset_times)
                     if num_events > n_events:
                         n_events = num_events
-
-        n_events = 40
 
         # Define a common time axis
         time_axis = np.arange(-pre_time, post_time + bin_size, bin_size)
