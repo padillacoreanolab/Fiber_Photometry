@@ -14,6 +14,7 @@ class Reward_Training(Experiment):
     def __init__(self, experiment_folder_path, behavior_folder_path):
         super().__init__(experiment_folder_path, behavior_folder_path)
         # self.trials = {}  # Reset trials to avoid loading from parent class
+        self.df = pd.DataFrame()
         if "Cohort_1_2" in experiment_folder_path:
             self.load_rtc1_trials()  # Load 1 RTC trial
         else:
@@ -60,7 +61,7 @@ class Reward_Training(Experiment):
 
             print(f"Reward Training Processing {trial_folder}...")
             trial.remove_initial_LED_artifact(t=30)
-            trial.remove_final_data_segment(t = 10)
+            # trial.remove_final_data_segment(t = 10)
             
             trial.highpass_baseline_drift()
             trial.align_channels()
@@ -166,20 +167,28 @@ class Reward_Training(Experiment):
         """
         Creates Dataframe that will contain all the data for analysis.
         """
-        file_names = [f for f in os.listdir(directory_path) if os.path.isfile(os.path.join(directory_path, f))]
+        subdirectories = [d for d in os.listdir(directory_path) if os.path.isdir(os.path.join(directory_path, d))]
+        print(f"Subdirectories: {subdirectories}")  # Debugging line
 
-        # Create a DataFrame with a single column
-        self.df = pd.DataFrame({'file name': file_names})
-        
+        # Create the DataFrame with 'file name' column (subdirectories here)
+        self.df['file name'] = subdirectories
+        self.df['file name'] = self.df['file name'].astype(str)
+
         # matching up data with their file names in the new dataframe
-        def find_matching_trial(self, file_name):
+        def find_matching_trial(file_name):
             return self.trials.get(file_name, None)
         self.df['trial'] = self.df.apply(lambda row: find_matching_trial(row['file name']), axis=1)
         
         # creating column for subject names
-        if 'RT_3' in directory_path: 
+        if 'Cohort_1_2' not in directory_path: 
             self.df['file name'] = self.df.apply(lambda row: row['subject'] + '-' + '-'.join(row['file name'].split('-')[-2:]), axis=1)
         self.df['subject_name'] = self.df['file name'].str.split('-').str[0]
+        
+        self.df['sound cues'] = self.df['trial'].apply(lambda x: x.behaviors1.get('sound cues', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
+        self.df['port entries'] = self.df['trial'].apply(lambda x: x.behaviors1.get('port entries', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
+        self.df['sound cues onset'] = self.df['sound cues'].apply(lambda x: x.onset_times if x else None)
+        self.df['port entries onset'] = self.df['port entries'].apply(lambda x: x.onset_times if x else None)
+        self.df['port entries offset'] = self.df['port entries'].apply(lambda x: x.offset_times if x else None)
 
     '''********************************** PETH **********************************'''
     def rt_compute_peth_per_event(self, behavior_name='sound cues', n_events=None, pre_time=5, post_time=5, bin_size=0.1):
@@ -254,10 +263,12 @@ class Reward_Training(Experiment):
             else:
                 print(f"Behavior '{behavior_name}' not found in block '{block_name}'.")
 
-    def plot_specific_peth(self, df, condition, event_type, directory_path, brain_region, y_min, y_max):
+    def plot_specific_peth(self, event_type, directory_path, brain_region, y_min, y_max, df=None):
         """
         Plots the PETH of the first and last bouts of either win or loss.
         """
+        if df is None:
+            df = self.df
         # Splitting either mPFC or NAc subjects
         def split_by_subject(df1, region):            
             df_n = df1[df1['subject_name'].str.startswith('n')]
@@ -317,7 +328,7 @@ class Reward_Training(Experiment):
 
         for ax, mean_peth, sem_peth, title in zip(
             axes, [mean_first, mean_last], [sem_first, sem_last], 
-            [f'First {condition} bout Z-Score', f'Last {condition} bout Z-Score']
+            [f'First bout Z-Score', f'Last bout Z-Score']
         ):
             ax.plot(downsampled_time_axis, mean_peth, color=color, label='Mean DA')
             ax.fill_between(downsampled_time_axis, mean_peth - sem_peth, mean_peth + sem_peth, color=color, alpha=0.4)
@@ -331,9 +342,9 @@ class Reward_Training(Experiment):
             # Add a margin to make sure the mean trace doesn't go out of bounds
             # margin = 0.1 * (y_max - y_min)  # You can adjust this factor for a larger/smaller margin
 
-            ax.set_ylim(y_max, y_min)
+            ax.set_ylim(y_min, y_max)
 
-        save_path = os.path.join(str(directory_path) + '\\' + f'{brain_region}_{condition}_PETH.png')
+        save_path = os.path.join(str(directory_path) + '\\' + f'{brain_region}_{event_type}_PETH.png')
         plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         # plt.savefig(f'PETH.png', transparent=True, bbox_inches='tight', pad_inches=0.1)
         plt.show()
@@ -499,25 +510,34 @@ class Reward_Training(Experiment):
         Parameters:
             lick_column (str): The column name for the lick times (e.g., 'first_lick_after_sound_cue').
             offset_column (str): The column name for the port entry offset times (e.g., 'filtered_port_entry_offset').
-            new_column_name (str): The name of the new column to store the results. Default is 'closest_port_entry_offsets'.
-        
+
         Returns:
             pd.DataFrame: Updated DataFrame with the new column of closest port entry offsets.
         """
         if df is None:
             df = self.df 
+
         def find_closest_port_entries(licks, port_entry_offsets):
             """Finds the closest port entry offsets greater than each lick in 'licks'."""
             closest_offsets = []
             
+            # Ensure valid numerical values (filter out None/NaN)
+            licks = [lick for lick in licks if lick is not None and not np.isnan(lick)]
+            port_entry_offsets = [offset for offset in port_entry_offsets if offset is not None and not np.isnan(offset)]
+            
+            # Convert to numpy arrays
+            licks = np.array(licks)
+            port_entry_offsets = np.array(port_entry_offsets)
+            
+            if len(licks) == 0 or len(port_entry_offsets) == 0:
+                return [np.nan] * len(licks)  # Return NaN list if either array is empty
+
             for lick in licks:
-                # Find the indices where port_entry_offset > lick
                 valid_indices = np.where(port_entry_offsets > lick)[0]
                 
                 if len(valid_indices) == 0:
                     closest_offsets.append(np.nan)  # Append NaN if no valid offset is found
                 else:
-                    # Get the closest port entry offset (the first valid one in the array)
                     closest_offset = port_entry_offsets[valid_indices[0]]
                     closest_offsets.append(closest_offset)
             
@@ -525,19 +545,23 @@ class Reward_Training(Experiment):
 
         def compute_lick_metrics(row):
             """Compute the closest port entry offsets for each trial."""
-            # Extract first_lick_after_sound_cue and filtered_port_entry_offset
-            first_licks = np.array(row[lick_column])
-            port_entry_offsets = np.array(row[offset_column])
-            
-            # Get the closest port entry offsets for each lick
-            closest_offsets = find_closest_port_entries(first_licks, port_entry_offsets)
-            
-            return closest_offsets
+            # Extract lick times and port entry offsets safely
+            first_licks = row[lick_column]
+            port_entry_offsets = row[offset_column]
 
-        # Apply the function to the DataFrame and create a new column with the results
+            if not isinstance(first_licks, list) or not isinstance(port_entry_offsets, list):
+                return np.nan  # Return NaN if the data is not in the expected format
+
+            # Get the closest port entry offsets for each lick
+            return find_closest_port_entries(first_licks, port_entry_offsets)
+
+        # Apply the function safely to avoid errors
         df['closest_lick_offset'] = df.apply(compute_lick_metrics, axis=1)
 
-    def compute_event_induced_DA(self, df=None, cue_type='sound', pre_time=4, post_time=10):
+        return df
+
+
+    def compute_event_induced_DA(self, df=None, cue_type='sound cues onset', pre_time=4, post_time=10):
         """
         Computes the event-induced DA of a behavior by taking the 4 seconds before the onset of the behavior and normalizing the rest
         of the signal to it.
@@ -642,8 +666,8 @@ class Reward_Training(Experiment):
         for _, row in df.iterrows():
             trial_obj = row['trial']
             cues = row['first_lick_after_sound_cue']  # Event start times
-            sound_cues = row['filtered_sound_cues']  # Corresponding sound cue times
-
+            sound_cues = row['sound cues onset']  # Corresponding sound cue times
+            
             # Convert to numpy arrays
             timestamps = np.array(trial_obj.timestamps)
             zscore = np.array(trial_obj.zscore)
@@ -658,14 +682,14 @@ class Reward_Training(Experiment):
             trial_event_times = []
 
             # Process each event start time
-            for event_start in cues:
+            for event_start in sound_cues:
                 try:
                     idx = list(cues).index(event_start)
                     cue_time = sound_cues[idx]  # Get the corresponding sound cue
                 except ValueError:
                     print(f"Warning: Could not find corresponding sound cue for event {event_start}")
                     continue
-
+                
                 # Define time window                
                 window_start = cue_time - float(pre_time)  # 4 seconds before sound cue
                 window_end = event_start + float(post_time)  # 10 seconds after first lick
@@ -719,7 +743,7 @@ class Reward_Training(Experiment):
             computed_metrics = []
             for cue in filtered_sound_cues:
                 start_time = cue
-                end_time = cue + 6  # Default window end
+                end_time = cue + 4  # Default window end
 
                 # Extract initial window
                 mask = (timestamps >= start_time) & (timestamps <= end_time)
@@ -774,7 +798,7 @@ class Reward_Training(Experiment):
                     event_zscore = np.array(event_zscore)
 
                     # Mask for time_axis >= 0
-                    mask = (time_axis >= 0) & (time_axis <= 6)
+                    mask = (time_axis >= 0) & (time_axis <= 4)
                     if not np.any(mask):
                         mean_zscores.append(np.nan)
                         auc_values.append(np.nan)
@@ -814,7 +838,7 @@ class Reward_Training(Experiment):
         if mode == 'standard':
             # Apply function across all trials
             df["computed_metrics"] = df.apply(
-                lambda row: compute_da_metrics_for_trial(row["trial"], row["filtered_sound_cues"]), axis=1)
+                lambda row: compute_da_metrics_for_trial(row["trial"], row["sound cues onset"]), axis=1)
             df["Tone AUC"] = df["computed_metrics"].apply(lambda x: [item.get("AUC", np.nan) for item in x] if isinstance(x, list) else np.nan)
             df["Tone Max Peak"] = df["computed_metrics"].apply(lambda x: [item.get("Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
             df["Tone Time of Max Peak"] = df["computed_metrics"].apply(lambda x: [item.get("Time of Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)

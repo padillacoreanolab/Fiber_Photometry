@@ -66,7 +66,7 @@ class Reward_Competition(Experiment):
 
             print(f"Reward Training Processing {trial_folder}...")
             trial.remove_initial_LED_artifact(t=30)
-            trial.remove_final_data_segment(t = 10)
+            # trial.remove_final_data_segment(t = 10)
             
             trial.highpass_baseline_drift()
             trial.align_channels()
@@ -832,7 +832,7 @@ class Reward_Competition(Experiment):
             computed_metrics = []
             for cue in filtered_sound_cues:
                 start_time = cue
-                end_time = cue + 6  # Default window end
+                end_time = cue + 4  # Default window end
 
                 # Extract initial window
                 mask = (timestamps >= start_time) & (timestamps <= end_time)
@@ -887,7 +887,7 @@ class Reward_Competition(Experiment):
                     event_zscore = np.array(event_zscore)
 
                     # Mask for time_axis >= 0
-                    mask = (time_axis >= 0) & (time_axis <= 6)
+                    mask = (time_axis >= 0) & (time_axis <= 4)
                     if not np.any(mask):
                         mean_zscores.append(np.nan)
                         auc_values.append(np.nan)
