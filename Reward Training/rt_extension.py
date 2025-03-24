@@ -5,7 +5,6 @@ sys.path.append(parent_dir)
 
 from experiment_class import Experiment
 from trial_class import Trial
-
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -15,7 +14,6 @@ class Reward_Training(Experiment):
     def __init__(self, experiment_folder_path, behavior_folder_path):
         super().__init__(experiment_folder_path, behavior_folder_path)
         # self.trials = {}  # Reset trials to avoid loading from parent class
-        self.df = pd.DataFrame()
         if "Cohort_1_2" in experiment_folder_path:
             self.load_rtc1_trials()  # Load 1 RTC trial
         else:
@@ -23,7 +21,6 @@ class Reward_Training(Experiment):
 
     def load_rtc1_trials(self):
         # Loads each trial folder (block) as a TDTData object and extracts manual annotation behaviors.
-        
         trial_folders = [folder for folder in os.listdir(self.experiment_folder_path)
                         if os.path.isdir(os.path.join(self.experiment_folder_path, folder))]
 
@@ -165,78 +162,24 @@ class Reward_Training(Experiment):
                 trial_obj.bout_dict = {}  # Reset bout dictionary after processing
 
     '''*********************************CREATE DF*************************************'''
-    def merge_data1(self):
+    def create_df(self, directory_path):
         """
-        Merges all data into a dataframe for analysis.
+        Creates Dataframe that will contain all the data for analysis.
         """
-        self.df['trial'] = self.df.apply(lambda row: self.find_matching_trial(row['file name']), axis=1)
+        file_names = [f for f in os.listdir(directory_path) if os.path.isfile(os.path.join(directory_path, f))]
 
-        # Debugging: Check how many trials fail to match
-        print("Total rows:", len(self.df))
-        print("Rows with missing trials:", self.df['trial'].isna().sum())
-
-        # Replace None values temporarily instead of dropping them
-        self.df['trial'] = self.df['trial'].fillna("No Match Found")
-
-        # Handle behaviors safely
-        self.df['sound cues'] = self.df['trial'].apply(
-            lambda x: x.behaviors1.get('sound cues', None) 
-            if isinstance(x, object) and hasattr(x, 'behaviors1') else None
-        )
-        self.df['port entries'] = self.df['trial'].apply(
-            lambda x: x.behaviors1.get('port entries', None) 
-            if isinstance(x, object) and hasattr(x, 'behaviors1') else None
-        )
-        self.df['sound cues onset'] = self.df['sound cues'].apply(lambda x: x.onset_times if x else None)
-        self.df['port entries onset'] = self.df['port entries'].apply(lambda x: x.onset_times if x else None)
-        self.df['port entries offset'] = self.df['port entries'].apply(lambda x: x.offset_times if x else None)
-
-        # Creates a column for subject name
+        # Create a DataFrame with a single column
+        self.df = pd.DataFrame({'file name': file_names})
+        
+        # matching up data with their file names in the new dataframe
+        def find_matching_trial(self, file_name):
+            return self.trials.get(file_name, None)
+        self.df['trial'] = self.df.apply(lambda row: find_matching_trial(row['file name']), axis=1)
+        
+        # creating column for subject names
+        if 'RT_3' in directory_path: 
+            self.df['file name'] = self.df.apply(lambda row: row['subject'] + '-' + '-'.join(row['file name'].split('-')[-2:]), axis=1)
         self.df['subject_name'] = self.df['file name'].str.split('-').str[0]
-
-        # Create a new column that stores an array of winners for each row
-        winner_columns = [col for col in self.df.columns if 'winner' in col.lower()]
-        self.df['winner_array'] = self.df[winner_columns].apply(lambda row: row.values.tolist(), axis=1)
-
-        # Drops all other winner columns leaving only winner_array.
-        self.df.drop(columns=winner_columns, inplace=True)
-
-        # Drop rows without dopamine data only at the end
-        self.df = self.df[self.df['trial'] != "No Match Found"]
-        self.df.reset_index(drop=True, inplace=True)
-
-
-    def merge_data2(self):
-        """
-        Merges data from cohort 3 into a dataframe for analysis
-        """
-        # Changes file name to match the change in load_rtc2
-        self.df['file name'] = self.df.apply(lambda row: row['subject'] + '-' + '-'.join(row['file name'].split('-')[-2:]), axis=1)
-        self.df['trial'] = self.df.apply(lambda row: self.find_matching_trial(row['file name']), axis=1)
-        
-        # Debugging: Check how many trials fail to match
-        print("Total rows:", len(self.df))
-        print("Rows with missing trials:", self.df['trial'].isna().sum())
-
-        self.df['sound cues'] = self.df['trial'].apply(lambda x: x.behaviors1.get('sound cues', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
-        self.df['port entries'] = self.df['trial'].apply(lambda x: x.behaviors1.get('port entries', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
-        self.df['sound cues onset'] = self.df['sound cues'].apply(lambda x: x.onset_times if x else None)
-        self.df['port entries onset'] = self.df['port entries'].apply(lambda x: x.onset_times if x else None)
-        self.df['port entries offset'] = self.df['port entries'].apply(lambda x: x.offset_times if x else None)
-        
-        # Creates a column for subject name
-        self.df['subject_name'] = self.df['file name'].str.split('-').str[0]
-
-        # Create a new column that stores an array of winners for each row
-        winner_columns = [col for col in self.df.columns if 'winner' in col.lower()]
-        self.df['winner_array'] = self.df[winner_columns].apply(lambda row: row.values.tolist(), axis=1)
-        
-        # drops all other winner columns leaving only winner_array.
-        self.df.drop(columns=winner_columns, inplace=True)
-
-        # drops all rows without dopamine data.
-        self.df.dropna(subset=['trial'], inplace=True)
-        self.df.reset_index(drop=True, inplace=True)
 
     '''********************************** PETH **********************************'''
     def rt_compute_peth_per_event(self, behavior_name='sound cues', n_events=None, pre_time=5, post_time=5, bin_size=0.1):
@@ -311,10 +254,93 @@ class Reward_Training(Experiment):
             else:
                 print(f"Behavior '{behavior_name}' not found in block '{block_name}'.")
 
-
-    def rt_plot_peth_per_event(self, directory_path, title = 'PETH graph for n trials', signal_type = 'zscore', error_type='sem',
-                            color='#00B7D7', display_pre_time=5, display_post_time=5, yticks_interval=2):
+    def plot_specific_peth(self, df, condition, event_type, directory_path, brain_region, y_min, y_max):
         """
+        Plots the PETH of the first and last bouts of either win or loss.
+        """
+        # Splitting either mPFC or NAc subjects
+        def split_by_subject(df1, region):            
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            # Return filtered dataframes and subject_name column
+            if region == 'mPFC':
+                return df_p
+            else:
+                return df_n
+
+        df = split_by_subject(df, brain_region)
+        bin_size = 100
+        if brain_region == 'mPFC':
+            color = '#FFAF00'
+        else:
+            color = '#15616F'
+        # Initialize data structures
+        common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
+        first_events = []
+        last_events = []
+        for i, row in df.iterrows():
+            print(f"Row {i}: Length of Z-score array: {len(row[f'{event_type} Event_Zscore'])}")
+
+        for _, row in df.iterrows():
+            z_scores = np.array(row[f'{event_type} Event_Zscore'])  # Shape: (num_1D_arrays, num_time_bins)
+
+            # Ensure there is at least one 1D array in the row
+            if len(z_scores) > 0:
+                first_events.append(z_scores[0])   # First 1D array
+                last_events.append(z_scores[-1])   # Last 1D array
+
+        # Convert lists to numpy arrays (num_trials, num_time_bins)
+        first_events = np.array(first_events)
+        last_events = np.array(last_events)
+
+        # Compute mean and SEM
+        mean_first = np.mean(first_events, axis=0)
+        sem_first = np.std(first_events, axis=0) / np.sqrt(first_events.shape[0])
+
+        mean_last = np.mean(last_events, axis=0)
+        sem_last = np.std(last_events, axis=0) / np.sqrt(last_events.shape[0])
+
+        mean_first, downsampled_time_axis = self.downsample_data(mean_first, common_time_axis, bin_size)
+        sem_first, _ = self.downsample_data(sem_first, common_time_axis, bin_size)
+        
+        mean_last, _ = self.downsample_data(mean_last, common_time_axis, bin_size)
+        sem_last, _ = self.downsample_data(sem_last, common_time_axis, bin_size)
+        # Create figure with two subplots
+        fig, axes = plt.subplots(1, 2, figsize=(10, 5), sharey=True)
+
+        axes[0].set_ylabel('Event Induced Z-scored ΔF/F')
+        axes[1].set_ylabel('Event Induced Z-scored ΔF/F')
+
+        # Show y-tick labels on both subplots
+        axes[0].tick_params(axis='y', labelleft=True)
+        axes[1].tick_params(axis='y', labelleft=True)
+
+        for ax, mean_peth, sem_peth, title in zip(
+            axes, [mean_first, mean_last], [sem_first, sem_last], 
+            [f'First {condition} bout Z-Score', f'Last {condition} bout Z-Score']
+        ):
+            ax.plot(downsampled_time_axis, mean_peth, color=color, label='Mean DA')
+            ax.fill_between(downsampled_time_axis, mean_peth - sem_peth, mean_peth + sem_peth, color=color, alpha=0.4)
+            ax.axvline(0, color='black', linestyle='--')  # Mark event onset
+
+            ax.set_title(title, fontsize=18)
+            ax.set_xlabel('Time (s)', fontsize=14)
+            ax.set_xticks([common_time_axis[0], 0, 4, common_time_axis[-1]])
+            ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=12)
+
+            # Add a margin to make sure the mean trace doesn't go out of bounds
+            # margin = 0.1 * (y_max - y_min)  # You can adjust this factor for a larger/smaller margin
+
+            ax.set_ylim(y_max, y_min)
+
+        save_path = os.path.join(str(directory_path) + '\\' + f'{brain_region}_{condition}_PETH.png')
+        plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        # plt.savefig(f'PETH.png', transparent=True, bbox_inches='tight', pad_inches=0.1)
+        plt.show()
+
+    """def rt_plot_peth_per_event(self, directory_path, title = 'PETH graph for n trials', signal_type = 'zscore', error_type='sem',
+                            color='#00B7D7', display_pre_time=5, display_post_time=5, yticks_interval=2):
+        
         Plots the PETH for each event index (e.g., each sound cue) across all trials in one figure with subplots.
 
         Parameters:
@@ -328,7 +354,7 @@ class Reward_Training(Experiment):
 
         Returns:
         - None. Displays the PETH plot for each event index in one figure.
-        """
+        
         # Get the time axis
         time_axis = self.time_axis
 
@@ -409,8 +435,6 @@ class Reward_Training(Experiment):
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
         plt.show()
 
-
-        """
         Plots the PETH for each event index (e.g., each sound cue) across all trials in one figure with subplots.
 
         Parameters:
@@ -426,283 +450,551 @@ class Reward_Training(Experiment):
         - None. Displays the PETH plot for each event index in one figure.
         """
 
-    def plot_specific_peth(self, directory_path, brain_region):
-        # Parameters
-        selected_indices = [40]  # Specify which events to plot (1-based index)
-        event_type = 'sound cues'  # Choose between 'port entries' or 'sound cues'
-        pre_time = 4    # Time before event onset to include in PETH (seconds)
-        post_time = 10   # Time after event onset to include in PETH (seconds)
-        bin_size = 0.1  # Bin size for PETH (seconds)
-        y_axis_limits = (-1.5, 2.5)  # Set y-axis limits as a tuple (min, max). Set to None for auto-scaling.
-
-        # Initialize data structures
-        peri_event_signals = [[] for _ in selected_indices]  # List to collect signals for each selected event
-        common_time_axis = np.arange(-pre_time, post_time + bin_size, bin_size)
-
-        # Iterate over all trials in exp
-        for block_name, block_data in self.trials.items():
-            print(f"Processing block: {block_name}")
-            print(block_data)
-            # Extract event onsets based on the chosen event type
-            event_onsets = np.array(block_data.behaviors1[event_type].onset)
-            
-            # For each selected event
-            for idx, event_index in enumerate(selected_indices):
-                # Ensure the event_index is within the range of available events
-                if event_index > len(event_onsets):
-                    print(f"Event index {event_index} exceeds the number of {event_type} in block {block_name}. Skipping.")
-                    continue
-                
-                # Get the onset of the specified event
-                sc_onset = event_onsets[event_index - 1]  # 1-based index adjustment
-                
-                if event_type == 'port entries':
-                    # For port entries, find the first port entry after the sound cue onset
-                    pe_indices = np.where(block_data.behaviors1['sound cues'].onset > sc_onset)[0]
-                    if len(pe_indices) == 0:
-                        print(f"No sound cues found after {event_type} at {sc_onset} seconds in block {block_name}.")
-                        continue
-                    sc_onset = block_data.behaviors1['sound cues'].onset[pe_indices[0]]
-                
-                # Define time window around the event onset
-                start_time = sc_onset - pre_time
-                end_time = sc_onset + post_time
-                
-                # Get indices of DA signal within this window
-                indices = np.where((block_data.timestamps >= start_time) & (block_data.timestamps <= end_time))[0]
-                if len(indices) == 0:
-                    print(f"No DA data found for {event_type} at {sc_onset} seconds in block {block_name}.")
-                    continue
-                
-                # Extract DA signal and timestamps
-                da_segment = block_data.zscore[indices]
-                time_segment = block_data.timestamps[indices] - sc_onset  # Align time to event onset
-                
-                # Interpolate DA signal onto the common time axis
-                interpolated_da = np.interp(common_time_axis, time_segment, da_segment)
-                
-                # Collect the interpolated DA signal
-                peri_event_signals[idx].append(interpolated_da)
-
-        # Now, peri_event_signals is a list where each element is a list of DA signals from each block for that event
-
-        # Plot individual PETHs side by side for each selected event number
-        num_events = len(selected_indices)
-        fig, axes = plt.subplots(1, num_events, figsize=(4 * num_events, 7), sharey=True)
-        if num_events == 1:
-            axes = [axes]  # Ensure axes is iterable
-
-        for i, ax in enumerate(axes):
-            event_signals = peri_event_signals[i]
-            if not event_signals:
-                print(f"No data collected for {event_type} {i+1}.")
-                continue
-            # Convert to numpy array
-            event_signals = np.array(event_signals)
-            # Compute mean and SEM
-            mean_peth = np.mean(event_signals, axis=0)
-            sem_peth = np.std(event_signals, axis=0) / np.sqrt(len(event_signals))
-            # Plot
-            ax.plot(common_time_axis, mean_peth, color=brain_region, label='Mean DA')
-            ax.fill_between(common_time_axis, mean_peth - sem_peth, mean_peth + sem_peth, color=brain_region, alpha=0.4)
-            ax.axvline(0, color='black', linestyle='--')
-            ax.set_title(f'Tone #{selected_indices[i]}', fontsize=24)
-            ax.set_xlabel('Onset (s)', fontsize=26, labelpad=12)
-            
-            # Only show y-axis label and ticks on the first plot
-            if i == 0:
-                ax.set_ylabel('Event Induced Z-scored ΔF/F', fontsize=30, labelpad= 12)
-            else:
-                ax.tick_params(axis='y', labelleft=False)  # Hide y-ticks on subsequent plots
-
-            # Set x-ticks and labels, including 6 seconds
-            ax.set_xticks([common_time_axis[0], 0, 6, common_time_axis[-1]])
-            ax.set_xticklabels([f'{common_time_axis[0]:.1f}', '0', '6.0', f'{common_time_axis[-1]:.1f}'], fontsize=20)
-            ax.set_xticklabels(['-4', '0','6', '10'], fontsize=24)
-            
-            # Apply the same y-axis limits across all plots and ensure 0 is included
-            if y_axis_limits:
-                ax.set_ylim(y_axis_limits)
-            else:
-                # Adjust to include 0 in y-axis range
-                min_y = min(0, np.min(mean_peth - sem_peth))
-                max_y = max(0, np.max(mean_peth + sem_peth))
-                ax.set_ylim(min_y, max_y)
-
-            if "NAc" in str(directory_path):
-                # NAc
-                ax.set_yticks([-2, -1, 0, 1, 2, 3, 4, 5])
-                ax.set_yticklabels(['-2.0', '-1.0', '0.0', '1.0', '2.0', '3.0', '4.0', '5.0'], fontsize=28)
-            else:
-                # mPFC
-                ax.set_yticks([-2, -1, 0, 1, 2])
-                ax.set_yticklabels(['-2.0', '-1.0', '0.0', '1.0', '2.0'], fontsize=28)
-
-            # Manually ensure 0 is included in y-ticks
-            y_ticks = ax.get_yticks()
-            if 0 not in y_ticks:
-                y_ticks = np.append(y_ticks, 0)
-            ax.set_yticks(y_ticks)
-            ax.tick_params(axis='both', which='major', labelsize=28, width=2)  # Adjust tick label size and width
-
-            # Remove top and right spines
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
-
-            # **Adjust spine linewidths to make axes lines thicker**
-            ax.spines['left'].set_linewidth(2)    # Left axis line
-            ax.spines['bottom'].set_linewidth(2)  # Bottom axis line
-
-        save_path = os.path.join(str(directory_path) + '\\' + 'PETH.png')
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-        # plt.savefig(f'PETH.png', transparent=True, bbox_inches='tight', pad_inches=0.1)
-
-        # plt.suptitle(f'Mean PETH for Selected {event_type.capitalize()} Events', fontsize=16)
-        plt.show()
-
     '''********************************** LICKS **********************************'''
-    def find_first_lick_after_sound_cue(self):
+    def find_first_lick_after_sound_cue(self, df=None):
         """
         Finds the first port entry occurring after 4 seconds following each sound cue.
         If a port entry starts before 4 seconds but extends past it, 
         the function selects the timestamp at 4 seconds after the sound cue.
-        
-        Stores the results as a list of timestamps in `self.first_lick_after_sound_cue`.
+
+        Works with any DataFrame that has the required columns.
         """
+        if df is None:
+            df = self.df  # Default to self.df only if no DataFrame is provided
 
-        # Extract sound cue and port entry onset/offset times
-        sound_cues_onsets = np.array(self.behaviors1['sound cues'].onset_times)
-        port_entries_onsets = np.array(self.behaviors1['port entries'].onset_times)
-        port_entries_offsets = np.array(self.behaviors1['port entries'].offset_times)
+        first_licks = []  # List to store results
 
-        first_licks = []  # List to store the first lick timestamp for each sound cue
+        for index, row in df.iterrows():  # Use df, not self.df
+            sound_cues_onsets = row['sound cues onset']
+            port_entries_onsets = row['port entries onset']
+            port_entries_offsets = row['port entries offset']
 
-        for sc_onset in sound_cues_onsets:
-            threshold_time = sc_onset + 4  # Define the 4-second threshold after the sound cue
+            first_licks_per_row = []
 
-            # Find port entries that start AFTER 4 seconds post sound cue
-            future_licks_indices = np.where(port_entries_onsets >= threshold_time)[0]
+            for sc_onset in sound_cues_onsets:
+                threshold_time = sc_onset + 4
 
-            if len(future_licks_indices) > 0:
-                # If there are port entries after 4s, take the first one
-                first_licks.append(port_entries_onsets[future_licks_indices[0]])
-            else:
-                # Find port entries that START before 4s but continue PAST it
-                ongoing_licks_indices = np.where((port_entries_onsets < threshold_time) & (port_entries_offsets > threshold_time))[0]
+                future_licks_indices = np.where(port_entries_onsets >= threshold_time)[0]
 
-                if len(ongoing_licks_indices) > 0:
-                    # If a port entry spans past 4s, use the exact timepoint at 4s
-                    first_licks.append(threshold_time)
+                if len(future_licks_indices) > 0:
+                    first_licks_per_row.append(port_entries_onsets[future_licks_indices[0]])
                 else:
-                    # If no port entry occurs after 4s, append None (or NaN for consistency)
-                    first_licks.append(None)
+                    ongoing_licks_indices = np.where((port_entries_onsets < threshold_time) & (port_entries_offsets > threshold_time))[0]
 
-        # Store results in the object
-        self.first_lick_after_sound_cue = first_licks
-
-    def compute_mean_da_across_trials(self, n=40, pre_time=5, post_time=14, bin_size=0.1, mean_window=4):
-        """
-        Computes the mean DA signal across all trials for each of the first n sound cues.
-
-        Parameters:
-        - n: Number of sound cues to process.
-        - pre_time: Time before port entry onset to include in PETH (seconds).
-        - post_time: Time after port entry onset to include in PETH (seconds).
-        - bin_size: Bin size for PETH (seconds).
-        - mean_window: The time window (in seconds) from 0 to mean_window to compute the mean DA signal.
-
-        Returns:
-        - df: A pandas DataFrame containing trial numbers, mean DA signals, and SEMs.
-        """
-        # Initialize data structures
-        peri_event_signals = [[] for _ in range(n)]  # List to collect signals for each of the first n port entries
-        common_time_axis = np.arange(-pre_time, post_time + bin_size, bin_size)
-
-        # Iterate over all trials
-        for trial_name, trial_data in self.trials.items():
-            print(f"Processing trial: {trial_name}")
-
-            # Extract sound cue onsets and port entry onsets
-            sound_cue_onsets = np.array(trial_data.behaviors1['sound cues'].onset)
-            port_entry_onsets = np.array(trial_data.behaviors1['port entries'].onset)
-            port_entry_offsets = np.array(trial_data.behaviors1['port entries'].offset)
-
-            # Limit to the first n sound cues
-            sound_cue_onsets = sound_cue_onsets[:n]
-
-            # For each sound cue
-            for sc_index, sc_onset in enumerate(sound_cue_onsets):
-                reward_time = sc_onset + 6  # Reward issued at 6 seconds
-
-                # Check if the subject was already in the port during the sound cue and stayed past 6s
-                pe_indices_ongoing = np.where((port_entry_onsets < reward_time) & (port_entry_offsets > reward_time))[0]
-
-                if len(pe_indices_ongoing) > 0:
-                    # If a port entry was ongoing at 6s, set its time to exactly 6s
-                    first_pe_index = pe_indices_ongoing[0]
-                    pe_onset = reward_time
-                else:
-                    # Find the first port entry that starts after 6 seconds post sound cue
-                    pe_indices_after = np.where(port_entry_onsets >= reward_time)[0]
-
-                    if len(pe_indices_after) > 0:
-                        # First port entry strictly after 6s
-                        first_pe_index = pe_indices_after[0]
-                        pe_onset = port_entry_onsets[first_pe_index]
+                    if len(ongoing_licks_indices) > 0:
+                        first_licks_per_row.append(threshold_time)
                     else:
-                        print(f"No valid port entry found after 6s for sound cue at {sc_onset} seconds in trial {trial_name}.")
-                        continue
+                        first_licks_per_row.append(None)
 
-                # Define time window around the port entry onset
-                start_time = pe_onset - pre_time
-                end_time = pe_onset + post_time
+            first_licks.append(first_licks_per_row)
 
-                # Get indices of DA signal within this window
-                indices = np.where((trial_data.timestamps >= start_time) & (trial_data.timestamps <= end_time))[0]
-                if len(indices) == 0:
-                    print(f"No DA data found for port entry at {pe_onset} seconds in trial {trial_name}.")
+        df["first_lick_after_sound_cue"] = first_licks  # Add to the given DataFrame
+
+        return df  # Return the modified DataFrame
+
+    def compute_closest_port_offset(self, lick_column, offset_column, df=None):
+        """
+        Computes the closest port entry offsets after each lick time and adds them as a new column in the dataframe.
+        
+        Parameters:
+            lick_column (str): The column name for the lick times (e.g., 'first_lick_after_sound_cue').
+            offset_column (str): The column name for the port entry offset times (e.g., 'filtered_port_entry_offset').
+            new_column_name (str): The name of the new column to store the results. Default is 'closest_port_entry_offsets'.
+        
+        Returns:
+            pd.DataFrame: Updated DataFrame with the new column of closest port entry offsets.
+        """
+        if df is None:
+            df = self.df 
+        def find_closest_port_entries(licks, port_entry_offsets):
+            """Finds the closest port entry offsets greater than each lick in 'licks'."""
+            closest_offsets = []
+            
+            for lick in licks:
+                # Find the indices where port_entry_offset > lick
+                valid_indices = np.where(port_entry_offsets > lick)[0]
+                
+                if len(valid_indices) == 0:
+                    closest_offsets.append(np.nan)  # Append NaN if no valid offset is found
+                else:
+                    # Get the closest port entry offset (the first valid one in the array)
+                    closest_offset = port_entry_offsets[valid_indices[0]]
+                    closest_offsets.append(closest_offset)
+            
+            return closest_offsets
+
+        def compute_lick_metrics(row):
+            """Compute the closest port entry offsets for each trial."""
+            # Extract first_lick_after_sound_cue and filtered_port_entry_offset
+            first_licks = np.array(row[lick_column])
+            port_entry_offsets = np.array(row[offset_column])
+            
+            # Get the closest port entry offsets for each lick
+            closest_offsets = find_closest_port_entries(first_licks, port_entry_offsets)
+            
+            return closest_offsets
+
+        # Apply the function to the DataFrame and create a new column with the results
+        df['closest_lick_offset'] = df.apply(compute_lick_metrics, axis=1)
+
+    def compute_event_induced_DA(self, df=None, cue_type='sound', pre_time=4, post_time=10):
+        """
+        Computes the event-induced DA of a behavior by taking the 4 seconds before the onset of the behavior and normalizing the rest
+        of the signal to it.
+        """
+        if df is None:
+            df = self.df
+        min_dt = np.inf
+        for _, row in df.iterrows():
+            trial_obj = row['trial']
+            timestamps = np.array(trial_obj.timestamps)
+            if len(timestamps) > 1:
+                dt = np.min(np.diff(timestamps))  # Find the smallest sampling interval
+                min_dt = min(min_dt, dt)
+
+        if min_dt == np.inf:
+            print("No valid timestamps found to determine dt.")
+            return
+
+        # Define a single global time axis for all trials
+        common_time_axis = np.arange(-pre_time, post_time, min_dt)
+        event_zscores = []
+        event_time_list = []
+
+        # Process each row in the dataframe
+        for _, row in df.iterrows():
+            trial_obj = row['trial']
+            cues = row[cue_type]  # Event start times
+
+            # Convert to numpy arrays
+            timestamps = np.array(trial_obj.timestamps)
+            zscore = np.array(trial_obj.zscore)
+
+            if len(cues) == 0:
+                print(f"Warning: No sound cues for trial {trial_obj}")
+                event_zscores.append([np.full(common_time_axis.shape, np.nan)])
+                event_time_list.append([np.full(common_time_axis.shape, np.nan)])
+                continue
+
+            trial_event_zscores = []
+            trial_event_times = []
+
+            # Process each event start time
+            for event_start in cues:
+                window_start = event_start - pre_time
+                window_end = event_start + post_time
+
+                # Find relevant indices
+                mask = (timestamps >= window_start) & (timestamps <= window_end)
+                if not np.any(mask):
+                    print(f"Warning: No timestamps found for event at {event_start}")
+                    trial_event_zscores.append(np.full(common_time_axis.shape, np.nan))
+                    trial_event_times.append(np.full(common_time_axis.shape, np.nan))
                     continue
 
-                # Extract DA signal and timestamps
-                da_segment = trial_data.zscore[indices]
-                time_segment = trial_data.timestamps[indices] - pe_onset  # Align time to port entry onset
+                # Time relative to event onset
+                rel_time = timestamps[mask] - event_start
+                signal = zscore[mask]
 
-                # Interpolate DA signal onto the common time axis
-                interpolated_da = np.interp(common_time_axis, time_segment, da_segment)
+                # Compute baseline (pre-event mean)
+                pre_mask = rel_time < 0
+                baseline = np.nanmean(signal[pre_mask]) if np.any(pre_mask) else 0
 
-                # Collect the interpolated DA signal
-                peri_event_signals[sc_index].append(interpolated_da)
+                # Baseline-correct the signal
+                corrected_signal = signal - baseline
 
-        # Compute the mean DA signal and SEM across all trials for each port entry number
-        trial_mean_da = []
-        trial_sem_da = []
-        mean_indices = np.where((common_time_axis >= 0) & (common_time_axis <= mean_window))[0]
+                # Interpolate onto the common time axis
+                interp_signal = np.interp(common_time_axis, rel_time, corrected_signal)
 
-        for event_signals in peri_event_signals:
-            if event_signals:
-                # Convert list of signals to numpy array
-                event_signals = np.array(event_signals)
-                # Compute mean PETH across all trials for this event
-                mean_peth = np.mean(event_signals, axis=0)
-                # Compute mean DA in the specified window
-                mean_da = np.mean(mean_peth[mean_indices])
-                sem_da = np.std(mean_peth[mean_indices]) / np.sqrt(len(event_signals))
-                trial_mean_da.append(mean_da)
-                trial_sem_da.append(sem_da)
-            else:
-                trial_mean_da.append(np.nan)  # Handle cases where no data is available
-                trial_sem_da.append(np.nan)  # Handle cases where no data is available
+                trial_event_zscores.append(interp_signal)
+                trial_event_times.append(common_time_axis.copy())  # Store a copy for each event
 
-        # Create a DataFrame to store the results
-        df = pd.DataFrame({
-            'Trial': np.arange(1, n + 1),
-            'Mean_DA': trial_mean_da,
-            'SEM_DA': trial_sem_da
-        })
+            event_zscores.append(trial_event_zscores)
+            event_time_list.append(trial_event_times)
 
-        return df
+        # Store results in the dataframe
+        df['Tone Event_Time_Axis'] = event_time_list  # Now structured identically to Event_Zscore
+        df['Tone Event_Zscore'] = event_zscores
 
+    def compute_lick_ei_DA(self, df=None, pre_time=4, post_time=10):
+        """
+        Compute the Event_Induced DA for lick using the baseline before the tone to normalize the data.
+        """
+        if df is None:
+            df = self.df
+        min_dt = np.inf
+        # Determine the smallest time step (min_dt) across all trials
+        for _, row in df.iterrows():
+            trial_obj = row['trial']
+            timestamps = np.array(trial_obj.timestamps)
+            if len(timestamps) > 1:
+                dt = np.min(np.diff(timestamps))  # Find the smallest sampling interval
+                min_dt = min(min_dt, dt)
 
+        if min_dt == np.inf:
+            print("No valid timestamps found to determine dt.")
+            return
+
+        event_zscores = []
+        event_time_list = []
+
+        # Process each row in the dataframe
+        for _, row in df.iterrows():
+            trial_obj = row['trial']
+            cues = row['first_lick_after_sound_cue']  # Event start times
+            sound_cues = row['filtered_sound_cues']  # Corresponding sound cue times
+
+            # Convert to numpy arrays
+            timestamps = np.array(trial_obj.timestamps)
+            zscore = np.array(trial_obj.zscore)
+
+            if len(cues) == 0 or len(sound_cues) == 0:
+                print(f"Warning: No valid cues for trial {trial_obj}")
+                event_zscores.append([np.full((1,), np.nan)])
+                event_time_list.append([np.full((1,), np.nan)])
+                continue
+
+            trial_event_zscores = []
+            trial_event_times = []
+
+            # Process each event start time
+            for event_start in cues:
+                try:
+                    idx = list(cues).index(event_start)
+                    cue_time = sound_cues[idx]  # Get the corresponding sound cue
+                except ValueError:
+                    print(f"Warning: Could not find corresponding sound cue for event {event_start}")
+                    continue
+
+                # Define time window                
+                window_start = cue_time - float(pre_time)  # 4 seconds before sound cue
+                window_end = event_start + float(post_time)  # 10 seconds after first lick
+
+                # Find relevant indices
+                mask = (timestamps >= window_start) & (timestamps <= window_end)
+                if not np.any(mask):
+                    print(f"Warning: No timestamps found for event at {event_start}")
+                    trial_event_zscores.append(np.full((1,), np.nan))
+                    trial_event_times.append(np.full((1,), np.nan))
+                    continue
+
+                # Time relative to event onset
+                rel_time = timestamps[mask] - event_start
+                signal = zscore[mask]
+
+                # Compute baseline (pre-event mean before sound cue)
+                pre_mask = timestamps[mask] < cue_time
+                baseline = np.nanmean(signal[pre_mask]) if np.any(pre_mask) else 0
+
+                # Baseline-correct the signal
+                corrected_signal = signal - baseline
+
+                # Define a trial-specific common time axis
+                common_time_axis = np.arange(-pre_time, post_time, min_dt)
+
+                # Interpolate onto the common time axis
+                interp_signal = np.interp(common_time_axis, rel_time, corrected_signal)
+
+                trial_event_zscores.append(interp_signal)
+                trial_event_times.append(common_time_axis.copy())  # Store a copy for each event
+
+            event_zscores.append(trial_event_zscores)
+            event_time_list.append(trial_event_times)
+
+        # Store results in the dataframe
+        df['Lick Event_Time_Axis'] = event_time_list  # Now structured identically to Event_Zscore
+        df['Lick Event_Zscore'] = event_zscores
+
+    def compute_tone_da(self, df=None, mode='standard'):
+        if df is None:
+            df = self.df
+        def compute_da_metrics_for_trial(trial_obj, filtered_sound_cues):
+            """Compute DA metrics (AUC, Max Peak, Time of Max Peak, Mean Z-score) for each sound cue, using adaptive peak-following."""
+            """if not hasattr(trial_obj, "timestamps") or not hasattr(trial_obj, "zscore"):
+                return np.nan"""  # Handle missing attributes
+
+            timestamps = np.array(trial_obj.timestamps)  
+            zscores = np.array(trial_obj.zscore)  
+
+            computed_metrics = []
+            for cue in filtered_sound_cues:
+                start_time = cue
+                end_time = cue + 6  # Default window end
+
+                # Extract initial window
+                mask = (timestamps >= start_time) & (timestamps <= end_time)
+                window_ts = timestamps[mask]
+                window_z = zscores[mask]
+                
+                if len(window_ts) < 2:
+                    computed_metrics.append({"AUC": np.nan, "Max Peak": np.nan, "Time of Max Peak": np.nan, "Mean Z-score": np.nan, "Adjusted End": np.nan})
+                    continue
+                    # Skip to next cue
+
+                # Compute initial metrics
+                auc = np.trapz(window_z, window_ts)  
+                max_idx = np.argmax(window_z)
+                max_peak = window_z[max_idx]
+                peak_time = window_ts[max_idx]
+                mean_z = np.mean(window_z)
+
+                computed_metrics.append({
+                    "AUC": auc,
+                    "Max Peak": max_peak,
+                    "Time of Max Peak": peak_time,
+                    "Mean Z-score": mean_z,
+                    "Adjusted End": end_time  # Store adjusted end
+                })
+            return computed_metrics
+        def compute_ei(df):
+            # EI mode: use event-induced data.
+            if 'Tone Event_Time_Axis' not in df.columns or 'Tone Event_Zscore' not in df.columns:
+                print("Event-induced data not found in behaviors. Please run compute_event_induced_DA() first.")
+                return df
+
+            # Lists to store computed arrays for each row
+            mean_zscores_all = []
+            auc_values_all = []
+            max_peaks_all = []
+            peak_times_all = []
+
+            for i, row in df.iterrows():
+                # Extract all trials (lists) within the row
+                time_axes = np.array(row['Tone Event_Time_Axis'])  # 1D array
+                event_zscores = np.array(row['Tone Event_Zscore'])  # 2D array (list of lists)
+
+                # Lists to store per-trial metrics
+                mean_zscores = []
+                auc_values = []
+                max_peaks = []
+                peak_times = []
+
+                for time_axis, event_zscore in zip(time_axes, event_zscores):
+                    time_axis = np.array(time_axis)
+                    event_zscore = np.array(event_zscore)
+
+                    # Mask for time_axis >= 0
+                    mask = (time_axis >= 0) & (time_axis <= 6)
+                    if not np.any(mask):
+                        mean_zscores.append(np.nan)
+                        auc_values.append(np.nan)
+                        max_peaks.append(np.nan)
+                        peak_times.append(np.nan)
+                        continue
+
+                    final_time = time_axis[mask]
+                    final_z = event_zscore[mask]
+
+                    # Compute metrics
+                    mean_z = np.mean(final_z)
+                    auc = np.trapz(final_z, final_time)
+                    max_idx = np.argmax(final_z)
+                    max_peak = final_z[max_idx]
+                    peak_time = final_time[max_idx]
+
+                    # Append results for this trial
+                    mean_zscores.append(mean_z)
+                    auc_values.append(auc)
+                    max_peaks.append(max_peak)
+                    peak_times.append(peak_time)
+
+                # Append lists of results for this row
+                mean_zscores_all.append(mean_zscores)
+                auc_values_all.append(auc_values)
+                max_peaks_all.append(max_peaks)
+                peak_times_all.append(peak_times)
+
+            # Store computed values as lists inside new DataFrame columns
+            df['Mean Z-score EI'] = mean_zscores_all
+            df['AUC EI'] = auc_values_all
+            df['Max Peak EI'] = max_peaks_all
+            df['Time of Max Peak EI'] = peak_times_all
+            return df
+
+        if mode == 'standard':
+            # Apply function across all trials
+            df["computed_metrics"] = df.apply(
+                lambda row: compute_da_metrics_for_trial(row["trial"], row["filtered_sound_cues"]), axis=1)
+            df["Tone AUC"] = df["computed_metrics"].apply(lambda x: [item.get("AUC", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df["Tone Max Peak"] = df["computed_metrics"].apply(lambda x: [item.get("Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df["Tone Time of Max Peak"] = df["computed_metrics"].apply(lambda x: [item.get("Time of Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df["Tone Mean Z-score"] = df["computed_metrics"].apply(lambda x: [item.get("Mean Z-score", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df["Tone Adjusted End"] = df["computed_metrics"].apply(lambda x: [item.get("Adjusted End", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            # Drop the "computed_metrics" column if it's no longer needed
+            df.drop(columns=["computed_metrics"], inplace=True)
+        else:
+            compute_ei(df)
+                
+    def compute_lick_da(self, df=None, mode='standard'):
+        if df is None:
+            df = self.df
+        """Iterate through trials in the dataframe and compute DA metrics for each lick trial."""
+        
+        def compute_da_metrics_for_lick(trial_obj, first_lick_after_tones, closest_port_entry_offsets, 
+                                        use_adaptive=False, peak_fall_fraction=0.5, allow_bout_extension=False,
+                                        use_fractional=False, max_bout_duration=15):
+            """Compute DA metrics (AUC, Max Peak, Time of Max Peak, Mean Z-score) for a single trial, 
+            iterating over multiple first_lick_after_tone and closest_port_entry_offset values."""
+            
+            timestamps = np.array(trial_obj.timestamps)  
+            zscores = np.array(trial_obj.zscore)  
+
+            computed_metrics = []
+            for first_lick_after_tone, closest_port_entry_offset in zip(first_lick_after_tones, closest_port_entry_offsets):
+                # Ensure timestamps array is not empty and start_time is before end_time
+                if len(timestamps) == 0 or first_lick_after_tone >= closest_port_entry_offset: 
+                    computed_metrics.append({"AUC": np.nan, "Max Peak": np.nan, "Time of Max Peak": np.nan, "Mean Z-score": np.nan, "Adjusted End": np.nan})
+                    continue
+
+                # Extract initial window
+                mask = (timestamps >= first_lick_after_tone) & (timestamps <= closest_port_entry_offset)
+                
+                if mask.sum() == 0:  # If no valid timestamps in the window
+                    computed_metrics.append({"AUC": np.nan, "Max Peak": np.nan, "Time of Max Peak": np.nan, "Mean Z-score": np.nan, "Adjusted End": np.nan})
+                    continue
+                
+                window_ts = timestamps[mask]
+                window_z = zscores[mask]
+
+                # Compute initial metrics
+                auc = np.trapz(window_z, window_ts)  
+                max_idx = np.argmax(window_z)
+                max_peak = window_z[max_idx]
+                peak_time = window_ts[max_idx]
+                mean_z = np.mean(window_z)
+
+                # Adaptive peak-following
+                if use_adaptive and max_peak >= 0:
+                    threshold = max_peak * peak_fall_fraction
+                    fall_idx = max_idx
+
+                    while fall_idx < len(window_z) and window_z[fall_idx] > threshold:
+                        fall_idx += 1
+
+                    if fall_idx < len(window_z):
+                        closest_port_entry_offset = window_ts[fall_idx]  # Adjust end time based on threshold
+
+                    elif allow_bout_extension:
+                        # Extend to the full timestamp range if no fall-off is found
+                        extended_mask = (timestamps >= first_lick_after_tone)
+                        extended_ts = timestamps[extended_mask]
+                        extended_z = zscores[extended_mask]
+
+                        peak_idx_ext = np.argmin(np.abs(extended_ts - peak_time))
+                        fall_idx_ext = peak_idx_ext
+
+                        while fall_idx_ext < len(extended_z) and extended_z[fall_idx_ext] > threshold:
+                            fall_idx_ext += 1
+
+                        if fall_idx_ext < len(extended_ts):
+                            closest_port_entry_offset = extended_ts[fall_idx_ext]
+                        else:
+                            closest_port_entry_offset = extended_ts[-1]
+
+                # Re-extract window with adjusted end time
+                final_mask = (timestamps >= first_lick_after_tone) & (timestamps <= closest_port_entry_offset)
+                final_ts = timestamps[final_mask]
+                final_z = zscores[final_mask]
+
+                if len(final_ts) < 2:
+                    computed_metrics.append({"AUC": np.nan, "Max Peak": np.nan, "Time of Max Peak": np.nan, "Mean Z-score": np.nan, "Adjusted End": np.nan})
+                    continue  # Skip to next pair of values
+
+                # Compute final metrics
+                auc = np.trapz(final_z, final_ts)
+                final_max_idx = np.argmax(final_z)
+                final_max_val = final_z[final_max_idx]
+                final_peak_time = final_ts[final_max_idx]
+                mean_z = np.mean(final_z)
+
+                computed_metrics.append({
+                    "AUC": auc,
+                    "Max Peak": final_max_val,
+                    "Time of Max Peak": final_peak_time,
+                    "Mean Z-score": mean_z,
+                    "Adjusted End": closest_port_entry_offset  # Store adjusted end
+                })
+            return computed_metrics
+        def compute_ei(df):
+            # EI mode: use event-induced data.
+            if 'Lick Event_Time_Axis' not in df.columns or 'Lick Event_Zscore' not in df.columns:
+                print("Event-induced data not found in behaviors. Please run compute_event_induced_DA() first.")
+                return df
+
+            # Lists to store computed arrays for each row
+            mean_zscores_all = []
+            auc_values_all = []
+            max_peaks_all = []
+            peak_times_all = []
+
+            for i, row in df.iterrows():
+                # Extract all trials (lists) within the row
+                time_axes = [np.array(x) for x in row['Lick Event_Time_Axis']]   # 2D array (list of lists)
+                event_zscores = [np.array(x) for x in row['Lick Event_Zscore']]  # 2D array (list of lists)
+
+                # Lists to store per-trial metrics
+                mean_zscores = []
+                auc_values = []
+                max_peaks = []
+                peak_times = []
+
+                for time_axis, event_zscore in zip(time_axes, event_zscores):
+                    time_axis = np.array(time_axis)
+                    event_zscore = np.array(event_zscore)
+
+                    # Mask for time_axis >= 0
+                    mask = time_axis >= 0
+                    if not np.any(mask):
+                        mean_zscores.append(np.nan)
+                        auc_values.append(np.nan)
+                        max_peaks.append(np.nan)
+                        peak_times.append(np.nan)
+                        continue
+
+                    final_time = time_axis[mask]
+                    final_z = event_zscore[mask]
+
+                    # Compute metrics
+                    mean_z = np.mean(final_z)
+                    auc = np.trapz(final_z, final_time)
+                    max_idx = np.argmax(final_z)
+                    max_peak = final_z[max_idx]
+                    peak_time = final_time[max_idx]
+
+                    # Append results for this trial
+                    mean_zscores.append(mean_z)
+                    auc_values.append(auc)
+                    max_peaks.append(max_peak)
+                    peak_times.append(peak_time)
+
+                # Append lists of results for this row
+                mean_zscores_all.append(mean_zscores)
+                auc_values_all.append(auc_values)
+                max_peaks_all.append(max_peaks)
+                peak_times_all.append(peak_times)
+
+            # Store computed values as lists inside new DataFrame columns
+            df['Lick Mean Z-score EI'] = mean_zscores_all
+            df['Lick AUC EI'] = auc_values_all
+            df['Lick Max Peak EI'] = max_peaks_all
+            df['Lick Time of Max Peak EI'] = peak_times_all
+            return df
+
+        if mode == 'standard':
+            # Apply the function across all trials
+            df["lick_computed_metrics"] = df.apply(
+                lambda row: compute_da_metrics_for_lick(row["trial"], row["first_lick_after_sound_cue"], 
+                                                        row["closest_lick_offset"], use_adaptive=True, 
+                                                        peak_fall_fraction=0.5, allow_bout_extension=False), axis=1)
+            # Extract the individual DA metrics into new columns
+            df["Lick AUC"] = df["lick_computed_metrics"].apply(lambda x: [item.get("AUC", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df["Lick Max Peak"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df["Lick Time of Max Peak"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Time of Max Peak", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df["Lick Mean Z-score"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Mean Z-score", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df["Lick Adjusted End"] = df["lick_computed_metrics"].apply(lambda x: [item.get("Adjusted End", np.nan) for item in x] if isinstance(x, list) else np.nan)
+            df.drop(columns=["lick_computed_metrics"], inplace=True)
+        else:
+            df = compute_ei(df)
     
     def plot_linear_fit_with_error_bars(self, directory_path, df, color='blue', y_limits=None):
         """
@@ -778,3 +1070,27 @@ class Reward_Training(Experiment):
         
         print(f"Slope: {slope:.4f}, Intercept: {intercept:.4f}")
         print(f"Pearson correlation coefficient (R): {r_value:.4f}, p-value: {p_value:.4e}")
+
+    """*********************MISC.************************"""
+    def downsample_data(self, data, time_axis, bin_size=10):
+        """
+        Downsamples the time series data by averaging over bins of 'bin_size' points.
+        
+        Parameters:
+        - data (1D NumPy array): Original Z-score values.
+        - time_axis (1D NumPy array): Corresponding time points.
+        - bin_size (int): Number of original bins to merge into one.
+        
+        Returns:
+        - downsampled_data (1D NumPy array): Smoothed Z-score values.
+        - new_time_axis (1D NumPy array): Adjusted time points.
+        """
+        num_bins = len(data) // bin_size  # Number of new bins
+        data = data[:num_bins * bin_size]  # Trim excess points
+        time_axis = time_axis[:num_bins * bin_size]
+
+        # Reshape and compute mean for each bin
+        downsampled_data = data.reshape(num_bins, bin_size).mean(axis=1)
+        new_time_axis = time_axis.reshape(num_bins, bin_size).mean(axis=1)
+
+        return downsampled_data, new_time_axis

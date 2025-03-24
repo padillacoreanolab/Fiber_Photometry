@@ -446,12 +446,16 @@ class Reward_Competition(Experiment):
         self.df['filtered_sound_cues'] = self.df.apply(
             lambda row: remove_indices_from_array(row['sound cues onset'], row['tangles_array']), axis=1
         )
-        self.df['filtered_port_entries'] = self.df.apply(
+        """self.df['filtered_port_entries'] = self.df.apply(
             lambda row: remove_indices_from_array(row['port entries onset'], row['tangles_array']), axis=1
         )
         self.df['filtered_port_entry_offset'] = self.df.apply(
             lambda row: remove_indices_from_array(row['port entries offset'], row['tangles_array']), axis=1
-        )
+        )"""
+        
+        self.df['filtered_port_entries'] = self.df['port entries onset']
+        self.df['filtered_port_entry_offset'] = self.df['port entries offset']
+
         # Update 'win_or_lose' if the first value of 'tangles_array' is 1
         self.df['first_bout'] = self.df.apply(
             lambda row: 'tangle' if len(row['tangles_array']) > 0 and row['tangles_array'][0] == 1 else row['first_bout'], axis=1
@@ -1680,7 +1684,7 @@ class Reward_Competition(Experiment):
             ax.set_ylim(y_max, y_min)
 
         save_path = os.path.join(str(directory_path) + '\\' + f'{brain_region}_{condition}_PETH.png')
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         # plt.savefig(f'PETH.png', transparent=True, bbox_inches='tight', pad_inches=0.1)
         plt.show()
 
@@ -1756,7 +1760,7 @@ class Reward_Competition(Experiment):
 
         # Save and show
         save_path = os.path.join(directory_path, f'{brain_region}_{condition}_Single_Trials_Heatmap.png')
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         plt.show()
 
     def scatter_dominance(self, directory_path, df, metric_name, method, condition, pad_inches=0.1):
@@ -2005,3 +2009,171 @@ class Reward_Competition(Experiment):
         })
         final_df = df
         return final_df
+    
+    def plot_single_peth(self, df, condition, event_type, directory_path, brain_region, y_min, y_max, plot_first=True):
+        """
+        Plots the PETH of either the first or last bout of either win or loss.
+        If plot_first=True, it will plot the first bout. If plot_first=False, it will plot the last bout.
+        """
+        # Splitting either mPFC or NAc subjects
+        def split_by_subject(df1, region):            
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            # Return filtered dataframes and subject_name column
+            if region == 'mPFC':
+                return df_p
+            else:
+                return df_n
+
+        df = split_by_subject(df, brain_region)
+        bin_size = 100
+        if brain_region == 'mPFC':
+            color = '#FFAF00'
+        else:
+            color = '#15616F'
+        
+        # Initialize data structures
+        common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
+        first_events = []
+        last_events = []
+        
+        for _, row in df.iterrows():
+            z_scores = np.array(row[f'{event_type} Event_Zscore'])  # Shape: (num_1D_arrays, num_time_bins)
+            
+            # Ensure there is at least one 1D array in the row
+            if len(z_scores) > 0:
+                first_events.append(z_scores[0])   # First 1D array
+                last_events.append(z_scores[-1])   # Last 1D array
+
+        # Convert lists to numpy arrays (num_trials, num_time_bins)
+        first_events = np.array(first_events)
+        last_events = np.array(last_events)
+
+        # Compute mean and SEM
+        mean_first = np.mean(first_events, axis=0)
+        sem_first = np.std(first_events, axis=0) / np.sqrt(first_events.shape[0])
+
+        mean_last = np.mean(last_events, axis=0)
+        sem_last = np.std(last_events, axis=0) / np.sqrt(last_events.shape[0])
+
+        mean_first, downsampled_time_axis = self.downsample_data(mean_first, common_time_axis, bin_size)
+        sem_first, _ = self.downsample_data(sem_first, common_time_axis, bin_size)
+        
+        mean_last, _ = self.downsample_data(mean_last, common_time_axis, bin_size)
+        sem_last, _ = self.downsample_data(sem_last, common_time_axis, bin_size)
+
+        # Create figure with a single subplot
+        fig, ax = plt.subplots(figsize=(10, 5))
+
+        ax.set_ylabel('Event Induced Z-scored ΔF/F')
+        ax.tick_params(axis='y', labelleft=True)
+
+        # Choose the event to plot (first or last bout)
+        if plot_first:
+            mean_peth = mean_first
+            sem_peth = sem_first
+            title = f'First {condition} bout Z-Score'
+        else:
+            mean_peth = mean_last
+            sem_peth = sem_last
+            title = f'Last {condition} bout Z-Score'
+
+        # Plot the selected event
+        ax.plot(downsampled_time_axis, mean_peth, color=color, label='Mean DA')
+        ax.fill_between(downsampled_time_axis, mean_peth - sem_peth, mean_peth + sem_peth, color=color, alpha=0.4)
+        ax.axvline(0, color='black', linestyle='--')  # Mark event onset
+
+        ax.set_title(title, fontsize=18)
+        ax.set_xlabel('Time (s)', fontsize=14)
+        ax.set_xticks([common_time_axis[0], 0, 4, common_time_axis[-1]])
+        ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=12)
+
+        # Add a margin to make sure the mean trace doesn't go out of bounds
+        ax.set_ylim(y_max, y_min)
+
+        # Save the figure
+        save_path = os.path.join(str(directory_path) + '\\' + f'{brain_region}_{condition}_PETH.png')
+        plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        plt.show()
+
+    def plot_first_tone_heatmaps(self, df, condition, event_type, directory_path, brain_region, plot_first=True):
+        """
+        Plots a heatmap of only the first or last trial of a given condition (win/loss).
+        Each heatmap represents **one single trial**, showing Z-score variations over time.
+        """
+        # Function to filter data by brain region
+        def split_by_subject(df1, region):            
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            # Return filtered dataframes and subject_name column
+            if region == 'mPFC':
+                return df_p
+            else:
+                return df_n
+
+        df = split_by_subject(df, brain_region)
+
+        # Extract data
+        common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
+        first_trial, last_trial = None, None
+
+        for _, row in df.iterrows():
+            z_scores = np.array(row[f'{event_type} Event_Zscore'])  # (num_trials, num_time_bins)
+            if len(z_scores) > 0:
+                first_trial = z_scores[0]   # First trial's Z-score data
+                last_trial = z_scores[-1]   # Last trial's Z-score data
+                break  # Only need one subject's trials
+
+        # Convert to 2D arrays (shape: (1, time_bins)) for heatmap
+        bin_size = 125  
+
+        # Downsample first and last trial data
+        first_trial, new_time_axis = self.downsample_data(first_trial, common_time_axis, bin_size)
+        last_trial, _ = self.downsample_data(last_trial, common_time_axis, bin_size)  
+
+        # Convert to 2D array for heatmap (since we have only one row)
+        first_trial = first_trial[np.newaxis, :]
+        last_trial = last_trial[np.newaxis, :]
+
+        # Normalize color scale
+        vmin, vmax = min(first_trial.min(), last_trial.min()), max(first_trial.max(), last_trial.max())
+
+        # Create figure with one subplot (if only one heatmap is to be shown)
+        fig, ax = plt.subplots(figsize=(10, 4))
+
+        if brain_region == "mPFC":
+            cmap = 'inferno'
+        else:
+            colors = ["#08306b", "#4292c6", "#deebf7", "#ffffff"]  
+            cmap = LinearSegmentedColormap.from_list("custom_blue", colors, N=256)
+
+        # Choose the trial to plot (first or last trial based on plot_first argument)
+        if plot_first:
+            trial_data = first_trial
+            title = f'First {condition} trial'
+        else:
+            trial_data = last_trial
+            title = f'Last {condition} trial'
+
+        # Plot heatmap for the selected trial
+        cax = ax.imshow(trial_data, aspect='auto', cmap=cmap, origin='upper',
+                        extent=[common_time_axis[0], common_time_axis[-1], 0, 1],
+                        vmin=vmin, vmax=vmax)
+
+        # Formatting
+        ax.set_title(title, fontsize=14)
+        ax.set_yticks([])  # Remove y-axis ticks (since only one row)
+        ax.axvline(0, color='white', linestyle='--')  # Mark event onset
+
+        # Set x-axis labels
+        ax.set_xlabel('Time (s)', fontsize=12)
+        ax.set_xticks([common_time_axis[0], 0, 4, common_time_axis[-1]])
+        ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=10)
+
+        # Add colorbar to represent Z-score intensity
+        cbar = fig.colorbar(cax, ax=ax, orientation='vertical', shrink=0.7, label='Z-score')
+
+        # Save and show the plot
+        save_path = os.path.join(directory_path, f'{brain_region}_{condition}_Single_Trial_Heatmap.png')
+        plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        plt.show()
