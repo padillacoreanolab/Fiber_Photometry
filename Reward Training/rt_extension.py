@@ -9,6 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 from scipy.stats import linregress
+from matplotlib.colors import LinearSegmentedColormap
 
 class Reward_Training(Experiment):
     def __init__(self, experiment_folder_path, behavior_folder_path):
@@ -173,15 +174,28 @@ class Reward_Training(Experiment):
         # Create the DataFrame with 'file name' column (subdirectories here)
         self.df['file name'] = subdirectories
         self.df['file name'] = self.df['file name'].astype(str)
-
+        
         # matching up data with their file names in the new dataframe
         def find_matching_trial(file_name):
             return self.trials.get(file_name, None)
         self.df['trial'] = self.df.apply(lambda row: find_matching_trial(row['file name']), axis=1)
         
+        def expand_filenames(filename):
+            parts = filename.split('-')  # Split by '-'
+            prefix_parts = parts[0].split('_')  # Extract pp1 and pp2
+            timestamp = '-'.join(parts[-2:])  # Extract date and time
+
+            if len(prefix_parts) == 2:
+                pp1, pp2 = prefix_parts
+                return [f"{pp1}-{timestamp}", f"{pp2}-{timestamp}"]
+            return [filename]  # If format is unexpected, keep original
+
+        # Apply function and explode into new rows
+
         # creating column for subject names
         if 'Cohort_1_2' not in directory_path: 
-            self.df['file name'] = self.df.apply(lambda row: row['subject'] + '-' + '-'.join(row['file name'].split('-')[-2:]), axis=1)
+            self.df['file name'] = self.df['file name'].apply(expand_filenames)
+            self.df = self.df.explode('file name', ignore_index=True)
         self.df['subject_name'] = self.df['file name'].str.split('-').str[0]
         
         self.df['sound cues'] = self.df['trial'].apply(lambda x: x.behaviors1.get('sound cues', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
@@ -560,7 +574,6 @@ class Reward_Training(Experiment):
 
         return df
 
-
     def compute_event_induced_DA(self, df=None, cue_type='sound cues onset', pre_time=4, post_time=10):
         """
         Computes the event-induced DA of a behavior by taking the 4 seconds before the onset of the behavior and normalizing the rest
@@ -853,7 +866,6 @@ class Reward_Training(Experiment):
         if df is None:
             df = self.df
         """Iterate through trials in the dataframe and compute DA metrics for each lick trial."""
-        
         def compute_da_metrics_for_lick(trial_obj, first_lick_after_tones, closest_port_entry_offsets, 
                                         use_adaptive=False, peak_fall_fraction=0.5, allow_bout_extension=False,
                                         use_fractional=False, max_bout_duration=15):
@@ -1019,7 +1031,85 @@ class Reward_Training(Experiment):
             df.drop(columns=["lick_computed_metrics"], inplace=True)
         else:
             df = compute_ei(df)
-    
+
+    def plot_trial_heatmaps(self, trial_numbers, event_type, directory_path, brain_region, df=None):
+        """
+        Plots heatmaps for the first 15 trials of a given condition (win/loss).
+        Each heatmap represents one trial, showing Z-score variations over time.
+        """
+        if df is None:
+            df = self.df
+        # Function to filter data by brain region
+        def split_by_subject(df1, region):            
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            return df_p if region == 'mPFC' else df_n
+        
+        df = split_by_subject(df, brain_region)
+
+        # Extract data
+        first_subject = df.iloc[0]
+        common_time_axis = first_subject[f'{event_type} Event_Time_Axis'][0]
+
+        trial_data_list = []
+        
+        for _, row in df.iterrows():
+            z_scores = np.array(row[f'{event_type} Event_Zscore'])
+            if len(z_scores) >= 15:
+                trial_data_list = z_scores[:trial_numbers]  # Select the first 15 trials
+                break  # Only need one subject's trials
+
+        if len(trial_data_list) == 0:
+            print(f"No valid trials found for {brain_region}")
+            return
+        
+        # Downsample all trials
+        bin_size = 125  
+        downsampled_trials = []
+        
+        for trial in trial_data_list:
+            downsampled_trial, new_time_axis = self.downsample_data(trial, common_time_axis, bin_size)
+            downsampled_trials.append(downsampled_trial)
+
+        downsampled_trials = np.array(downsampled_trials)  # Convert to 2D array (15 x time_bins)
+        
+        # Normalize color scale across trials
+        vmin, vmax = downsampled_trials.min(), downsampled_trials.max()
+
+        # Define colormap
+        if brain_region == "mPFC":
+            cmap = 'inferno'
+        else:
+            colors = ["#08306b", "#4292c6", "#deebf7", "#ffffff"]  
+            cmap = LinearSegmentedColormap.from_list("custom_blue", colors, N=256)
+
+        # Set figure size dynamically based on the number of trials
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        # Plot heatmap
+        cax = ax.imshow(downsampled_trials, aspect='auto', cmap=cmap, origin='upper',
+                        extent=[common_time_axis[0], common_time_axis[-1], 0, len(downsampled_trials)],
+                        vmin=vmin, vmax=vmax)
+
+        # Formatting
+        ax.set_title(f'{brain_region}: all {trial_numbers} trials', fontsize=14)
+        ax.set_yticks([])  # Remove y-axis labels for clean stacking
+        ax.axvline(0, color='white', linestyle='--', linewidth=1)  # Mark event onset
+
+        # Set x-axis labels
+        ax.set_xlabel('Time (s)', fontsize=12)
+        ax.set_xticks([common_time_axis[0], 0, 4, common_time_axis[-1]])
+        ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=10)
+
+        # Add colorbar
+        cbar = fig.colorbar(cax, ax=ax, orientation='vertical', shrink=0.7, label='Z-score')
+
+        # Save and show
+        save_path = os.path.join(directory_path, f'{brain_region}_{trial_numbers}_Trials_Heatmap.png')
+        plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        plt.show()
+
+
     def plot_linear_fit_with_error_bars(self, directory_path, df, color='blue', y_limits=None):
         """
         Plots the mean DA values with SEM error bars, fits a line of best fit,
