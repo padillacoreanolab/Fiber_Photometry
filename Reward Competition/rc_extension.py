@@ -1170,6 +1170,15 @@ class Reward_Competition(Experiment):
         })
         final_df = df
         return final_df
+    
+    def finding_peth_means(self, event_type, df=None):
+        if df is None:
+            df = self.df
+        stacked_arrays = np.vstack(df[f'{event_type} Event_Zscore'].values)  # Stack all arrays
+        mean_array = np.mean(stacked_arrays, axis=0)  # Compute mean across trials
+        sem_array = np.std(stacked_arrays, axis=0, ddof=1) / np.sqrt(stacked_arrays.shape[0])  # Compute SEM correctly
+
+        return mean_array, sem_array
 
     """*******************************PLOTTING**********************************"""
     def ploting_side_by_side(self, df, df1, mean_values, sem_values, mean_values1, sem_values1, bar_color, figsize, metric_name,
@@ -1508,7 +1517,7 @@ class Reward_Competition(Experiment):
                                   yticks_increment, title3, directory_path, pad_inches,
                                   'Win', 'Lose')
     
-    """# plots EI peth for every event
+    # plots EI peth for every event
     def rc_plot_peth_per_event(self, df, i, directory_path, title='PETH graph for n trials', signal_type='zscore', 
                             error_type='sem', display_pre_time=4, display_post_time=10, yticks_interval=2):
         
@@ -1517,7 +1526,7 @@ class Reward_Competition(Experiment):
         if df is None:
             df = self.df
         # Determine the indices for the display range
-        time_axis = df.iloc[i]['Event_Time_Axis'][0]
+        time_axis = df.iloc[i]['Tone Event_Time_Axis'][0]
         display_start_idx = np.searchsorted(time_axis, -display_pre_time)
         display_end_idx = np.searchsorted(time_axis, display_post_time)
         time_axis = time_axis[display_start_idx:display_end_idx]
@@ -1526,10 +1535,22 @@ class Reward_Competition(Experiment):
 
         # Create subplots arranged horizontally
         fig, axes = plt.subplots(1, num_events, figsize=(5 * num_events, 5), sharey=True)
-        print(len(df.iloc[i]['Event_Zscore']))
+        print(len(df.iloc[i]['Tone Event_Zscore']))
         for idx, event_index in enumerate(range(num_events)):
             ax = axes[idx]
-            event_traces = df.iloc[i]['Event_Zscore'][event_index]
+
+            tone_event_zscores = df.iloc[i]['Tone Event_Zscore']
+
+            # Ensure it's a list/array and has enough elements
+            if not isinstance(tone_event_zscores, (list, np.ndarray)) or len(tone_event_zscores) == 0:
+                print(f"Skipping row {i}, 'Tone Event_Zscore' is empty or NaN.")
+                continue
+
+            if event_index >= len(tone_event_zscores):
+                print(f"Skipping index {event_index}, out of range for row {i}.")
+                continue  
+
+            event_traces = tone_event_zscores[event_index]  # Safe access
             
             # Check if event_traces is empty
             if event_traces.size == 0:
@@ -1602,7 +1623,7 @@ class Reward_Competition(Experiment):
                 display_pre_time=display_pre_time, 
                 display_post_time=display_post_time, 
                 yticks_interval=yticks_interval
-            )"""
+            )
 
     def plot_specific_peth(self, df, condition, event_type, directory_path, brain_region, y_min, y_max):
         """
@@ -1625,11 +1646,11 @@ class Reward_Competition(Experiment):
         else:
             color = '#15616F'
         # Initialize data structures
-        common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
+        common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]    
         first_events = []
         last_events = []
-        for i, row in df.iterrows():
-            print(f"Row {i}: Length of Z-score array: {len(row[f'{event_type} Event_Zscore'])}")
+        """for i, row in df.iterrows():
+            print(f"Row {i}: Length of Z-score array: {len(row[f'{event_type} Event_Zscore'])}")"""
 
         for _, row in df.iterrows():
             z_scores = np.array(row[f'{event_type} Event_Zscore'])  # Shape: (num_1D_arrays, num_time_bins)
@@ -1945,8 +1966,8 @@ class Reward_Competition(Experiment):
 
         for index, row in df.iterrows():  # Use df, not self.df
             sound_cue_onset = row['first_tone']
-            port_entries_onsets = row['port_entries']
-            port_entries_offsets = row['port_entry_offset']
+            port_entries_onsets = row['port entries']
+            port_entries_offsets = row['port entries offset']
 
             first_licks_per_row = []
 
@@ -2010,12 +2031,14 @@ class Reward_Competition(Experiment):
         final_df = df
         return final_df
     
-    def plot_single_peth(self, df, condition, event_type, directory_path, brain_region, y_min, y_max, plot_first=True):
+    def plot_single_peth(self, df, condition, event_type, directory_path, brain_region, y_min, y_max, plot_first=True, plot_win=False):
         """
         Plots the PETH of either the first or last bout of either win or loss.
         If plot_first=True, it will plot the first bout. If plot_first=False, it will plot the last bout.
         """
         # Splitting either mPFC or NAc subjects
+        if df is None:
+            df = self.df
         def split_by_subject(df1, region):            
             df_n = df1[df1['subject_name'].str.startswith('n')]
             df_p = df1[df1['subject_name'].str.startswith('p')]
@@ -2036,47 +2059,46 @@ class Reward_Competition(Experiment):
         common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
         first_events = []
         last_events = []
-        
-        for _, row in df.iterrows():
-            z_scores = np.array(row[f'{event_type} Event_Zscore'])  # Shape: (num_1D_arrays, num_time_bins)
-            
-            # Ensure there is at least one 1D array in the row
-            if len(z_scores) > 0:
-                first_events.append(z_scores[0])   # First 1D array
-                last_events.append(z_scores[-1])   # Last 1D array
+        if plot_win:
+            mean_peth, sem_peth = self.finding_peth_means(event_type=event_type, df=df)
+            title = f'{condition} bout Z-Score'
+        else:
+            for _, row in df.iterrows():
+                z_scores = np.array(row[f'{event_type} Event_Zscore'])  # Shape: (num_1D_arrays, num_time_bins)
+                
+                # Ensure there is at least one 1D array in the row
+                if len(z_scores) > 0:
+                    first_events.append(z_scores[0])   # First 1D array
+                    last_events.append(z_scores[-1])   # Last 1D array
 
-        # Convert lists to numpy arrays (num_trials, num_time_bins)
-        first_events = np.array(first_events)
-        last_events = np.array(last_events)
+            # Convert lists to numpy arrays (num_trials, num_time_bins)
+            first_events = np.array(first_events)
+            last_events = np.array(last_events)
 
-        # Compute mean and SEM
-        mean_first = np.mean(first_events, axis=0)
-        sem_first = np.std(first_events, axis=0) / np.sqrt(first_events.shape[0])
+            # Compute mean and SEM
+            mean_first = np.mean(first_events, axis=0)
+            sem_first = np.std(first_events, axis=0) / np.sqrt(first_events.shape[0])
 
-        mean_last = np.mean(last_events, axis=0)
-        sem_last = np.std(last_events, axis=0) / np.sqrt(last_events.shape[0])
+            mean_last = np.mean(last_events, axis=0)
+            sem_last = np.std(last_events, axis=0) / np.sqrt(last_events.shape[0])
 
-        mean_first, downsampled_time_axis = self.downsample_data(mean_first, common_time_axis, bin_size)
-        sem_first, _ = self.downsample_data(sem_first, common_time_axis, bin_size)
-        
-        mean_last, _ = self.downsample_data(mean_last, common_time_axis, bin_size)
-        sem_last, _ = self.downsample_data(sem_last, common_time_axis, bin_size)
+            # Choose the event to plot (first or last bout)
+            if plot_first:
+                mean_peth = mean_first
+                sem_peth = sem_first
+                title = f'First {condition} bout Z-Score'
+            else:
+                mean_peth = mean_last
+                sem_peth = sem_last
+                title = f'Last {condition} bout Z-Score'
 
         # Create figure with a single subplot
-        fig, ax = plt.subplots(figsize=(10, 5))
+        fig, ax = plt.subplots(figsize=(5, 5))
 
         ax.set_ylabel('Event Induced Z-scored ΔF/F')
         ax.tick_params(axis='y', labelleft=True)
-
-        # Choose the event to plot (first or last bout)
-        if plot_first:
-            mean_peth = mean_first
-            sem_peth = sem_first
-            title = f'First {condition} bout Z-Score'
-        else:
-            mean_peth = mean_last
-            sem_peth = sem_last
-            title = f'Last {condition} bout Z-Score'
+        mean_peth, downsampled_time_axis = self.downsample_data(mean_peth, common_time_axis, bin_size)
+        sem_peth, _ = self.downsample_data(sem_peth, common_time_axis, bin_size)
 
         # Plot the selected event
         ax.plot(downsampled_time_axis, mean_peth, color=color, label='Mean DA')
@@ -2144,8 +2166,9 @@ class Reward_Competition(Experiment):
         if brain_region == "mPFC":
             cmap = 'inferno'
         else:
-            colors = ["#08306b", "#4292c6", "#deebf7", "#ffffff"]  
-            cmap = LinearSegmentedColormap.from_list("custom_blue", colors, N=256)
+            # colors = ["#08306b", "#4292c6", "#deebf7", "#ffffff"]  
+            # cmap = LinearSegmentedColormap.from_list("custom_blue", colors, N=256)
+            cmap = 'PuBu'
 
         # Choose the trial to plot (first or last trial based on plot_first argument)
         if plot_first:
