@@ -178,17 +178,23 @@ class Reward_Training(Experiment):
         # matching up data with their file names in the new dataframe
         def find_matching_trial(file_name):
             return self.trials.get(file_name, None)
-        self.df['trial'] = self.df.apply(lambda row: find_matching_trial(row['file name']), axis=1)
         
         def expand_filenames(filename):
             parts = filename.split('-')  # Split by '-'
-            prefix_parts = parts[0].split('_')  # Extract pp1 and pp2
-            timestamp = '-'.join(parts[-2:])  # Extract date and time
+            
+            # Extract timestamp (assumes last two parts are the date-time)
+            if len(parts) >= 3:
+                timestamp = '-'.join(parts[-2:])
+            else:
+                return [filename]  # Keep unchanged if format is incorrect
+            # Extract the prefix (everything before the timestamp)
+            prefix = '-'.join(parts[:-2])  # Get all parts before the timestamp
+            prefix_parts = prefix.split('_')  # Split by '_'
 
-            if len(prefix_parts) == 2:
-                pp1, pp2 = prefix_parts
-                return [f"{pp1}-{timestamp}", f"{pp2}-{timestamp}"]
-            return [filename]  # If format is unexpected, keep original
+            # If multiple prefixes exist, return them separately with timestamp
+            if len(prefix_parts) > 1:
+                return [f"{part}-{timestamp}" for part in prefix_parts]
+            return [filename]
 
         # Apply function and explode into new rows
 
@@ -196,8 +202,8 @@ class Reward_Training(Experiment):
         if 'Cohort_1_2' not in directory_path: 
             self.df['file name'] = self.df['file name'].apply(expand_filenames)
             self.df = self.df.explode('file name', ignore_index=True)
+        self.df['trial'] = self.df.apply(lambda row: find_matching_trial(row['file name']), axis=1)
         self.df['subject_name'] = self.df['file name'].str.split('-').str[0]
-        
         self.df['sound cues'] = self.df['trial'].apply(lambda x: x.behaviors1.get('sound cues', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
         self.df['port entries'] = self.df['trial'].apply(lambda x: x.behaviors1.get('port entries', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
         self.df['sound cues onset'] = self.df['sound cues'].apply(lambda x: x.onset_times if x else None)
@@ -1185,6 +1191,112 @@ class Reward_Training(Experiment):
         print(f"Slope: {slope:.4f}, Intercept: {intercept:.4f}")
         print(f"Pearson correlation coefficient (R): {r_value:.4f}, p-value: {p_value:.4e}")
 
+    def rc_plot_peth_per_event(self, df, i, directory_path, title='PETH graph for n trials', signal_type='zscore', 
+                            error_type='sem', display_pre_time=4, display_post_time=10, yticks_interval=2):
+        # Plots the PETH for each event index (e.g., each sound cue) across all trials in one figure with subplots.
+        
+        if df is None:
+            df = self.df
+        # Determine the indices for the display range
+        time_axis = df.iloc[i]['Tone Event_Time_Axis'][0]
+        display_start_idx = np.searchsorted(time_axis, -display_pre_time)
+        display_end_idx = np.searchsorted(time_axis, display_post_time)
+        time_axis = time_axis[display_start_idx:display_end_idx]
+
+        num_events = 40
+
+        # Create subplots arranged horizontally
+        fig, axes = plt.subplots(1, num_events, figsize=(5 * num_events, 5), sharey=True)
+        print(len(df.iloc[i]['Tone Event_Zscore']))
+        for idx, event_index in enumerate(range(num_events)):
+            ax = axes[idx]
+
+            tone_event_zscores = df.iloc[i]['Tone Event_Zscore']
+
+            # Ensure it's a list/array and has enough elements
+            if not isinstance(tone_event_zscores, (list, np.ndarray)) or len(tone_event_zscores) == 0:
+                print(f"Skipping row {i}, 'Tone Event_Zscore' is empty or NaN.")
+                continue
+
+            if event_index >= len(tone_event_zscores):
+                print(f"Skipping index {event_index}, out of range for row {i}.")
+                continue  
+
+            event_traces = tone_event_zscores[event_index]  # Safe access
+            
+            # Check if event_traces is empty
+            if event_traces.size == 0:
+                print(f"No data for event {event_index + 1}")
+                continue
+            
+            # Convert list of traces to numpy array
+            event_traces = np.array(event_traces)
+            
+            # Ensure event_traces is 2D (if only one trace, add a new axis to make it 2D)
+            if event_traces.ndim == 1:
+                event_traces = np.expand_dims(event_traces, axis=0)  # Convert 1D array to 2D
+            
+            # Truncate the traces to the display range
+            event_traces = event_traces[:, display_start_idx:display_end_idx]
+
+            # Plot the traces (without error bars)
+            ax.plot(time_axis, event_traces.T, color='b', label=f'Event {event_index + 1}', linewidth=1.5)  # Transpose for proper plotting
+            ax.axvline(0, color='black', linestyle='--', label='Event onset')
+
+            # Set the x-ticks to show only the last time, 0, and the very end time
+            ax.set_xticks([time_axis[0], 0, time_axis[-1]])
+            ax.set_xticklabels([f'{time_axis[0]:.1f}', '0', f'{time_axis[-1]:.1f}'], fontsize=12)
+
+            # Set the y-tick labels with specified interval
+            if idx == 0:
+                y_min, y_max = ax.get_ylim()
+                y_ticks = np.arange(np.floor(y_min / yticks_interval) * yticks_interval,
+                                    np.ceil(y_max / yticks_interval) * yticks_interval + yticks_interval,
+                                    yticks_interval)
+                ax.set_yticks(y_ticks)
+                ax.set_yticklabels([f'{y:.0f}' for y in y_ticks], fontsize=12)
+            else:
+                ax.set_yticks([])  # Hide y-ticks for other subplots
+
+            ax.set_xlabel('Time (s)', fontsize=14)
+            if idx == 0:
+                ax.set_ylabel(f'{signal_type.capitalize()} dFF', fontsize=14)
+
+            # Set the title for each event
+            ax.set_title(f'Event {event_index + 1}', fontsize=14)
+
+            # Remove the right and top spines for each subplot
+            ax.spines['right'].set_visible(False)
+            ax.spines['top'].set_visible(False)
+
+        # Adjust layout and add a common title
+        plt.suptitle(title, fontsize=16)
+        save_path = os.path.join(str(directory_path) + '\\' + str(i) + 'all_PETH.png')
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.show()
+
+
+    def apply_rc_plot_peth(self, df, directory_path, title='PETH graph for n trials', 
+                       signal_type='zscore', error_type='sem', display_pre_time=4, 
+                       display_post_time=10, yticks_interval=2):
+        
+        # Applies the rc_plot_peth_per_event function to all rows in the DataFrame.
+        
+        # Loop through all rows in the DataFrame
+        for i, row in df.iterrows():
+            # Call the plotting function for each row
+            self.rc_plot_peth_per_event(
+                df, 
+                i, 
+                directory_path,
+                title=title, 
+                signal_type=signal_type, 
+                error_type=error_type, 
+                display_pre_time=display_pre_time, 
+                display_post_time=display_post_time, 
+                yticks_interval=yticks_interval
+            )
+    
     """*********************MISC.************************"""
     def downsample_data(self, data, time_axis, bin_size=10):
         """
