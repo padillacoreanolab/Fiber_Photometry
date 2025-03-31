@@ -687,8 +687,6 @@ class Trial:
     def compute_da_metrics(self, 
                         use_max_length=False, 
                         max_bout_duration=30, 
-                        use_adaptive=False, 
-                        allow_bout_extension=False,
                         mode='standard', 
                         pre_time=4, 
                         post_time=15):
@@ -698,28 +696,29 @@ class Trial:
         Two modes are available:
         
         - mode='standard': Metrics are computed from self.timestamps and self.zscore,
-          using the event’s absolute timing (window from Event_Start to Event_End, possibly truncated).
-          In this branch, the "Time of Max Peak" is computed relative to the event onset.
+        using the event’s absolute timing (window from Event_Start to Event_End, possibly truncated).
+        The "Time of Max Peak" is computed relative to the event onset.
         
         - mode='EI': Metrics are computed from behavior-relative data stored in 
-          'Relative_Time_Axis' and 'Relative_Zscore'. These are computed using 
-          compute_behavior_relative_DA (if not already computed) with the specified pre/post times.
-          In this branch the window is defined from 0 (event onset) to the event duration (from the 
-          'Duration (s)' column), with optional max length or adaptive adjustments.
+        'Relative_Time_Axis' and 'Relative_Zscore'. These are computed using 
+        compute_behavior_relative_DA (if not already computed) with the specified pre/post times.
+        In this branch the window is defined from 0 (event onset) to the event duration (from the 
+        'Duration (s)' column), with optional max length adjustments.
+        
+        Additionally, if the behavior lasts less than 1 second, the window is allowed to extend
+        past the bout end to search for the next peak.
         
         Metrics computed:
         - AUC: Area under the z-score curve.
         - Max Peak: Maximum z-score in the window.
         - Time of Max Peak: For standard mode, the time (relative to event onset) at which the maximum occurs;
-                           for EI mode, this is directly obtained from the relative time axis.
+                            for EI mode, this is directly obtained from the relative time axis.
         - Mean Z-score: Mean z-score over the window.
         - Adjusted End: The final effective window end after any adjustments.
         
         Parameters:
         - use_max_length (bool): If True, limit the window to max_bout_duration seconds.
         - max_bout_duration (float): Maximum allowed window duration (in seconds).
-        - use_adaptive (bool): If True, adjust the window based on the first local minimum after the peak.
-        - allow_bout_extension (bool): If True, extend the window if no local minimum is found.
         - mode (str): Either 'standard' or 'EI'.
         - pre_time (float): (For EI mode) Seconds before event onset used in computing the relative DA.
         - post_time (float): (For EI mode) Seconds after event onset used in computing the relative DA.
@@ -735,40 +734,33 @@ class Trial:
         standard_end_time = self.timestamps[-1]
 
         if mode == 'standard':
+            # Ensure behavior-relative DA is computed if needed.
             if 'Relative_Time_Axis' not in self.behaviors.columns or 'Relative_Zscore' not in self.behaviors.columns:
                 self.compute_behavior_relative_DA(pre_time=pre_time, post_time=post_time, mode='standard')
             # In standard mode, work with absolute timestamps and raw zscore.
             for i, row in self.behaviors.iterrows():
                 start_time = row['Event_Start']
                 orig_end_time = row['Event_End']
-                end_time = orig_end_time  # default window end
-                
-                # Limit window if required.
-                if use_max_length:
-                    bout_duration = orig_end_time - start_time
-                    if bout_duration > max_bout_duration:
-                        end_time = start_time + max_bout_duration
+                bout_duration = orig_end_time - start_time
+                # Default window end is orig_end_time.
+                end_time = orig_end_time
 
-                # Extract window data.
-                mask = (self.timestamps >= start_time) & (self.timestamps <= end_time)
-                window_ts = self.timestamps[mask]
-                window_z = self.zscore[mask]
-                if len(window_ts) < 2:
-                    continue
+                # Limit window duration if required.
+                if use_max_length and bout_duration > max_bout_duration:
+                    end_time = start_time + max_bout_duration
 
-                # Optionally apply adaptive adjustment.
-                if use_adaptive:
-                    peak_idx = np.argmax(window_z)
-                    local_mins, _ = find_peaks(-window_z[peak_idx:])
-                    if local_mins.size > 0:
-                        end_time = window_ts[peak_idx + local_mins[0]]
-                    elif allow_bout_extension:
-                        extended_mask = (self.timestamps >= start_time) & (self.timestamps <= standard_end_time)
-                        extended_ts = self.timestamps[extended_mask]
-                        if len(extended_ts) > 0:
-                            end_time = extended_ts[-1]
+                # If the behavior lasts less than 1 second, extend the window to look for the next peak.
+                if bout_duration < 1:
+                    extension_mask = (self.timestamps > orig_end_time)
+                    if np.any(extension_mask):
+                        extended_ts = self.timestamps[extension_mask]
+                        extended_z = self.zscore[extension_mask]
+                        # Find peaks in the extended portion.
+                        peaks, _ = find_peaks(extended_z)
+                        if peaks.size > 0:
+                            end_time = extended_ts[peaks[0]]
 
-                # Re-extract final window.
+                # Extract final window.
                 final_mask = (self.timestamps >= start_time) & (self.timestamps <= end_time)
                 final_ts = self.timestamps[final_mask]
                 final_z = self.zscore[final_mask]
@@ -797,11 +789,23 @@ class Trial:
             # Compute metrics using the relative (event-aligned) data.
             for i, row in self.behaviors.iterrows():
                 time_axis = row['Relative_Time_Axis']  # relative to event onset
-                event_zscore = row['Relative_Zscore']    # already processed (baseline-corrected if mode=='EI')
+                event_zscore = row['Relative_Zscore']    # processed data
                 # The initial effective end is taken from the event duration.
                 effective_end = row['Duration (s)']
                 if use_max_length and effective_end > max_bout_duration:
                     effective_end = max_bout_duration
+
+                # If the behavior lasts less than 1 second, extend the window to search for the next peak.
+                if effective_end < 1:
+                    time_axis_arr = np.array(time_axis)
+                    event_zscore_arr = np.array(event_zscore)
+                    extension_mask = time_axis_arr > effective_end
+                    if np.any(extension_mask):
+                        extended_time = time_axis_arr[extension_mask]
+                        extended_z = event_zscore_arr[extension_mask]
+                        peaks, _ = find_peaks(extended_z)
+                        if peaks.size > 0:
+                            effective_end = extended_time[peaks[0]]
 
                 # Create mask for time_axis within [0, effective_end].
                 time_axis_arr = np.array(time_axis)
@@ -811,21 +815,6 @@ class Trial:
                     continue
                 final_time = time_axis_arr[mask]
                 final_z = event_zscore_arr[mask]
-
-                # Adaptive adjustment: adjust effective_end based on first local minimum after peak.
-                if use_adaptive:
-                    peak_idx = np.argmax(final_z)
-                    local_mins, _ = find_peaks(-final_z[peak_idx:])
-                    if local_mins.size > 0:
-                        effective_end = final_time[peak_idx + local_mins[0]]
-                    elif allow_bout_extension:
-                        effective_end = np.max(time_axis_arr[time_axis_arr >= 0])
-                    # Update final window.
-                    mask = (time_axis_arr >= 0) & (time_axis_arr <= effective_end)
-                    final_time = time_axis_arr[mask]
-                    final_z = event_zscore_arr[mask]
-                    if len(final_time) < 2:
-                        continue
 
                 auc = np.trapz(final_z, final_time)
                 mean_z = np.mean(final_z)
@@ -841,6 +830,5 @@ class Trial:
 
         else:
             raise ValueError("Mode must be either 'standard' or 'EI'")
-
 
 

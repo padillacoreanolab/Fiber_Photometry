@@ -227,30 +227,30 @@ class Experiment:
 
 
     '''********************************** DOPAMINE SHIZ **********************************'''
-    def compute_all_da_metrics(self, use_max_length=False, max_bout_duration=10, 
-                            use_adaptive=False, allow_bout_extension=False, mode='standard'):
+    def compute_all_da_metrics(self, use_max_length=False, max_bout_duration=10, mode='standard'):
         """
         Iterates over all trials in the experiment and computes DA metrics with the specified windowing options.
         
+        For each trial, computes AUC, Max Peak, Time of Max Peak, Mean Z-score, and Adjusted End for each behavior.
+        If a behavior lasts less than 1 second, the window is extended beyond the bout end to search for the next peak.
+        
         Parameters:
         - use_max_length (bool): Whether to limit the window to a maximum duration.
-        - max_bout_duration (int): Maximum allowed window duration (in seconds) if fractional analysis is applied.
-        - use_adaptive (bool): Whether to adjust the window using adaptive windowing (via local minimum detection).
-        - allow_bout_extension (bool): Whether to extend the window if no local minimum is found.
-        - mode (str): Either 'standard' to compute metrics using the full standard DA signal, or 'EI' to compute metrics
-                        using the event-induced data (i.e. the precomputed 'Event_Time_Axis' and 'Event_Zscore' columns).
+        - max_bout_duration (int): Maximum allowed window duration (in seconds).
+        - mode (str): Either 'standard' to compute metrics using absolute timestamps and full z-score data,
+                    or 'EI' to compute metrics using event-aligned relative data.
         """
-        
         for trial_name, trial in self.trials.items():
             if hasattr(trial, 'compute_da_metrics'):
                 print(f"Computing DA metrics for {trial_name} ...")
-                trial.compute_da_metrics(use_max_length=use_max_length,
-                                        max_bout_duration=max_bout_duration,
-                                        use_adaptive=use_adaptive,
-                                        allow_bout_extension=allow_bout_extension,
-                                        mode=mode)
+                trial.compute_da_metrics(
+                    use_max_length=use_max_length,
+                    max_bout_duration=max_bout_duration,
+                    mode=mode
+                )
             else:
                 print(f"Warning: Trial '{trial_name}' does not have compute_da_metrics method.")
+
 
 
 
