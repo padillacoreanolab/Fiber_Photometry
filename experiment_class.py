@@ -110,50 +110,51 @@ class Experiment:
         plt.show()
 
 
-    def plot_first_behavior_PETHs(self, selected_bouts=None):
+    def plot_first_behavior_PETHs(self, selected_bouts=None, behavior="Investigation"):
         """
-        Plots the first Investigation PETHs for all trials in the experiment.
+        Plots the first PETHs for the specified behavior for all trials in the experiment.
         
         For each trial, the method:
-          - Filters rows where 'Behavior' equals 'Investigation'.
-          - (Optionally) Further filters the data to only include bouts listed in 'selected_bouts'.
-          - Groups the data by 'Bout' and selects the first event in each bout.
-          - Plots the investigation trace (Relative_Time_Axis vs. Relative_Zscore) with:
-              • a dashed black line at x = 0 (Investigation Start),
-              • a dashed blue line at x = Duration (s) (Investigation End),
-              • a dashed red line at x = Time of Max Peak.
-              
+        - Filters rows where 'Behavior' equals the specified behavior.
+        - (Optionally) Further filters the data to only include bouts listed in 'selected_bouts'.
+        - Groups the data by 'Bout' and selects the first event in each bout.
+        - Plots the behavior trace (Relative_Time_Axis vs. Relative_Zscore) with:
+            • a dashed black line at x = 0 (Behavior Start),
+            • a dashed blue line at x = Duration (s) (Behavior End),
+            • a dashed red line at x = Time of Max Peak.
+            
         The y-axis limits are determined dynamically based on the global minimum and maximum values 
         across all plotted bouts (with an extra margin of 1 added to each end). Each subplot displays 
         its own y-axis tick numbers.
         
         Parameters:
-          selected_bouts (list, optional): A list of bout identifiers to include. If None, all bouts are plotted.
+        selected_bouts (list, optional): A list of bout identifiers to include. If None, all bouts are plotted.
+        behavior (str, optional): The behavior to plot. Defaults to "Investigation".
         """
-        trial_first_data = []  # list to store each trial's first investigation DataFrame
+        trial_first_data = []  # list to store each trial's first behavior DataFrame
         trial_names = []       # list to track trial names
         max_bouts = 0          # maximum number of bouts across trials
 
-        # Loop over each trial and extract first-investigation events.
+        # Loop over each trial and extract first-behavior events.
         for trial_name, trial in self.trials.items():
             if not hasattr(trial, 'behaviors'):
                 continue
-            # Filter for Investigation events.
-            df_invest = trial.behaviors[trial.behaviors["Behavior"] == "Investigation"].copy()
+            # Filter for the specified behavior events.
+            df_behavior = trial.behaviors[trial.behaviors["Behavior"] == behavior].copy()
             
             # If a selection of bouts is provided, filter to include only those bouts.
             if selected_bouts is not None:
-                df_invest = df_invest[df_invest["Bout"].isin(selected_bouts)]
+                df_behavior = df_behavior[df_behavior["Bout"].isin(selected_bouts)]
             
             # Group by 'Bout' and take the first event in each group.
-            df_first_invest = df_invest.groupby("Bout", as_index=False).first()
-            trial_first_data.append(df_first_invest)
+            df_first_behavior = df_behavior.groupby("Bout", as_index=False).first()
+            trial_first_data.append(df_first_behavior)
             trial_names.append(trial_name)
-            if len(df_first_invest) > max_bouts:
-                max_bouts = len(df_first_invest)
+            if len(df_first_behavior) > max_bouts:
+                max_bouts = len(df_first_behavior)
 
         if len(trial_first_data) == 0:
-            print("No trial data available for plotting first investigation behaviors.")
+            print("No trial data available for plotting first behavior PETHs.")
             return
 
         # Determine global y-axis limits from all Relative_Zscore data.
@@ -197,7 +198,7 @@ class Experiment:
                     x = data_row["Relative_Time_Axis"]
                     y = data_row["Relative_Zscore"]
 
-                    # Plot the investigation trace.
+                    # Plot the behavior trace.
                     ax.plot(x, y, label=f"Bout: {data_row['Bout']}")
                     # Plot vertical dashed lines:
                     # Start (x = 0)
@@ -224,10 +225,106 @@ class Experiment:
         plt.tight_layout()
         plt.show()
 
+    def plot_average_investigation_PETHs(
+        self,
+        n_subsequent_investigations=3,   # Number of subsequent investigation events to include
+        behavior="Investigation",        # Behavior to filter for (e.g. "Investigation")
+        plot_error_bars=True             # If True, plot SEM error bars
+    ):
+        """
+        Computes and plots the average PETH trace for each subsequent investigation event
+        across all trials/mice.
+
+        Steps:
+        1. For each trial, filter for events with the specified behavior.
+        2. Sort events (e.g., by 'Event_Start' if available) and assign an InvestigationIndex.
+        3. For each investigation index (up to n_subsequent_investigations), collect the PETH trace 
+        (Relative_Zscore) and record the Relative_Time_Axis.
+        4. Across all trials, compute the element-wise average and standard error (SEM) of the PETH traces.
+        5. Plot the average trace for each investigation event with error bars if desired.
+
+        Parameters:
+        n_subsequent_investigations (int): Number of investigation events to include (e.g., first 3).
+        behavior (str): Behavior label to filter events (default "Investigation").
+        plot_error_bars (bool): Whether to overlay SEM error bars.
+        """
+        import numpy as np
+        import matplotlib.pyplot as plt
+
+        # Dictionary to hold lists of PETH traces for each investigation index.
+        peth_dict = {i: [] for i in range(1, n_subsequent_investigations + 1)}
+        time_axis = None  # We assume all events share the same time axis.
+        
+        # Loop over trials (or mice) stored in self.trials.
+        for trial_name, trial in self.trials.items():
+            if not hasattr(trial, 'behaviors'):
+                continue
+            # Filter for the specified behavior.
+            df_behavior = trial.behaviors[trial.behaviors["Behavior"] == behavior].copy()
+            if df_behavior.empty:
+                continue
+            
+            # Sort events by time; if "Event_Start" exists, use it.
+            if "Event_Start" in df_behavior.columns:
+                df_behavior.sort_values("Event_Start", inplace=True)
+            else:
+                df_behavior.sort_index(inplace=True)
+            
+            # Assign an InvestigationIndex (1 for the first event, 2 for the second, etc.)
+            df_behavior["InvestigationIndex"] = np.arange(1, len(df_behavior) + 1)
+            
+            # Only consider events up to the specified number.
+            df_behavior = df_behavior[df_behavior["InvestigationIndex"] <= n_subsequent_investigations]
+            
+            # Loop through each event and store its PETH trace.
+            for _, row in df_behavior.iterrows():
+                idx = int(row["InvestigationIndex"])
+                # Each row should have a PETH trace (Relative_Zscore) and a time axis.
+                # We assume these are numpy arrays (or lists) that are the same length for all events.
+                peth_trace = np.array(row["Relative_Zscore"])
+                peth_dict[idx].append(peth_trace)
+                
+                # Store the time axis (assumed common across events) from the first valid event.
+                if time_axis is None:
+                    time_axis = np.array(row["Relative_Time_Axis"])
+        
+        # Compute the average trace and SEM for each investigation index.
+        avg_traces = {}
+        sem_traces = {}
+        for idx in range(1, n_subsequent_investigations + 1):
+            traces = peth_dict[idx]
+            if len(traces) > 0:
+                stacked = np.vstack(traces)
+                avg_traces[idx] = np.mean(stacked, axis=0)
+                sem_traces[idx] = np.std(stacked, axis=0) / np.sqrt(stacked.shape[0])
+            else:
+                print(f"No data available for investigation {idx}.")
+        
+        # Plot the average traces.
+        plt.figure(figsize=(12, 8))
+        for idx in sorted(avg_traces.keys()):
+            if plot_error_bars:
+                plt.errorbar(
+                    time_axis, 
+                    avg_traces[idx], 
+                    yerr=sem_traces[idx],
+                    marker='o', linestyle='-',
+                    capsize=5, label=f"Investigation {idx}"
+                )
+            else:
+                plt.plot(time_axis, avg_traces[idx], marker='o', linestyle='-', label=f"Investigation {idx}")
+        
+        plt.xlabel("Relative Time (s)", fontsize=14)
+        plt.ylabel("Average Z-score", fontsize=14)
+        plt.title(f"Average PETH for First {n_subsequent_investigations} Investigations", fontsize=16)
+        plt.legend(fontsize=12)
+        plt.tight_layout()
+        plt.show()
+
 
 
     '''********************************** DOPAMINE SHIZ **********************************'''
-    def compute_all_da_metrics(self, use_max_length=False, max_bout_duration=10, mode='standard'):
+    def compute_all_da_metrics(self, use_max_length=False, max_bout_duration=10, mode='standard', post_time=15):
         """
         Iterates over all trials in the experiment and computes DA metrics with the specified windowing options.
         
@@ -246,7 +343,8 @@ class Experiment:
                 trial.compute_da_metrics(
                     use_max_length=use_max_length,
                     max_bout_duration=max_bout_duration,
-                    mode=mode
+                    mode=mode,
+                    post_time=post_time
                 )
             else:
                 print(f"Warning: Trial '{trial_name}' does not have compute_da_metrics method.")

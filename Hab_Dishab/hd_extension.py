@@ -444,10 +444,11 @@ def create_big_df_from_exp_da_dict(exp_da_dict):
 def exponential_decay(x, A, B, tau):
     return A + B * np.exp(-x / tau)
 
-def plot_peak_for_subsequent_investigations_custom(
+def plot_peak_for_subsequent_behaviors(
     exp_da_dict,
-    selected_bouts=None,             # e.g. ["s1-1","s1-2"]
-    n_subsequent_investigations=3,   # e.g. keep first 3 investigations per (Subject, Bout)
+    selected_bouts=None,             # e.g. ["s1-1", "s1-2"]
+    behavior=None,                   # e.g. "Defeat"
+    n_subsequent_behaviors=3,        # e.g. keep first 3 behaviors per (Subject, Bout)
     peak_col="Max Peak",             # which column holds the per-event peak DA
     metric_type='slope',             # choose 'slope' or 'decay'
     figsize=(14, 8),
@@ -457,21 +458,23 @@ def plot_peak_for_subsequent_investigations_custom(
     custom_xtick_labels=None,
     ylim=None,
     ytick_increment=None,
-    xlabel="Investigation Index",
+    xlabel="Behavior Index",
     ylabel="Avg " + "Max Peak",
-    plot_title="Average Peak per Investigation"
+    plot_title="Average Peak per Behavior"
 ):
     """
     1) Merges all DataFrames in exp_da_dict into one big DataFrame.
-    2) Filters for the specified bouts (e.g. ["s1-1", "s1-2"]).
-    3) Within each (Subject, Bout), sorts by Event_Start and assigns an 'InvestigationIndex'
+    2) Filters for the specified bouts (e.g. ["s1-1", "s1-2"]) and behavior (if provided).
+    3) Within each (Subject, Bout), sorts by Event_Start and assigns a 'BehaviorIndex'
        (1 for the first event, 2 for the second, etc.).
-    4) Keeps only the first n_subsequent_investigations per (Subject, Bout).
-    5) Groups by (Bout, InvestigationIndex) across subjects and computes the average of peak_col.
+    4) Filters out (Subject, Bout) groups that do not have at least n_subsequent_behaviors,
+       then retains only the first n_subsequent_behaviors events.
+    5) Groups by (Bout, BehaviorIndex) across subjects and computes the average of peak_col,
+       as well as the standard deviation and standard error of the mean (SEM) for error bars.
     6) For each Bout, fits either a linear regression (if metric_type='slope') or an exponential decay
-       (if metric_type='decay') to the AvgPeak vs. InvestigationIndex data.
+       (if metric_type='decay') to the AvgPeak vs. BehaviorIndex data.
        The computed value (slope or decay constant) is shown in the legend.
-    7) Plots each Bout as a line using full custom visual styling.
+    7) Plots each Bout as a line with error bars using full custom visual styling.
     
     Returns the aggregated DataFrame used for plotting.
     """
@@ -482,25 +485,37 @@ def plot_peak_for_subsequent_investigations_custom(
     if selected_bouts is not None:
         big_df = big_df[big_df["Bout"].isin(selected_bouts)].copy()
     
+    # Filter for the chosen behavior if provided
+    if behavior is not None:
+        big_df = big_df[big_df["Behavior"] == behavior].copy()
+    
     if big_df.empty:
-        print("No data left after filtering for bouts. Nothing to plot.")
+        print("No data left after filtering for bouts and behavior. Nothing to plot.")
         return pd.DataFrame()
     
-    # 3) Within each (Subject, Bout), sort by Event_Start and assign an InvestigationIndex
+    # 3) Within each (Subject, Bout), sort by Event_Start and assign a BehaviorIndex
     big_df.sort_values(["Subject", "Bout", "Event_Start"], inplace=True)
-    big_df["InvestigationIndex"] = big_df.groupby(["Subject", "Bout"]).cumcount() + 1
+    big_df["BehaviorIndex"] = big_df.groupby(["Subject", "Bout"]).cumcount() + 1
     
-    # 4) Keep only the first n_subsequent_investigations per (Subject, Bout)
-    big_df = big_df[big_df["InvestigationIndex"] <= n_subsequent_investigations]
+    # 4) Only include subjects that have at least n_subsequent_behaviors per (Subject, Bout)
+    group_counts = big_df.groupby(["Subject", "Bout"])["BehaviorIndex"].max().reset_index()
+    valid_groups = group_counts[group_counts["BehaviorIndex"] >= n_subsequent_behaviors][["Subject", "Bout"]]
+    big_df = pd.merge(big_df, valid_groups, on=["Subject", "Bout"], how="inner")
     
-    # 5) Group by (Bout, InvestigationIndex) and compute average peak and subject count
+    # Then, keep only the first n_subsequent_behaviors per (Subject, Bout)
+    big_df = big_df[big_df["BehaviorIndex"] <= n_subsequent_behaviors]
+    
+    # 5) Group by (Bout, BehaviorIndex) and compute average peak, standard deviation, and subject count
     agg_df = (
-        big_df.groupby(["Bout", "InvestigationIndex"], as_index=False)
+        big_df.groupby(["Bout", "BehaviorIndex"], as_index=False)
         .agg(
             SubjectCount=("Subject", "nunique"),
-            AvgPeak=(peak_col, "mean")
+            AvgPeak=(peak_col, "mean"),
+            StdPeak=(peak_col, "std")
         )
     )
+    # Calculate the standard error of the mean (SEM)
+    agg_df["SEM"] = agg_df["StdPeak"] / np.sqrt(agg_df["SubjectCount"])
     
     # 6) Create figure with custom styling
     if custom_colors is None:
@@ -521,13 +536,14 @@ def plot_peak_for_subsequent_investigations_custom(
     else:
         unique_bouts = line_order
     
-    # 7) For each Bout, fit the data and plot the line
+    # 7) For each Bout, fit the data and plot the line with error bars
     for i, bout in enumerate(unique_bouts):
         df_line = agg_df[agg_df["Bout"] == bout].copy()
-        df_line.sort_values("InvestigationIndex", inplace=True)
+        df_line.sort_values("BehaviorIndex", inplace=True)
         
-        x_vals = df_line["InvestigationIndex"].values
+        x_vals = df_line["BehaviorIndex"].values
         y_vals = df_line["AvgPeak"].values
+        y_err = df_line["SEM"].values  # error bars
         
         if len(x_vals) == 0 or len(y_vals) == 0:
             print(f"Skipping bout '{bout}' due to no data.")
@@ -560,12 +576,15 @@ def plot_peak_for_subsequent_investigations_custom(
         legend_text += f" ({metric_label}, n={df_line['SubjectCount'].max()})"
         
         color = custom_colors[i % len(custom_colors)]
-        ax.plot(
+        # Plot with error bars using errorbar
+        ax.errorbar(
             x_vals, y_vals,
+            yerr=y_err,
             marker='o', linestyle='-',
             color=color,
             linewidth=5, markersize=30,
-            label=legend_text
+            label=legend_text,
+            capsize=10  # adds caps to the error bars
         )
     
     # 8) Set axis labels and formatting
@@ -584,7 +603,7 @@ def plot_peak_for_subsequent_investigations_custom(
         ax.set_xticks(np.arange(1, len(custom_xtick_labels) + 1))
         ax.set_xticklabels(custom_xtick_labels, fontsize=44)
     else:
-        unique_x = sorted(agg_df["InvestigationIndex"].unique())
+        unique_x = sorted(agg_df["BehaviorIndex"].unique())
         ax.set_xticks(unique_x)
         ax.set_xticklabels([str(x) for x in unique_x], fontsize=44)
     
