@@ -620,3 +620,118 @@ def plot_peak_for_subsequent_behaviors(
         print(f"Bout: {bout}, {metric_type} = {val:.3f}")
     
     return agg_df
+
+
+
+def plot_behavior_times_across_bouts_gray_bars_only(metadata_df,
+                                          y_col="Total Investigation Time",
+                                          behavior=None,
+                                          title='Mean Across Bouts',
+                                          ylabel=None,
+                                          custom_xtick_labels=None,
+                                          custom_xtick_colors=None,
+                                          ylim=None,
+                                          bar_color='#00B7D7',
+                                          yticks_increment=None,
+                                          xlabel='Agent',
+                                          figsize=(12,7),
+                                          pad_inches=0.1,
+                                          save=False,
+                                          save_name=None):
+    """
+    Plots a bar chart with error bars (SEM) for each bout. No individual subject lines or dots.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    # 1) Optionally filter by behavior
+    if behavior is not None:
+        metadata_df = metadata_df[metadata_df["Behavior"] == behavior].copy()
+        if metadata_df.empty:
+            raise ValueError(f"No data found for behavior='{behavior}'.")
+
+    # 2) Check if the desired y_col exists
+    if y_col not in metadata_df.columns:
+        raise ValueError(f"'{y_col}' not found in metadata_df columns.")
+
+    # 3) Pivot the DataFrame: rows -> Subjects, columns -> Bout, values -> y_col
+    pivot_df = metadata_df.pivot(index="Subject", columns="Bout", values=y_col)
+
+    # 4) Calculate mean and SEM across subjects for each bout
+    mean_values = pivot_df.mean()
+    sem_values = pivot_df.sem()
+
+    # 5) Create the plot
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # 6) Bar plot with error bars (SEM)
+    bars = ax.bar(
+        pivot_df.columns, 
+        mean_values, 
+        yerr=sem_values, 
+        capsize=6,
+        color=bar_color,
+        edgecolor='black', 
+        linewidth=5,
+        width=0.6,
+        error_kw=dict(elinewidth=3, capthick=3, zorder=5)
+    )
+
+    # (No individual subject lines or dots)
+
+    # 7) Set axis labels and title
+    if ylabel is None:
+        ylabel = y_col
+    ax.set_ylabel(ylabel, fontsize=30, labelpad=12)
+    ax.set_xlabel(xlabel, fontsize=30, labelpad=12)
+    ax.set_title(title, fontsize=16)
+
+    # 8) Set x-ticks and labels
+    ax.set_xticks(np.arange(len(pivot_df.columns)))
+    if custom_xtick_labels is not None:
+        ax.set_xticklabels(custom_xtick_labels, fontsize=28)
+        if custom_xtick_colors is not None:
+            for tick, color in zip(ax.get_xticklabels(), custom_xtick_colors):
+                tick.set_color(color)
+    else:
+        ax.set_xticklabels(pivot_df.columns, fontsize=26)
+
+    # Increase tick label sizes
+    ax.tick_params(axis='y', labelsize=30)
+    ax.tick_params(axis='x', labelsize=30)
+
+    # 9) Set y-axis limits
+    if ylim is None:
+        all_values = np.concatenate([pivot_df.values.flatten(), mean_values.values.flatten()])
+        min_val = np.nanmin(all_values)
+        max_val = np.nanmax(all_values)
+        lower_ylim = 0 if min_val > 0 else min_val * 1.1
+        upper_ylim = max_val * 1.1
+        ax.set_ylim(lower_ylim, upper_ylim)
+        if lower_ylim < 0:
+            ax.axhline(0, color='black', linestyle='--', linewidth=2, zorder=1)
+    else:
+        ax.set_ylim(ylim)
+        if ylim[0] < 0:
+            ax.axhline(0, color='black', linestyle='--', linewidth=2, zorder=1)
+
+    # 10) Set y-ticks if an increment is provided
+    if yticks_increment is not None:
+        y_min, y_max = ax.get_ylim()
+        y_ticks = np.arange(np.floor(y_min), np.ceil(y_max) + yticks_increment, yticks_increment)
+        ax.set_yticks(y_ticks)
+
+    # 11) Remove right & top spines; thicken left & bottom spines
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.spines['left'].set_linewidth(5)
+    ax.spines['bottom'].set_linewidth(5)
+
+    # 12) Adjust layout, and save the figure if requested
+    plt.tight_layout()
+    if save:
+        if save_name is None:
+            raise ValueError("save_name must be provided if save is True.")
+        plt.savefig(save_name, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
+    
+    plt.show()

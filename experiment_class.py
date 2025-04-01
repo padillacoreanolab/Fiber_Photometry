@@ -321,6 +321,59 @@ class Experiment:
         plt.tight_layout()
         plt.show()
 
+        
+    def plot_clean_single_PETH_for_poster(
+        self,
+        trial_name,
+        bout_name,
+        behavior="Investigation"
+    ):
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        trial = self.trials.get(trial_name, None)
+        if trial is None or not hasattr(trial, 'behaviors'):
+            print(f"Trial '{trial_name}' not found or missing behavior data.")
+            return
+
+        df = trial.behaviors.copy()
+        df = df[(df["Behavior"] == behavior) & (df["Bout"] == bout_name)]
+
+        if df.empty:
+            print(f"No matching behavior '{behavior}' found for bout '{bout_name}' in trial '{trial_name}'.")
+            return
+
+        row = df.iloc[0]
+        x = np.array(row["Relative_Time_Axis"])
+        y = np.array(row["Relative_Zscore"])
+
+        # Find index of peak
+        peak_idx = np.argmax(y)
+        peak_x = x[peak_idx]
+        peak_y = y[peak_idx]
+
+        # Plot
+        plt.figure(figsize=(6, 4))
+        plt.plot(x, y, color="#15616F", linewidth=2)
+        plt.axvline(x=0, color='black', linestyle='--', linewidth=1.5)  # Start
+        plt.axvline(x=row["Duration (s)"], color='black', linestyle='--', linewidth=1.5)  # End
+        plt.scatter(peak_x, peak_y, color='red', zorder=5, s=60)  # Peak dot
+
+        # Style adjustments
+        plt.xlabel("Relative Time (s)", fontsize=12)
+        plt.ylabel("Z-score", fontsize=12)
+        plt.xlim([-4, 10])
+        plt.xticks(fontsize=10)
+        plt.yticks(fontsize=10)
+
+        # Remove top and right spines
+        ax = plt.gca()
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        plt.tight_layout()
+        plt.show()
+
 
 
     '''********************************** DOPAMINE SHIZ **********************************'''
