@@ -334,7 +334,7 @@ def plot_behavior_times_across_bouts_colored(metadata_df,
 
     # 4) Generate unique colors for each subject
     subjects = pivot_df.index
-    colors = plt.cm.tab20(np.linspace(0, 1, len(subjects)))
+    colors = sns.color_palette("husl", n_colors=len(subjects))  # Generate distinct colors
     subject_color_map = dict(zip(subjects, colors))  # Map each subject to a color
 
     # 5) Calculate mean and SEM across subjects for each bout
