@@ -546,15 +546,19 @@ class Reward_Competition(Experiment):
     def combining_cohorts(self, df1):
         filter_string = "p"
 
-        # Filter df2 to only include rows where 'subject name' contains the filter_string
+        # Filter df1 to only include rows where 'subject_name' contains the filter_string
         filtered_df2 = df1[df1['subject_name'].str.contains(filter_string, na=False)]
 
-        # Filter rows where 'subject_name' is either 'n4' or 'n7'
-        filtered_n4_n7 = df1[df1['subject_name'].isin(['n4', 'n7'])]
+        # Filter rows where 'subject_name' is either 'n4', 'n7', or other specified 'n' values
+        filtered_n4_n7 = df1[df1['subject_name'].isin(['n7', 'n6', 'n5', 'n8'])]
 
-        # Concatenate df1 and the filtered rows
+        # Keep only nn8, nn7, nn5, and nn4 from self.df, and retain all other subjects
+
+        # Concatenate all filtered data
         final_df = pd.concat([self.df, filtered_df2, filtered_n4_n7], ignore_index=True)
-        self.df = final_df
+        
+        self.df = final_df  # Update the dataframe
+
 
 
     """*******************************LICKS********************************"""
@@ -1128,48 +1132,44 @@ class Reward_Competition(Experiment):
     def find_overall_mean(self, df):
         if df is None:
             df = self.df
-        df = df.groupby(['subject_name'], as_index=False).agg({
-            'Rank': 'first',  # Keeps the Rank column
-            'Cage': 'first',
-            'Lick AUC Mean': 'mean',
-            'Lick Max Peak Mean': 'mean',
-            'Lick Mean Z-score Mean': 'mean',
-            'Tone AUC Mean': 'mean',
-            'Tone Max Peak Mean': 'mean',
-            'Tone Mean Z-score Mean': 'mean',
-            'Lick AUC First': 'mean',
-            'Lick AUC Last': 'mean',
-            'Lick Max Peak First': 'mean',
-            'Lick Max Peak Last': 'mean',
-            'Lick Mean Z-score First': 'mean',
-            'Lick Mean Z-score Last': 'mean',
-            'Tone AUC First': 'mean',
-            'Tone AUC Last': 'mean',
-            'Tone Max Peak First': 'mean',
-            'Tone Max Peak Last': 'mean',
-            'Tone Mean Z-score First': 'mean',
-            'Tone Mean Z-score Last': 'mean',
-            "Lick AUC Mean EI": 'mean',
-            "Lick Max Peak Mean EI": 'mean',
-            "Lick Mean Z-score Mean EI": 'mean',
-            "Tone AUC Mean EI": 'mean',
-            "Tone Max Peak Mean EI": 'mean',
-            "Tone Mean Z-score Mean EI": 'mean',
-            "Lick AUC EI First": 'mean',
-            "Lick Max Peak EI First": 'mean',
-            "Lick Max Peak EI First": 'mean',
-            "Tone AUC EI First": 'mean',
-            "Tone Max Peak EI First": 'mean',
-            "Tone Mean Z-score EI First": 'mean',
-            "Lick AUC EI Last": 'mean',
-            "Lick Max Peak EI Last": 'mean',
-            "Lick Max Peak EI Last": 'mean',
-            "Tone AUC EI Last": 'mean',
-            "Tone Max Peak EI Last": 'mean',
-            "Tone Mean Z-score EI Last": 'mean',
-        })
-        final_df = df
-        return final_df
+        
+        # Function to compute mean for numerical values, preserving first for categorical ones
+        def mean_arrays(group):
+            result = {}
+            result['Rank'] = group['Rank'].iloc[0]  # Keeps first value
+            result['Cage'] = group['Cage'].iloc[0]  # Keeps first value
+            result['Tone Event_Time_Axis'] = group['Tone Event_Time_Axis'].iloc[0]  # Time axis should be the same
+
+            # Compute mean for scalar numerical values
+            numerical_cols = [
+                'Lick AUC Mean', 'Lick Max Peak Mean', 'Lick Mean Z-score Mean',
+                'Tone AUC Mean', 'Tone Max Peak Mean', 'Tone Mean Z-score Mean',
+                'Lick AUC First', 'Lick AUC Last', 'Lick Max Peak First', 'Lick Max Peak Last',
+                'Lick Mean Z-score First', 'Lick Mean Z-score Last',
+                'Tone AUC First', 'Tone AUC Last', 'Tone Max Peak First', 'Tone Max Peak Last',
+                'Tone Mean Z-score First', 'Tone Mean Z-score Last',
+                "Lick AUC Mean EI", "Lick Max Peak Mean EI", "Lick Mean Z-score Mean EI",
+                "Tone AUC Mean EI", "Tone Max Peak Mean EI", "Tone Mean Z-score Mean EI",
+                "Lick AUC EI First", "Lick Max Peak EI First", "Tone AUC EI First",
+                "Tone Max Peak EI First", "Tone Mean Z-score EI First",
+                "Lick AUC EI Last", "Lick Max Peak EI Last", "Tone AUC EI Last",
+                "Tone Max Peak EI Last", "Tone Mean Z-score EI Last"
+            ]
+            
+            for col in numerical_cols:
+                result[col] = group[col].mean()
+
+            # Compute element-wise mean for array columns
+            array_cols = ["Tone Event_Zscore", "Lick Event_Zscore"]
+            for col in array_cols:
+                stacked_arrays = np.vstack(group[col].values)  # Stack into 2D array
+                result[col] = np.mean(stacked_arrays, axis=0)  # Element-wise mean
+
+            return pd.Series(result)
+
+        df_mean = df.groupby('subject_name').apply(mean_arrays).reset_index()
+        
+        return df_mean
     
     def finding_peth_means(self, event_type, df=None):
         if df is None:
@@ -1180,7 +1180,7 @@ class Reward_Competition(Experiment):
 
         return mean_array, sem_array
 
-    """*******************************PLOTTING**********************************"""
+    """*******************************PLOTING**********************************"""
     def ploting_side_by_side(self, df, df1, mean_values, sem_values, mean_values1, sem_values1, bar_color, figsize, metric_name,
                         ylim, yticks_increment, title, directory_path, pad_inches, label1, label2):    
         print(df)
@@ -1690,6 +1690,11 @@ class Reward_Competition(Experiment):
             axes, [mean_first, mean_last], [sem_first, sem_last], 
             [f'First {condition} bout Z-Score', f'Last {condition} bout Z-Score']
         ):
+            global_min = min(np.min(mean_first - sem_first), np.min(mean_last - sem_last))
+            global_max = max(np.max(mean_first + sem_first), np.max(mean_last + sem_last))
+
+            # Add a margin for better visualization
+            margin = 0.1 * (global_max - global_min)
             ax.plot(downsampled_time_axis, mean_peth, color=color, label='Mean DA')
             ax.fill_between(downsampled_time_axis, mean_peth - sem_peth, mean_peth + sem_peth, color=color, alpha=0.4)
             ax.axvline(0, color='black', linestyle='--')  # Mark event onset
@@ -1699,10 +1704,13 @@ class Reward_Competition(Experiment):
             ax.set_xticks([common_time_axis[0], 0, 4, common_time_axis[-1]])
             ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=12)
 
-            # Add a margin to make sure the mean trace doesn't go out of bounds
-            # margin = 0.1 * (y_max - y_min)  # You can adjust this factor for a larger/smaller margin
+            y_min = np.min(mean_peth - sem_peth)
+            y_max = np.max(mean_peth + sem_peth)
 
-            ax.set_ylim(y_max, y_min)
+            # Add a margin to make sure the mean trace doesn't go out of bounds
+            margin = 0.1 * (y_max - y_min)  # You can adjust this factor for a larger/smaller margin
+
+            ax.set_ylim(global_min - margin, global_max + margin)
 
         save_path = os.path.join(str(directory_path) + '\\' + f'{brain_region}_{condition}_PETH.png')
         plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
@@ -1756,8 +1764,7 @@ class Reward_Competition(Experiment):
         if brain_region == "mPFC":
             cmap = 'inferno'
         else:
-            colors = ["#08306b", "#4292c6", "#deebf7", "#ffffff"]  
-            cmap = LinearSegmentedColormap.from_list("custom_blue", colors, N=256)
+            cmap = 'PuBu_r'
 
         for ax, trial_data, title in zip(axes, [first_trial, last_trial], 
                                         [f'First {condition} trial', f'Last {condition} trial']):
@@ -1769,7 +1776,12 @@ class Reward_Competition(Experiment):
             # Formatting
             ax.set_title(title, fontsize=14)
             ax.set_yticks([])  # Remove y-axis ticks (since only one row)
-            ax.axvline(0, color='white', linestyle='--')  # Mark event onset
+            ax.axvline(0, color='white', linestyle='--', linewidth=2)  # Mark event onset
+            if brain_region == "mPFC":
+                line_color='blue'
+            else:
+                line_color='red'
+            ax.axvline(4, color=line_color, linestyle='-', linewidth=2)
 
         # Set x-axis labels only on the bottom plot
         axes[-1].set_xlabel('Time (s)', fontsize=12)
@@ -1781,6 +1793,95 @@ class Reward_Competition(Experiment):
 
         # Save and show
         save_path = os.path.join(directory_path, f'{brain_region}_{condition}_Single_Trials_Heatmap.png')
+        plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        plt.show()
+
+    def plot_first_tone_heatmaps(self, df, condition, event_type, directory_path, brain_region, plot_first=True):
+        """
+        Plots a heatmap of only the first or last trial of a given condition (win/loss).
+        Each heatmap represents **one single trial**, showing Z-score variations over time.
+        """
+        # Function to filter data by brain region
+        def split_by_subject(df1, region):            
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            # Return filtered dataframes and subject_name column
+            if region == 'mPFC':
+                return df_p
+            else:
+                return df_n
+
+        df = split_by_subject(df, brain_region)
+
+        # Extract data
+        common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
+        first_trial, last_trial = None, None
+
+        for _, row in df.iterrows():
+            z_scores = np.array(row[f'{event_type} Event_Zscore'])  # (num_trials, num_time_bins)
+            if len(z_scores) > 0:
+                first_trial = z_scores[0]   # First trial's Z-score data
+                last_trial = z_scores[-1]   # Last trial's Z-score data
+                break  # Only need one subject's trials
+
+        # Convert to 2D arrays (shape: (1, time_bins)) for heatmap
+        bin_size = 125  
+
+        # Downsample first and last trial data
+        first_trial, new_time_axis = self.downsample_data(first_trial, common_time_axis, bin_size)
+        last_trial, _ = self.downsample_data(last_trial, common_time_axis, bin_size)  
+
+        # Convert to 2D array for heatmap (since we have only one row)
+        first_trial = first_trial[np.newaxis, :]
+        last_trial = last_trial[np.newaxis, :]
+
+        # Normalize color scale
+        vmin, vmax = min(first_trial.min(), last_trial.min()), max(first_trial.max(), last_trial.max())
+
+        # Create figure with one subplot (if only one heatmap is to be shown)
+        fig, ax = plt.subplots(figsize=(12, 4))
+
+        if brain_region == "mPFC":
+            cmap = 'inferno'
+        else:
+            # colors = ["#08306b", "#4292c6", "#deebf7", "#ffffff"]  
+            # cmap = LinearSegmentedColormap.from_list("custom_blue", colors, N=256)
+            cmap = 'PuBu_r'
+
+        # Choose the trial to plot (first or last trial based on plot_first argument)
+        if plot_first:
+            trial_data = first_trial
+            title = f'First {condition} trial'
+        else:
+            trial_data = last_trial
+            title = f'Last {condition} trial'
+
+        # Plot heatmap for the selected trial
+        cax = ax.imshow(trial_data, aspect='auto', cmap=cmap, origin='upper',
+                        extent=[common_time_axis[0], common_time_axis[-1], 0, 1],
+                        vmin=vmin, vmax=vmax)
+
+        # Formatting
+        ax.set_title(title, fontsize=24)
+        ax.set_yticks([])  # Remove y-axis ticks (since only one row)
+        ax.axvline(0, color='white', linestyle='--', linewidth=2)  # Mark event onset
+        ax.axvline(4, color='red', linestyle='-', linewidth=2)
+
+        # Set x-axis labels
+        ax.set_xlabel('Time (s)', fontsize=20)
+        ax.set_xticks([common_time_axis[0], 0, 4, common_time_axis[-1]])
+        ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=20)
+        cbar_ax = fig.add_axes([0.05, 0.1, 0.03, 0.8])
+        # Add colorbar to represent Z-score intensity
+        cbar = fig.colorbar(cax, cax=cbar_ax, ax=ax, orientation='vertical', shrink=0.7, label='Z-score')
+        cbar.ax.tick_params(labelsize=20)
+        cbar.set_label("Z-score", fontsize=20)
+        
+        cbar.ax.yaxis.set_ticks_position('left')  # This moves the ticks to the left side
+        cbar.ax.yaxis.set_label_position('left') 
+
+        # Save and show the plot
+        save_path = os.path.join(directory_path, f'{brain_region}_{condition}_Single_Trial_Heatmap.png')
         plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         plt.show()
 
@@ -1939,6 +2040,13 @@ class Reward_Competition(Experiment):
         df['first_tone'] = df['sound cues onset'].apply(lambda x: x[0] if len(x) > 0 else None).apply(lambda x: np.array([x]))
         df['first_bout'] = df.apply(lambda row: 'win' if row['first_value'] == row['subject_name'] else 'lose', axis=1)
 
+    def keep_last_tone(self, df=None):
+        if df is None:
+            df = self.df
+        df['last_value'] = df['winner_array'].apply(lambda x: x[-1] if len(x) > 0 else None)
+        df['last_tone'] = df['sound cues onset'].apply(lambda x: x[-1] if len(x) > 0 else None).apply(lambda x: np.array([x]))
+        df['last_bout'] = df.apply(lambda row: 'win' if row['first_value'] == row['subject_name'] else 'lose', axis=1)
+
     def first_winning(self, df=None):
         if df is None:
             df = self.df
@@ -1951,14 +2059,26 @@ class Reward_Competition(Experiment):
         df_lose = df.loc[df['first_bout'] == 'lose'].copy()
         return df_lose
 
-    def find_first_lick_after_first_cue(self, df=None):
-        """
+    def last_winning(self, df=None):
+        if df is None:
+            df = self.df
+        df_win = df.loc[df['last_bout'] == 'win'].copy()
+        return df_win
+    
+    def last_losing(self, df=None):
+        if df is None:
+            df = self.df
+        df_lose = df.loc[df['last_bout'] == 'lose'].copy()
+        return df_lose
+
+    """def find_first_lick_after_first_cue(self, df=None):
+        
         Finds the first port entry occurring after 4 seconds following each sound cue.
         If a port entry starts before 4 seconds but extends past it, 
         the function selects the timestamp at 4 seconds after the sound cue.
 
         Works for the first tone of the trial regardless of outcome.
-        """
+        
         if df is None:
             df = self.df  # Default to self.df only if no DataFrame is provided
 
@@ -1988,23 +2108,7 @@ class Reward_Competition(Experiment):
 
         df["first_lick_after_sound_cue"] = first_licks  # Add to the given DataFrame
         df["filtered_sound_cues"] = df["first_tone"]
-        return df  # Return the modified DataFrame
-
-    def find_first_means(self, df):
-        if df is None:
-            df = self.df
-        df["Lick AUC Mean"] = df["Lick AUC"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Lick Max Peak Mean"] = df["Lick Max Peak"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Lick Mean Z-score Mean"] = df["Lick Mean Z-score"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Tone AUC Mean"] = df["Tone AUC"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Tone Max Peak Mean"] = df["Tone Max Peak"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Tone Mean Z-score Mean"] = df["Tone Mean Z-score"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Tone AUC Mean EI"] = df["AUC EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Tone Max Peak Mean EI"] = df["Max Peak EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Tone Mean Z-score Mean EI"] = df["Mean Z-score EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Lick AUC Mean EI"] = df["Lick AUC EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Lick Max Peak Mean EI"] = df["Lick Max Peak EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Lick Mean Z-score Mean EI"] = df["Lick Mean Z-score EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
+        return df  # Return the modified DataFrame"""
 
     def finding_first_tone_means(self, df=None):
         """
@@ -2013,8 +2117,6 @@ class Reward_Competition(Experiment):
         if df is None:
             df = self.df
         df = df.groupby(['subject_name'], as_index=False).agg({
-            'Rank': 'first',  # Keeps the Rank column
-            'Cage': 'first',
             'Lick AUC Mean': 'mean',
             'Lick Max Peak Mean': 'mean',
             'Lick Mean Z-score Mean': 'mean',
@@ -2031,7 +2133,7 @@ class Reward_Competition(Experiment):
         final_df = df
         return final_df
     
-    def plot_single_peth(self, df, condition, event_type, directory_path, brain_region, y_min, y_max, plot_first=True, plot_win=False):
+    def plot_single_psth(self, df, condition, event_type, directory_path, brain_region, y_min, y_max, plot_first=True, plot_win=False):
         """
         Plots the PETH of either the first or last bout of either win or loss.
         If plot_first=True, it will plot the first bout. If plot_first=False, it will plot the last bout.
@@ -2093,9 +2195,9 @@ class Reward_Competition(Experiment):
                 title = f'Last {condition} bout Z-Score'
 
         # Create figure with a single subplot
-        fig, ax = plt.subplots(figsize=(5, 5))
+        fig, ax = plt.subplots(figsize=(8, 5))
 
-        ax.set_ylabel('Event Induced Z-scored ΔF/F')
+        ax.set_ylabel('Event Induced Z-scored ΔF/F', fontsize=20)
         ax.tick_params(axis='y', labelleft=True)
         mean_peth, downsampled_time_axis = self.downsample_data(mean_peth, common_time_axis, bin_size)
         sem_peth, _ = self.downsample_data(sem_peth, common_time_axis, bin_size)
@@ -2104,12 +2206,12 @@ class Reward_Competition(Experiment):
         ax.plot(downsampled_time_axis, mean_peth, color=color, label='Mean DA')
         ax.fill_between(downsampled_time_axis, mean_peth - sem_peth, mean_peth + sem_peth, color=color, alpha=0.4)
         ax.axvline(0, color='black', linestyle='--')  # Mark event onset
+        ax.axvline(4, color='red', linestyle='-')
 
         ax.set_title(title, fontsize=18)
-        ax.set_xlabel('Time (s)', fontsize=14)
+        ax.set_xlabel('Time (s)', fontsize=20)
         ax.set_xticks([common_time_axis[0], 0, 4, common_time_axis[-1]])
-        ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=12)
-
+        ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=20)
         # Add a margin to make sure the mean trace doesn't go out of bounds
         ax.set_ylim(y_max, y_min)
 
@@ -2118,85 +2220,191 @@ class Reward_Competition(Experiment):
         plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         plt.show()
 
-    def plot_first_tone_heatmaps(self, df, condition, event_type, directory_path, brain_region, plot_first=True):
+    def plot_mean_psth(self, df, condition, event_type, directory_path, brain_region, y_min, y_max):
         """
-        Plots a heatmap of only the first or last trial of a given condition (win/loss).
-        Each heatmap represents **one single trial**, showing Z-score variations over time.
+        Plots the PETH of all bouts averaged together.
         """
+        if df is None:
+            df = self.df
+
+        # Splitting either mPFC or NAc subjects
+        def split_by_subject(df1, region):            
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            return df_p if region == 'mPFC' else df_n
+
+        df = split_by_subject(df, brain_region)
+        bin_size = 100
+        if brain_region == 'mPFC':
+            color = '#FFAF00'
+        else:
+            color = '#15616F'
+        # Initialize common time axis
+        common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
+
+        row_means = []  # Store the mean PETH per row
+        for _, row in df.iterrows():
+            z_scores = np.array(row[f'{event_type} Event_Zscore'])  # Shape: (num_trials, num_time_bins)
+
+            if z_scores.shape[0] > 0:  # Ensure there is data
+                row_mean = np.mean(z_scores, axis=0)  # Mean across trials in a row
+                row_means.append(row_mean)
+
+        # Convert to numpy array and compute final mean and SEM
+        row_means = np.array(row_means)  # Shape: (num_subjects, num_time_bins)
+        mean_peth = np.mean(row_means, axis=0)  # Mean across subjects
+        sem_peth = np.std(row_means, axis=0) / np.sqrt(row_means.shape[0])  # SEM
+
+        # Downsample data
+        mean_peth, downsampled_time_axis = self.downsample_data(mean_peth, common_time_axis, bin_size)
+        sem_peth, _ = self.downsample_data(sem_peth, common_time_axis, bin_size)
+
+        # Create figure
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        ax.set_ylabel('Event Induced Z-scored ΔF/F', fontsize=20)
+        ax.tick_params(axis='y', labelsize=16)
+
+        # Plot mean and SEM
+        ax.plot(downsampled_time_axis, mean_peth, color=color, label='Mean DA')
+        ax.fill_between(downsampled_time_axis, mean_peth - sem_peth, mean_peth + sem_peth, color=color, alpha=0.4)
+        ax.axvline(0, color='black', linestyle='--')  # Event onset
+        ax.axvline(4, color="#39FF14", linestyle='-')  # Reward onset
+
+        # ax.set_title(f'{condition} bout Z-Score', fontsize=18)
+        ax.set_xlabel('Time (s)', fontsize=20)
+        ax.set_xticks([common_time_axis[0], 0, 4, common_time_axis[-1]])
+        ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=16)
+
+        ax.set_ylim(y_max, y_min)
+
+        # Save figure
+        save_path = os.path.join(str(directory_path), f'{brain_region}_{condition}_PETH.png')
+        plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        plt.show()
+
+    def plot_mean_per_row_heatmaps(self, df, condition, event_type, directory_path, brain_region):
+        """
+        Plots a heatmap where each row represents the Z-score time series for each subject/session.
+        """
+
         # Function to filter data by brain region
         def split_by_subject(df1, region):            
             df_n = df1[df1['subject_name'].str.startswith('n')]
             df_p = df1[df1['subject_name'].str.startswith('p')]
-            # Return filtered dataframes and subject_name column
-            if region == 'mPFC':
-                return df_p
-            else:
-                return df_n
+            return df_p if region == 'mPFC' else df_n
 
         df = split_by_subject(df, brain_region)
 
-        # Extract data
+        subject_names = df['subject_name'].tolist()
+        
+        # Extract time axis (assumes all subjects share the same time axis)
         common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
-        first_trial, last_trial = None, None
 
+        # Collect Z-score time series for each subject/session
+        mean_per_row = []
         for _, row in df.iterrows():
-            z_scores = np.array(row[f'{event_type} Event_Zscore'])  # (num_trials, num_time_bins)
-            if len(z_scores) > 0:
-                first_trial = z_scores[0]   # First trial's Z-score data
-                last_trial = z_scores[-1]   # Last trial's Z-score data
-                break  # Only need one subject's trials
+            z_scores = np.array(row[f'{event_type} Event_Zscore'])  # Now a 1D array
+            mean_per_row.append(z_scores)  # No need to average over trials
 
-        # Convert to 2D arrays (shape: (1, time_bins)) for heatmap
+        # Convert list of time series to 2D NumPy array (num_subjects, num_time_bins)
+        mean_per_row = np.vstack(mean_per_row)
+
+        # Downsample each row
         bin_size = 125  
+        downsampled_means = []
+        
+        for row_mean in mean_per_row:
+            downsampled_row, new_time_axis = self.downsample_data(row_mean, common_time_axis, bin_size)
+            downsampled_means.append(downsampled_row)
 
-        # Downsample first and last trial data
-        first_trial, new_time_axis = self.downsample_data(first_trial, common_time_axis, bin_size)
-        last_trial, _ = self.downsample_data(last_trial, common_time_axis, bin_size)  
-
-        # Convert to 2D array for heatmap (since we have only one row)
-        first_trial = first_trial[np.newaxis, :]
-        last_trial = last_trial[np.newaxis, :]
+        downsampled_means = np.array(downsampled_means)  # (num_subjects, downsampled_time_bins)
 
         # Normalize color scale
-        vmin, vmax = min(first_trial.min(), last_trial.min()), max(first_trial.max(), last_trial.max())
-
-        # Create figure with one subplot (if only one heatmap is to be shown)
-        fig, ax = plt.subplots(figsize=(10, 4))
-
         if brain_region == "mPFC":
-            cmap = 'inferno'
+            vmin, vmax = -0.7, 1.2
         else:
-            # colors = ["#08306b", "#4292c6", "#deebf7", "#ffffff"]  
-            # cmap = LinearSegmentedColormap.from_list("custom_blue", colors, N=256)
-            cmap = 'PuBu'
+            vmin, vmax = 0, 5
 
-        # Choose the trial to plot (first or last trial based on plot_first argument)
-        if plot_first:
-            trial_data = first_trial
-            title = f'First {condition} trial'
-        else:
-            trial_data = last_trial
-            title = f'Last {condition} trial'
+        # Define colormap
+        cmap = 'inferno' if brain_region == "mPFC" else 'PuBu_r'
 
-        # Plot heatmap for the selected trial
-        cax = ax.imshow(trial_data, aspect='auto', cmap=cmap, origin='upper',
-                        extent=[common_time_axis[0], common_time_axis[-1], 0, 1],
+        # Create figure
+        fig, ax = plt.subplots(figsize=(12, 6))
+
+        # Plot heatmap
+        cax = ax.imshow(downsampled_means, aspect='auto', cmap=cmap, origin='upper',
+                        extent=[new_time_axis[0], new_time_axis[-1], 0, len(downsampled_means)],
                         vmin=vmin, vmax=vmax)
 
         # Formatting
-        ax.set_title(title, fontsize=14)
-        ax.set_yticks([])  # Remove y-axis ticks (since only one row)
-        ax.axvline(0, color='white', linestyle='--')  # Mark event onset
+        ax.set_ylabel('Subjects', fontsize=26)
+        ax.axvline(0, color='white', linestyle='--', linewidth=2)  # Event onset
+        ax.axvline(4, color="#39FF14", linestyle='-', linewidth=2)
 
         # Set x-axis labels
-        ax.set_xlabel('Time (s)', fontsize=12)
-        ax.set_xticks([common_time_axis[0], 0, 4, common_time_axis[-1]])
-        ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=10)
+        ax.set_xlabel('Time (s)', fontsize=26)
+        ax.set_xticks([new_time_axis[0], 0, 4, new_time_axis[-1]])
+        ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=26)
+        num_subjects = len(subject_names)
+        ytick_positions = np.arange(num_subjects) + 0.5  # Shift by 0.5 to center labels
 
-        # Add colorbar to represent Z-score intensity
-        cbar = fig.colorbar(cax, ax=ax, orientation='vertical', shrink=0.7, label='Z-score')
+        ax.set_yticks(ytick_positions)  # Set new tick positions
+        ax.set_yticklabels(subject_names, fontsize=18, rotation=0)
 
-        # Save and show the plot
-        save_path = os.path.join(directory_path, f'{brain_region}_{condition}_Single_Trial_Heatmap.png')
+        # Colorbar
+        cbar = fig.colorbar(cax, ax=ax, orientation='vertical', shrink=0.7)
+        cbar.ax.tick_params(labelsize=20)
+        cbar.set_ticks(np.arange(vmin, vmax + 1, 1))
+        cbar.set_label("Z-score", fontsize=20)
+
+        # Save and show
+        save_path = os.path.join(directory_path, f'{brain_region}_{condition}_Row_Mean_Heatmap.png')
         plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         plt.show()
+
+    def reward_comp_vs_alone(self, df_alone, df_comp, metric_name, behavior, directory_path,
+                    custom_xtick_labels=None, 
+                    custom_xtick_colors=None, 
+                    ylim=None, 
+                    nac_color='#15616F',   # Color for NAc
+                    mpfc_color='#FFAF00',  # Color for mPFC
+                    yticks_increment=1, 
+                    figsize=(7,7),  
+                    pad_inches=0.1):
+        title = f'NAc {behavior} alone vs competition'
+        title1 = f'mPFC {behavior} alone vs competition'
+        def split_by_subject(df1):            
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            return df_n, df_p
+
+        df_n, df_p = split_by_subject(df_alone)
+        df1_n, df1_p = split_by_subject(df_comp)
+        
+        mean_values = df_n[f'{behavior} {metric_name} Mean EI'].mean()
+        sem_values = df_n[f'{behavior} {metric_name} Mean EI'].sem()
+
+        mean_values1 = df1_n[f'{behavior} {metric_name} Mean EI'].mean()
+        sem_values1 = df1_n[f'{behavior} {metric_name} Mean EI'].sem()
+
+        mean_values2 = df_p[f'{behavior} {metric_name} Mean EI'].mean()
+        sem_values2 = df_p[f'{behavior} {metric_name} Mean EI'].sem()
+
+        mean_values3 = df1_p[f'{behavior} {metric_name} Mean EI'].mean()
+        sem_values3 = df1_p[f'{behavior} {metric_name} Mean EI'].sem()
+
+        df = df_n[f'{behavior} {metric_name} Mean EI'].to_frame()
+        df1 = df1_n[f'{behavior} {metric_name} Mean EI'].to_frame()
+        df2 = df_p[f'{behavior} {metric_name} Mean EI'].to_frame()
+        df3 = df1_p[f'{behavior} {metric_name} Mean EI'].to_frame()
+
+        self.ploting_side_by_side(df, df1, mean_values, sem_values, mean_values1, sem_values1,
+                            nac_color, figsize, metric_name, ylim, 
+                            yticks_increment, title, directory_path, pad_inches,
+                            'Alone', 'Competition')
+        
+        self.ploting_side_by_side(df2, df3, mean_values2, sem_values2, mean_values3, sem_values3,
+                            mpfc_color, figsize, metric_name, ylim, 
+                            yticks_increment, title1, directory_path, pad_inches,
+                            'Alone', 'Competition')
