@@ -230,169 +230,154 @@ class Rtc(Experiment):
         
         self.df = df_combined
 
-    def compute_event_induced_DA(self, df=None, cue_type='sound cues onset', pre_time=4, post_time=10):
-        """
-        Computes the event-induced DA of a behavior by taking the 4 seconds before the onset of the behavior and normalizing the rest
-        of the signal to it.
-        """
-        if df is None:
-            df = self.df
-        min_dt = np.inf
-        for _, row in df.iterrows():
-            trial_obj = row['trial']
-            timestamps = np.array(trial_obj.timestamps)
-            if len(timestamps) > 1:
-                dt = np.min(np.diff(timestamps))  # Find the smallest sampling interval
-                min_dt = min(min_dt, dt)
+        def compute_event_induced_DA(self, df=None, pre_time=4, post_time=10):
+            """
+            Computes event-induced DA responses for tone (sound cue) and lick.
 
-        if min_dt == np.inf:
-            print("No valid timestamps found to determine dt.")
-            return
+            - Tone Event:
+            * Time axis: -pre_time to +post_time around each sound cue onset.
+            * Baseline: mean of the DA signal in the 4 seconds before the sound cue.
 
-        # Define a single global time axis for all trials
-        common_time_axis = np.arange(-pre_time, post_time, min_dt)
-        event_zscores = []
-        event_time_list = []
+            - Lick Event:
+            * Time axis: 0 to +post_time around the lick onset.
+            * Baseline: same as the tone event (i.e., computed from the 4 seconds before the sound cue).
 
-        # Process each row in the dataframe
-        for _, row in df.iterrows():
-            trial_obj = row['trial']
-            cues = row[cue_type]  # Event start times
+            Note: If multiple cues/licks exist, each is processed. The i-th lick uses
+                the i-th sound cue's baseline if available. Otherwise, baseline=0.
+            """
+            if df is None:
+                df = self.df
 
-            # Convert to numpy arrays
-            timestamps = np.array(trial_obj.timestamps)
-            zscore = np.array(trial_obj.zscore)
+            # -- 1) Determine global dt from all trials --
+            min_dt = np.inf
+            for _, row in df.iterrows():
+                trial_obj = row['trial']
+                timestamps = np.array(trial_obj.timestamps)
+                if len(timestamps) > 1:
+                    dt = np.min(np.diff(timestamps))
+                    min_dt = min(min_dt, dt)
+            if min_dt == np.inf:
+                print("No valid timestamps found to determine dt.")
+                return
 
-            if len(cues) == 0:
-                print(f"Warning: No sound cues for trial {trial_obj}")
-                event_zscores.append([np.full(common_time_axis.shape, np.nan)])
-                event_time_list.append([np.full(common_time_axis.shape, np.nan)])
-                continue
+            # Two different time axes:
+            common_tone_time_axis = np.arange(-pre_time, post_time, min_dt)   # For the sound cue
+            common_lick_time_axis = np.arange(0, post_time, min_dt)           # For the lick
 
-            trial_event_zscores = []
-            trial_event_times = []
+            # Lists to store results
+            tone_zscores_all = []
+            tone_times_all = []
+            lick_zscores_all = []
+            lick_times_all = []
 
-            # Process each event start time
-            for event_start in cues:
-                window_start = event_start - pre_time
-                window_end = event_start + post_time
+            for _, row in df.iterrows():
+                trial_obj = row['trial']
+                timestamps = np.array(trial_obj.timestamps)
+                zscore = np.array(trial_obj.zscore)
 
-                # Find relevant indices
-                mask = (timestamps >= window_start) & (timestamps <= window_end)
-                if not np.any(mask):
-                    print(f"Warning: No timestamps found for event at {event_start}")
-                    trial_event_zscores.append(np.full(common_time_axis.shape, np.nan))
-                    trial_event_times.append(np.full(common_time_axis.shape, np.nan))
-                    continue
+                # Sound and lick onsets
+                sound_cues = row['sound cues onset']
+                lick_cues  = row['first_lick_after_sound_cue']
 
-                # Time relative to event onset
-                rel_time = timestamps[mask] - event_start
-                signal = zscore[mask]
+                # ----- Tone (sound cue) -----
+                tone_zscores_this_trial = []
+                tone_times_this_trial   = []
 
-                # Compute baseline (pre-event mean)
-                pre_mask = rel_time < 0
-                baseline = np.nanmean(signal[pre_mask]) if np.any(pre_mask) else 0
+                if len(sound_cues) == 0:
+                    # No sound cues => store NaNs
+                    tone_zscores_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
+                    tone_times_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
+                else:
+                    for sound_event in sound_cues:
+                        # Window for the tone
+                        window_start = sound_event - pre_time
+                        window_end   = sound_event + post_time
 
-                # Baseline-correct the signal
-                corrected_signal = signal - baseline
+                        mask = (timestamps >= window_start) & (timestamps <= window_end)
+                        if not np.any(mask):
+                            tone_zscores_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
+                            tone_times_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
+                            continue
 
-                # Interpolate onto the common time axis
-                interp_signal = np.interp(common_time_axis, rel_time, corrected_signal)
+                        # Time relative to the sound cue
+                        rel_time = timestamps[mask] - sound_event
+                        signal   = zscore[mask]
 
-                trial_event_zscores.append(interp_signal)
-                trial_event_times.append(common_time_axis.copy())  # Store a copy for each event
+                        # Baseline: from (sound_event - pre_time) up to the sound_event
+                        baseline_mask = (rel_time < 0)
+                        baseline = np.nanmean(signal[baseline_mask]) if np.any(baseline_mask) else 0
 
-            event_zscores.append(trial_event_zscores)
-            event_time_list.append(trial_event_times)
+                        # Baseline-correct
+                        corrected_signal = signal - baseline
 
-        # Store results in the dataframe
-        df['Tone Event_Time_Axis'] = event_time_list  # Now structured identically to Event_Zscore
-        df['Tone Event_Zscore'] = event_zscores
+                        # Interpolate onto [-pre_time, post_time]
+                        interp_signal = np.interp(common_tone_time_axis, rel_time, corrected_signal)
 
-    def compute_lick_ei_DA(self, df=None, pre_time=4, post_time=10):
-        if df is None:
-            df = self.df
-        min_dt = np.inf
+                        tone_zscores_this_trial.append(interp_signal)
+                        tone_times_this_trial.append(common_tone_time_axis.copy())
 
-        # Determine the smallest time step (min_dt) across all trials
-        for _, row in df.iterrows():
-            trial_obj = row['trial']
-            timestamps = np.array(trial_obj.timestamps)
-            if len(timestamps) > 1:
-                dt = np.min(np.diff(timestamps))
-                min_dt = min(min_dt, dt)
+                # ----- Lick -----
+                lick_zscores_this_trial = []
+                lick_times_this_trial   = []
 
-        if min_dt == np.inf:
-            print("No valid timestamps found to determine dt.")
-            return
+                if len(lick_cues) == 0:
+                    # No licks => store NaNs
+                    lick_zscores_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
+                    lick_times_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
+                else:
+                    for i, lick_event in enumerate(lick_cues):
+                        # Attempt to pair with the i-th sound cue for baseline
+                        if i < len(sound_cues):
+                            sound_event_for_baseline = sound_cues[i]
+                        else:
+                            sound_event_for_baseline = None  # fallback
 
-        event_zscores = []
-        event_time_list = []
+                        # 1) Compute baseline from the sound cue window
+                        if sound_event_for_baseline is not None:
+                            # Baseline window: from (sound_event - pre_time) to sound_event
+                            baseline_start = sound_event_for_baseline - pre_time
+                            baseline_end   = sound_event_for_baseline
+                            baseline_mask = (timestamps >= baseline_start) & (timestamps <= baseline_end)
+                            if np.any(baseline_mask):
+                                baseline_val = np.nanmean(zscore[baseline_mask])
+                            else:
+                                baseline_val = 0
+                        else:
+                            baseline_val = 0
 
-        for _, row in df.iterrows():
-            trial_obj = row['trial']
-            cues = row['first_lick_after_sound_cue']
-            sound_cues = row['sound cues onset']
+                        # 2) Extract the lick window from lick_event (0 to +post_time)
+                        window_start = lick_event
+                        window_end   = lick_event + post_time
+                        mask = (timestamps >= window_start) & (timestamps <= window_end)
+                        if not np.any(mask):
+                            lick_zscores_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
+                            lick_times_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
+                            continue
 
-            timestamps = np.array(trial_obj.timestamps)
-            zscore = np.array(trial_obj.zscore)
+                        rel_time = timestamps[mask] - lick_event
+                        signal   = zscore[mask]
 
-            if len(cues) == 0 or len(sound_cues) == 0:
-                print(f"Warning: No valid cues for trial {trial_obj}")
-                event_zscores.append([np.full((1,), np.nan)])
-                event_time_list.append([np.full((1,), np.nan)])
-                continue
+                        # Subtract the tone-based baseline
+                        corrected_signal = signal - baseline_val
 
-            trial_event_zscores = []
-            trial_event_times = []
+                        # Interpolate onto [0, post_time]
+                        interp_signal = np.interp(common_lick_time_axis, rel_time, corrected_signal)
 
-            for event_start in cues:
-                try:
-                    idx = list(cues).index(event_start)
-                    cue_time = sound_cues[idx]
-                    lick_start = cues[idx]
-                except ValueError:
-                    print(f"Warning: Could not find corresponding sound cue for event {event_start}")
-                    continue
+                        lick_zscores_this_trial.append(interp_signal)
+                        lick_times_this_trial.append(common_lick_time_axis.copy())
 
-                # Time window relative to lick onset
-                window_start = lick_start - pre_time
-                window_end = lick_start + post_time
+                # Store in the main lists
+                tone_zscores_all.append(tone_zscores_this_trial)
+                tone_times_all.append(tone_times_this_trial)
+                lick_zscores_all.append(lick_zscores_this_trial)
+                lick_times_all.append(lick_times_this_trial)
 
-                # Print to debug the timestamp coverage
-                print(f"Trial {trial_obj}: Lick Start = {lick_start}, Window Start = {window_start}, Window End = {window_end}")
-
-                start_idx = np.searchsorted(timestamps, window_start, side="left")
-                end_idx = np.searchsorted(timestamps, window_end, side="right")
-
-                rel_time = timestamps[start_idx:end_idx] - lick_start
-                signal = zscore[start_idx:end_idx]
-                print(len(signal))
-
-                # Print to debug time range
-                print(f"Relative Time Min = {np.min(rel_time)}, Max = {np.max(rel_time)}")
-
-                pre_mask = (timestamps >= (cue_time - pre_time)) & (timestamps < cue_time)
-                baseline = np.nanmean(zscore[pre_mask]) if np.any(pre_mask) else 0
-                corrected_signal = signal - baseline
-
-                common_time_axis = np.arange(-pre_time, post_time + min_dt, min_dt)
-                print(len(common_time_axis))
-
-                # Debug common time axis
-                print(f"Common Time Axis Min = {np.min(common_time_axis)}, Max = {np.max(common_time_axis)}")
-
-                interp_signal = np.interp(common_time_axis, rel_time, corrected_signal, left=np.nan, right=np.nan)
-
-                trial_event_zscores.append(interp_signal)
-                trial_event_times.append(common_time_axis.copy())
-
-            event_zscores.append(trial_event_zscores)
-            event_time_list.append(trial_event_times)
-
-        df['Lick Event_Time_Axis'] = event_time_list
-        df['Lick Event_Zscore'] = event_zscores
-
+            # Save columns
+            df['Tone Event_Time_Axis'] = tone_times_all
+            df['Tone Event_Zscore']    = tone_zscores_all
+            df['Lick Event_Time_Axis'] = lick_times_all
+            df['Lick Event_Zscore']    = lick_zscores_all
+            
     def compute_tone_da_metrics(self, df=None, mode='standard'):
         if df is None:
             df = self.df

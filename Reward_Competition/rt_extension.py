@@ -3,7 +3,7 @@ import os
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(parent_dir)
 
-from experiment_class import Experiment
+from experiment_class import Experiment 
 from trial_class import Trial
 import numpy as np
 import matplotlib.pyplot as plt
@@ -81,23 +81,25 @@ class Reward_Training(Experiment):
             """
             Using RIG DATA
             """
-            trial.behaviors1['sound cues'] = trial.behaviors1.pop('PC0_')
-            trial.behaviors1['port entries'] = trial.behaviors1.pop('PC2_', trial.behaviors1.pop('PC3_'))
+            trial.rtc_events['sound cues'] = trial.rtc_events.pop('PC0_')
+            trial.rtc_events['port entries'] = trial.rtc_events.pop('PC2_', trial.rtc_events.pop('PC3_'))
 
             # Remove the first entry because it doesn't count
-            trial.behaviors1['sound cues'].onset_times = trial.behaviors1['sound cues'].onset[1:]
-            trial.behaviors1['sound cues'].offset_times = trial.behaviors1['sound cues'].offset[1:]
-            trial.behaviors1['port entries'].onset_times = trial.behaviors1['port entries'].onset[1:]
-            trial.behaviors1['port entries'].offset_times = trial.behaviors1['port entries'].offset[1:]
+            trial.rtc_events['sound cues'].onset_times = trial.rtc_events['sound cues'].onset[1:]
+            trial.rtc_events['sound cues'].offset_times = trial.rtc_events['sound cues'].offset[1:]
+            trial.rtc_events['port entries'].onset_times = trial.rtc_events['port entries'].onset[1:]
+            trial.rtc_events['port entries'].offset_times = trial.rtc_events['port entries'].offset[1:]
 
             
             # Finding instances after first tone is played
-            port_entries_onset = np.array(trial.behaviors1['port entries'].onset_times)
-            port_entries_offset = np.array(trial.behaviors1['port entries'].offset_times)
-            first_sound_cue_onset = trial.behaviors1['sound cues'].onset_times[0]
+            port_entries_onset = np.array(trial.rtc_events['port entries'].onset_times)
+            port_entries_offset = np.array(trial.rtc_events['port entries'].offset_times)
+            first_sound_cue_onset = trial.rtc_events['sound cues'].onset_times[0]
             indices = np.where(port_entries_onset >= first_sound_cue_onset)[0]
-            trial.behaviors1['port entries'].onset_times = port_entries_onset[indices].tolist()
-            trial.behaviors1['port entries'].offset_times = port_entries_offset[indices].tolist()
+            trial.rtc_events['port entries'].onset_times = port_entries_onset[indices].tolist()
+            trial.rtc_events['port entries'].offset_times = port_entries_offset[indices].tolist()
+
+            # self.combine_consecutive_rtc_events(behavior_name='all', bout_time_threshold=0.5)
 
     def rt_processing2(self, time_segments_to_remove=None):
         """
@@ -120,31 +122,33 @@ class Reward_Training(Experiment):
             trial.verify_signal()
 
             # Using RIG DATA
-            print(f"Available behaviors in trial: {trial.behaviors1.keys()}")
-            trial.behaviors1['sound cues'] = trial.behaviors1.pop('PC0_')
+            print(f"Available behaviors in trial: {trial.rtc_events.keys()}")
+            trial.rtc_events['sound cues'] = trial.rtc_events.pop('PC0_')
             
             # Correct the way 'port entries' is assigned for trial1 based on self.port_bnc
             trial_type1 = self.port_bnc.get(trial_folder1, None)  # Fetch trial type from self.port_bnc
             if trial_type1 == 3:
-                trial.behaviors1['port entries'] = trial.behaviors1.pop('PC3_')
+                trial.rtc_events['port entries'] = trial.rtc_events.pop('PC3_')
             elif trial_type1 == 2:
-                trial.behaviors1['port entries'] = trial.behaviors1.pop('PC2_')
+                trial.rtc_events['port entries'] = trial.rtc_events.pop('PC2_')
 
             # Remove the first entry because it doesn't count
-            trial.behaviors1['sound cues'].onset_times = trial.behaviors1['sound cues'].onset[1:]
-            trial.behaviors1['sound cues'].offset_times = trial.behaviors1['sound cues'].offset[1:]
-            trial.behaviors1['port entries'].onset_times = trial.behaviors1['port entries'].onset[1:]
-            trial.behaviors1['port entries'].offset_times = trial.behaviors1['port entries'].offset[1:]
+            trial.rtc_events['sound cues'].onset_times = trial.rtc_events['sound cues'].onset[1:]
+            trial.rtc_events['sound cues'].offset_times = trial.rtc_events['sound cues'].offset[1:]
+            trial.rtc_events['port entries'].onset_times = trial.rtc_events['port entries'].onset[1:]
+            trial.rtc_events['port entries'].offset_times = trial.rtc_events['port entries'].offset[1:]
 
+            valid_sound_cues = [t for t in trial.rtc_events['sound cues'].onset_times if t >= 200]
+            trial.rtc_events['sound cues'].onset_times = valid_sound_cues
+            
             # Finding instances after the first tone is played
-            port_entries_onset = np.array(trial.behaviors1['port entries'].onset_times)
-            port_entries_offset = np.array(trial.behaviors1['port entries'].offset_times)
-            first_sound_cue_onset = trial.behaviors1['sound cues'].onset_times[0]
+            port_entries_onset = np.array(trial.rtc_events['port entries'].onset_times)
+            port_entries_offset = np.array(trial.rtc_events['port entries'].offset_times)
+            first_sound_cue_onset = trial.rtc_events['sound cues'].onset_times[0]
             indices = np.where(port_entries_onset >= first_sound_cue_onset)[0]
-            trial.behaviors1['port entries'].onset_times = port_entries_onset[indices].tolist()
-            trial.behaviors1['port entries'].offset_times = port_entries_offset[indices].tolist()
+            trial.rtc_events['port entries'].onset_times = port_entries_onset[indices].tolist()
+            trial.rtc_events['port entries'].offset_times = port_entries_offset[indices].tolist()
 
-            # self.rtc_combine_consecutive_behaviors(behavior_name='all', bout_time_threshold=0.5)
 
     """********************************Combining consecutive entries************************************"""
 
@@ -154,19 +158,19 @@ class Reward_Training(Experiment):
     #     """
 
     #     for trial_name, trial_obj in self.trials.items():
-    #         # Ensure the trial has behaviors1 attribute
-    #         if not hasattr(trial_obj, 'behaviors1'):
-    #             continue  # Skip if behaviors1 is not available
+    #         # Ensure the trial has rtc_events attribute
+    #         if not hasattr(trial_obj, 'rtc_events'):
+    #             continue  # Skip if rtc_events is not available
 
     #         # Determine which behaviors to process
     #         if behavior_name == 'all':
-    #             behaviors_to_process = trial_obj.behaviors1.keys()  # Process all behaviors
+    #             behaviors_to_process = trial_obj.rtc_events.keys()  # Process all behaviors
     #         else:
     #             behaviors_to_process = [behavior_name]  # Process a single behavior
 
     #         for behavior_event in behaviors_to_process:
-    #             behavior_onsets = np.array(trial_obj.behaviors1[behavior_event].onset)
-    #             behavior_offsets = np.array(trial_obj.behaviors1[behavior_event].offset)
+    #             behavior_onsets = np.array(trial_obj.rtc_events[behavior_event].onset)
+    #             behavior_offsets = np.array(trial_obj.rtc_events[behavior_event].offset)
 
     #             combined_onsets = []
     #             combined_offsets = []
@@ -206,9 +210,9 @@ class Reward_Training(Experiment):
     #                     valid_indices.append(i)
 
     #             # Update the behavior with the combined onsets, offsets, and durations
-    #             trial_obj.behaviors1[behavior_event].onset = [combined_onsets[i] for i in valid_indices]
-    #             trial_obj.behaviors1[behavior_event].offset = [combined_offsets[i] for i in valid_indices]
-    #             trial_obj.behaviors1[behavior_event].Total_Duration = [combined_durations[i] for i in valid_indices]  # Update Total Duration
+    #             trial_obj.rtc_events[behavior_event].onset = [combined_onsets[i] for i in valid_indices]
+    #             trial_obj.rtc_events[behavior_event].offset = [combined_offsets[i] for i in valid_indices]
+    #             trial_obj.rtc_events[behavior_event].Total_Duration = [combined_durations[i] for i in valid_indices]  # Update Total Duration
 
     #             trial_obj.bout_dict = {}  # Reset bout dictionary after processing
 
@@ -253,8 +257,8 @@ class Reward_Training(Experiment):
             self.df = self.df.explode('file name', ignore_index=True)
         self.df['trial'] = self.df.apply(lambda row: find_matching_trial(row['file name']), axis=1)
         self.df['subject_name'] = self.df['file name'].str.split('-').str[0]
-        self.df['sound cues'] = self.df['trial'].apply(lambda x: x.behaviors1.get('sound cues', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
-        self.df['port entries'] = self.df['trial'].apply(lambda x: x.behaviors1.get('port entries', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
+        self.df['sound cues'] = self.df['trial'].apply(lambda x: x.rtc_events.get('sound cues', None) if isinstance(x, object) and hasattr(x, 'rtc_events') else None)
+        self.df['port entries'] = self.df['trial'].apply(lambda x: x.rtc_events.get('port entries', None) if isinstance(x, object) and hasattr(x, 'rtc_events') else None)
         self.df['sound cues onset'] = self.df['sound cues'].apply(lambda x: x.onset_times if x else None)
         self.df['port entries onset'] = self.df['port entries'].apply(lambda x: x.onset_times if x else None)
         self.df['port entries offset'] = self.df['port entries'].apply(lambda x: x.offset_times if x else None)
@@ -296,8 +300,8 @@ class Reward_Training(Experiment):
         if n_events is None:
             n_events = 0
             for block_data in self.trials.values():
-                if behavior_name in block_data.behaviors1:
-                    num_events = len(block_data.behaviors1[behavior_name].onset_times)
+                if behavior_name in block_data.rtc_events:
+                    num_events = len(block_data.rtc_events[behavior_name].onset_times)
                     if num_events > n_events:
                         n_events = num_events
 
@@ -315,8 +319,8 @@ class Reward_Training(Experiment):
             # Get the onset times for the behavior
             print(block_name)
             print(block_data)
-            if behavior_name in block_data.behaviors1:
-                event_onsets = block_data.behaviors1[behavior_name].onset_times
+            if behavior_name in block_data.rtc_events:
+                event_onsets = block_data.rtc_events[behavior_name].onset_times
                 # Limit to the first n_events if necessary
                 event_onsets = event_onsets[:n_events]
                 # For each event onset, compute the peri-event data
@@ -801,7 +805,7 @@ class Reward_Training(Experiment):
         df['Lick Event_Time_Axis'] = lick_times_all
         df['Lick Event_Zscore']    = lick_zscores_all
 
-    """def compute_lick_ei_DA(self, df=None, pre_time=4, post_time=10):
+    def compute_lick_ei_DA(self, df=None, pre_time=4, post_time=10):
         if df is None:
             df = self.df
         min_dt = np.inf
@@ -885,7 +889,7 @@ class Reward_Training(Experiment):
             event_time_list.append(trial_event_times)
 
         df['Lick Event_Time_Axis'] = event_time_list
-        df['Lick Event_Zscore'] = event_zscores"""
+        df['Lick Event_Zscore'] = event_zscores
 
     def compute_tone_da_metrics(self, df=None, mode='standard'):
         if df is None:
@@ -1337,7 +1341,7 @@ class Reward_Training(Experiment):
         plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         plt.show()
 
-    def plot_linear_fit_with_error_bars(self, directory_path, color='blue', y_limits=None):
+    def plot_linear_fit_with_error_bars(self, df, directory_path='directory_path', color='blue', y_limits=None, brain_region='mPFC'):
         """
         Plots the mean DA values with SEM error bars, fits a line of best fit,
         and computes the Pearson correlation coefficient.
@@ -1353,7 +1357,7 @@ class Reward_Training(Experiment):
         - r_value: The Pearson correlation coefficient.
         - p_value: The p-value for the correlation coefficient.
         """
-        # Sort the DataFrame by Trial
+        """# Sort the DataFrame by Trial
         df_sorted = self.df.sort_values('Trial')
         
         # Extract trial numbers, mean DA values, and SEMs
@@ -1374,9 +1378,90 @@ class Reward_Training(Experiment):
         plt.xlabel('Tone Number', fontsize=36, labelpad=12)
         plt.ylabel('Global Z-scored ΔF/F', fontsize=36, labelpad=12)
         plt.title('', fontsize=10)
-        plt.legend(fontsize=20)
+        plt.legend(fontsize=20)"""
+        if df is None:
+            df = self.df  # Use class DataFrame if no input is given
+
+        # Function to filter subjects based on brain region
+        def split_by_subject(df1, region):            
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            return df_p if region == 'mPFC' else df_n
+
+        df = split_by_subject(df, brain_region)
+
+        # Extract and truncate the first 15 elements of each array
+        filtered_arrays = [np.array(arr[:15]) for arr in df['Mean Z-score EI'] if isinstance(arr, list)]
+
+        # Stack into a 2D array (trials x 15 time points)
+        stacked_arrays = np.vstack(filtered_arrays)  # Shape: (num_trials, 15)
+
+        # Compute the mean across trials
+        mean_array = np.nanmean(stacked_arrays, axis=0)  # Shape: (15,)
+
+        # Check array length
+        print(f"Mean array length: {len(mean_array)}")  # Should print 15
+
+        # Generate trial numbers (assuming sequential indexing)
+        x_data = np.arange(1, len(mean_array) + 1)
+        y_data = mean_array
+
+        # Perform linear regression
+        slope, intercept, r_value, p_value, std_err = linregress(x_data, y_data)
+        y_fitted = intercept + slope * x_data
+
+        # Set figure size
+        plt.figure(figsize=(30, 7))
+
+        # Scatter plot
+        plt.errorbar(x_data, y_data, yerr=np.nanstd(stacked_arrays, axis=0), fmt='o', label='DA during Port Entry', 
+                    color=color, capsize=10, markersize=20, elinewidth=4, capthick=3)
         
-        # Set custom x-ticks from 2 to 16 (whole numbers)
+        # Regression line
+        plt.plot(x_data, y_fitted, 'r--', label=f'$R^2$ = {r_value**2:.2f}, p = {p_value:.3f}', linewidth=3)
+
+        # Axis labels
+        plt.xlabel("Tone Number", fontsize=36, labelpad=12)
+        plt.ylabel("Global Z-scored ΔF/F", fontsize=36, labelpad=12)
+        plt.title('', fontsize=10)
+        plt.legend(fontsize=20)
+
+        # Set custom x-ticks from 1 to 15 (every 2 steps)
+        plt.xticks(np.arange(1, 16, 2), fontsize=26)
+
+        # Define y-axis limits based on the brain region
+        if "NAc" in str(directory_path):
+            y_lower_limit, y_upper_limit = -1, 4
+        else:  # mPFC
+            y_lower_limit, y_upper_limit = -1, 3
+
+        # Set y-axis ticks
+        plt.yticks(np.arange(y_lower_limit, y_upper_limit), fontsize=26)
+
+        # Remove the top and right spines
+        ax = plt.gca()
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_linewidth(2)
+        ax.spines['bottom'].set_linewidth(2)
+
+        # Adjust tick label sizes
+        ax.tick_params(axis='both', which='major', labelsize=32, width=2)
+
+        # Ensure a tight layout
+        plt.tight_layout()
+
+        # Save figure
+        """save_path = os.path.join(str(directory_path), 'linear.png')
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")"""
+
+        # Show the plot
+        plt.show()
+
+        # Print regression stats
+        print(f"Slope: {slope:.4f}, Intercept: {intercept:.4f}")
+        print(f"Pearson correlation coefficient (R): {r_value:.4f}, p-value: {p_value:.4e}")
+        """# Set custom x-ticks from 2 to 16 (whole numbers)
         plt.xticks(np.arange(1, 15, 2), fontsize=26)
 
         if "NAc" in str(directory_path):
@@ -1410,7 +1495,7 @@ class Reward_Training(Experiment):
         plt.show()
         
         print(f"Slope: {slope:.4f}, Intercept: {intercept:.4f}")
-        print(f"Pearson correlation coefficient (R): {r_value:.4f}, p-value: {p_value:.4e}")
+        print(f"Pearson correlation coefficient (R): {r_value:.4f}, p-value: {p_value:.4e}")"""
 
     def rc_plot_peth_per_event(self, df, i, directory_path, title='PETH graph for n trials', signal_type='zscore', 
                             error_type='sem', display_pre_time=4, display_post_time=10, yticks_interval=2):

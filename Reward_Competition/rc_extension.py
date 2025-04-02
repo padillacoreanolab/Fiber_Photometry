@@ -84,25 +84,25 @@ class Reward_Competition(Experiment):
             """
             Using RIG DATA
             """
-            trial.behaviors1['sound cues'] = trial.behaviors1.pop('PC0_')
-            trial.behaviors1['port entries'] = trial.behaviors1.pop('PC2_', trial.behaviors1.pop('PC3_'))
+            trial.rtc_events['sound cues'] = trial.rtc_events.pop('PC0_')
+            trial.rtc_events['port entries'] = trial.rtc_events.pop('PC2_', trial.rtc_events.pop('PC3_'))
 
             # Remove the first entry because it doesn't count
-            trial.behaviors1['sound cues'].onset_times = trial.behaviors1['sound cues'].onset[1:]
-            trial.behaviors1['sound cues'].offset_times = trial.behaviors1['sound cues'].offset[1:]
-            trial.behaviors1['port entries'].onset_times = trial.behaviors1['port entries'].onset[1:]
-            trial.behaviors1['port entries'].offset_times = trial.behaviors1['port entries'].offset[1:]
+            trial.rtc_events['sound cues'].onset_times = trial.rtc_events['sound cues'].onset[1:]
+            trial.rtc_events['sound cues'].offset_times = trial.rtc_events['sound cues'].offset[1:]
+            trial.rtc_events['port entries'].onset_times = trial.rtc_events['port entries'].onset[1:]
+            trial.rtc_events['port entries'].offset_times = trial.rtc_events['port entries'].offset[1:]
 
-            valid_sound_cues = [t for t in trial.behaviors1['sound cues'].onset_times if t >= 220]
-            trial.behaviors1['sound cues'].onset_times = valid_sound_cues
-
+            
             # Finding instances after first tone is played
-            port_entries_onset = np.array(trial.behaviors1['port entries'].onset_times)
-            port_entries_offset = np.array(trial.behaviors1['port entries'].offset_times)
-            first_sound_cue_onset = trial.behaviors1['sound cues'].onset_times[0]
+            port_entries_onset = np.array(trial.rtc_events['port entries'].onset_times)
+            port_entries_offset = np.array(trial.rtc_events['port entries'].offset_times)
+            first_sound_cue_onset = trial.rtc_events['sound cues'].onset_times[0]
             indices = np.where(port_entries_onset >= first_sound_cue_onset)[0]
-            trial.behaviors1['port entries'].onset_times = port_entries_onset[indices].tolist()
-            trial.behaviors1['port entries'].offset_times = port_entries_offset[indices].tolist()
+            trial.rtc_events['port entries'].onset_times = port_entries_onset[indices].tolist()
+            trial.rtc_events['port entries'].offset_times = port_entries_offset[indices].tolist()
+
+            # self.combine_consecutive_rtc_events(behavior_name='all', bout_time_threshold=0.5)
 
     def rc_processing2(self, time_segments_to_remove=None):
         """
@@ -125,55 +125,54 @@ class Reward_Competition(Experiment):
             trial.verify_signal()
 
             # Using RIG DATA
-            print(f"Available behaviors in trial: {trial.behaviors1.keys()}")
-            trial.behaviors1['sound cues'] = trial.behaviors1.pop('PC0_')
+            print(f"Available behaviors in trial: {trial.rtc_events.keys()}")
+            trial.rtc_events['sound cues'] = trial.rtc_events.pop('PC0_')
             
             # Correct the way 'port entries' is assigned for trial1 based on self.port_bnc
             trial_type1 = self.port_bnc.get(trial_folder1, None)  # Fetch trial type from self.port_bnc
             if trial_type1 == 3:
-                trial.behaviors1['port entries'] = trial.behaviors1.pop('PC3_')
+                trial.rtc_events['port entries'] = trial.rtc_events.pop('PC3_')
             elif trial_type1 == 2:
-                trial.behaviors1['port entries'] = trial.behaviors1.pop('PC2_')
+                trial.rtc_events['port entries'] = trial.rtc_events.pop('PC2_')
 
             # Remove the first entry because it doesn't count
-            trial.behaviors1['sound cues'].onset_times = trial.behaviors1['sound cues'].onset[1:]
-            trial.behaviors1['sound cues'].offset_times = trial.behaviors1['sound cues'].offset[1:]
-            trial.behaviors1['port entries'].onset_times = trial.behaviors1['port entries'].onset[1:]
-            trial.behaviors1['port entries'].offset_times = trial.behaviors1['port entries'].offset[1:]
+            trial.rtc_events['sound cues'].onset_times = trial.rtc_events['sound cues'].onset[1:]
+            trial.rtc_events['sound cues'].offset_times = trial.rtc_events['sound cues'].offset[1:]
+            trial.rtc_events['port entries'].onset_times = trial.rtc_events['port entries'].onset[1:]
+            trial.rtc_events['port entries'].offset_times = trial.rtc_events['port entries'].offset[1:]
 
-            valid_sound_cues = [t for t in trial.behaviors1['sound cues'].onset_times if t >= 220]
-            trial.behaviors1['sound cues'].onset_times = valid_sound_cues
-
+            valid_sound_cues = [t for t in trial.rtc_events['sound cues'].onset_times if t >= 200]
+            trial.rtc_events['sound cues'].onset_times = valid_sound_cues
             # Finding instances after the first tone is played
-            port_entries_onset = np.array(trial.behaviors1['port entries'].onset_times)
-            port_entries_offset = np.array(trial.behaviors1['port entries'].offset_times)
-            first_sound_cue_onset = trial.behaviors1['sound cues'].onset_times[0]
+            port_entries_onset = np.array(trial.rtc_events['port entries'].onset_times)
+            port_entries_offset = np.array(trial.rtc_events['port entries'].offset_times)
+            first_sound_cue_onset = trial.rtc_events['sound cues'].onset_times[0]
             indices = np.where(port_entries_onset >= first_sound_cue_onset)[0]
-            trial.behaviors1['port entries'].onset_times = port_entries_onset[indices].tolist()
-            trial.behaviors1['port entries'].offset_times = port_entries_offset[indices].tolist()
+            trial.rtc_events['port entries'].onset_times = port_entries_onset[indices].tolist()
+            trial.rtc_events['port entries'].offset_times = port_entries_offset[indices].tolist()
 
-            # self.combine_consecutive_behaviors1(behavior_name='all', bout_time_threshold=0.5)
+            # self.combine_consecutive_rtc_events(behavior_name='all', bout_time_threshold=0.5)
 
     """*********************************COMBINE CONSECUTIVE BEHAVIORS***********************************"""
-    """def combine_consecutive_behaviors1(self, behavior_name='all', bout_time_threshold=0.5, min_occurrences=1):
+    """def combine_consecutive_rtc_events(self, behavior_name='all', bout_time_threshold=0.5, min_occurrences=1):
         
         Applies the behavior combination logic to all trials within the experiment.
         
 
         for trial_name, trial_obj in self.trials.items():
-            # Ensure the trial has behaviors1 attribute
-            if not hasattr(trial_obj, 'behaviors1'):
-                continue  # Skip if behaviors1 is not available
+            # Ensure the trial has rtc_events attribute
+            if not hasattr(trial_obj, 'rtc_events'):
+                continue  # Skip if rtc_events is not available
 
             # Determine which behaviors to process
             if behavior_name == 'all':
-                behaviors_to_process = trial_obj.behaviors1.keys()  # Process all behaviors
+                behaviors_to_process = trial_obj.rtc_events.keys()  # Process all behaviors
             else:
                 behaviors_to_process = [behavior_name]  # Process a single behavior
 
             for behavior_event in behaviors_to_process:
-                behavior_onsets = np.array(trial_obj.behaviors1[behavior_event].onset)
-                behavior_offsets = np.array(trial_obj.behaviors1[behavior_event].offset)
+                behavior_onsets = np.array(trial_obj.rtc_events[behavior_event].onset)
+                behavior_offsets = np.array(trial_obj.rtc_events[behavior_event].offset)
 
                 combined_onsets = []
                 combined_offsets = []
@@ -213,9 +212,9 @@ class Reward_Competition(Experiment):
                         valid_indices.append(i)
 
                 # Update the behavior with the combined onsets, offsets, and durations
-                trial_obj.behaviors1[behavior_event].onset = [combined_onsets[i] for i in valid_indices]
-                trial_obj.behaviors1[behavior_event].offset = [combined_offsets[i] for i in valid_indices]
-                trial_obj.behaviors1[behavior_event].Total_Duration = [combined_durations[i] for i in valid_indices]  # Update Total Duration
+                trial_obj.rtc_events[behavior_event].onset = [combined_onsets[i] for i in valid_indices]
+                trial_obj.rtc_events[behavior_event].offset = [combined_offsets[i] for i in valid_indices]
+                trial_obj.rtc_events[behavior_event].Total_Duration = [combined_durations[i] for i in valid_indices]  # Update Total Duration
 
                 trial_obj.bout_dict = {}  # Reset bout dictionary after processing"""
 
@@ -265,12 +264,12 @@ class Reward_Competition(Experiment):
 
         # Handle behaviors safely
         self.df['sound cues'] = self.df['trial'].apply(
-            lambda x: x.behaviors1.get('sound cues', None) 
-            if isinstance(x, object) and hasattr(x, 'behaviors1') else None
+            lambda x: x.rtc_events.get('sound cues', None) 
+            if isinstance(x, object) and hasattr(x, 'rtc_events') else None
         )
         self.df['port entries'] = self.df['trial'].apply(
-            lambda x: x.behaviors1.get('port entries', None) 
-            if isinstance(x, object) and hasattr(x, 'behaviors1') else None
+            lambda x: x.rtc_events.get('port entries', None) 
+            if isinstance(x, object) and hasattr(x, 'rtc_events') else None
         )
         self.df['sound cues onset'] = self.df['sound cues'].apply(lambda x: x.onset_times if x else None)
         self.df['port entries onset'] = self.df['port entries'].apply(lambda x: x.onset_times if x else None)
@@ -303,8 +302,8 @@ class Reward_Competition(Experiment):
         print("Total rows:", len(self.df))
         print("Rows with missing trials:", self.df['trial'].isna().sum())
 
-        self.df['sound cues'] = self.df['trial'].apply(lambda x: x.behaviors1.get('sound cues', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
-        self.df['port entries'] = self.df['trial'].apply(lambda x: x.behaviors1.get('port entries', None) if isinstance(x, object) and hasattr(x, 'behaviors1') else None)
+        self.df['sound cues'] = self.df['trial'].apply(lambda x: x.rtc_events.get('sound cues', None) if isinstance(x, object) and hasattr(x, 'rtc_events') else None)
+        self.df['port entries'] = self.df['trial'].apply(lambda x: x.rtc_events.get('port entries', None) if isinstance(x, object) and hasattr(x, 'rtc_events') else None)
         self.df['sound cues onset'] = self.df['sound cues'].apply(lambda x: x.onset_times if x else None)
         self.df['port entries onset'] = self.df['port entries'].apply(lambda x: x.onset_times if x else None)
         self.df['port entries offset'] = self.df['port entries'].apply(lambda x: x.offset_times if x else None)
@@ -483,7 +482,7 @@ class Reward_Competition(Experiment):
         
         # Extract 'tangles'
         self.df['tangles_array'] = self.df['trial'].apply(
-            lambda x: x.behaviors1.get('tangles', []) if isinstance(x, object) and hasattr(x, 'behaviors1') else []
+            lambda x: x.rtc_events.get('tangles', []) if isinstance(x, object) and hasattr(x, 'rtc_events') else []
         )
         
         # Function to remove indices from an array based on tangles_array
@@ -708,6 +707,17 @@ class Reward_Competition(Experiment):
     def compute_event_induced_DA(self, df=None, pre_time=4, post_time=10):
         """
         Computes event-induced DA responses for tone (sound cue) and lick.
+
+        - Tone Event:
+        * Time axis: -pre_time to +post_time around each sound cue onset.
+        * Baseline: mean of the DA signal in the 4 seconds before the sound cue.
+
+        - Lick Event:
+        * Time axis: 0 to +post_time around the lick onset.
+        * Baseline: same as the tone event (i.e., computed from the 4 seconds before the sound cue).
+
+        Note: If multiple cues/licks exist, each is processed. The i-th lick uses
+            the i-th sound cue's baseline if available. Otherwise, baseline=0.
         """
         if df is None:
             df = self.df
@@ -724,9 +734,9 @@ class Reward_Competition(Experiment):
             print("No valid timestamps found to determine dt.")
             return
 
-        # Time axes
-        common_tone_time_axis = np.arange(-pre_time, post_time, min_dt)  
-        common_lick_time_axis = np.arange(0, post_time, min_dt)          
+        # Two different time axes:
+        common_tone_time_axis = np.arange(-pre_time, post_time, min_dt)   # For the sound cue
+        common_lick_time_axis = np.arange(0, post_time, min_dt)           # For the lick
 
         # Lists to store results
         tone_zscores_all = []
@@ -739,47 +749,42 @@ class Reward_Competition(Experiment):
             timestamps = np.array(trial_obj.timestamps)
             zscore = np.array(trial_obj.zscore)
 
-            sound_cues = row['sound cues onset']
+            # Sound and lick onsets
+            sound_cues = row['filtered_sound_cues']
             lick_cues  = row['first_lick_after_sound_cue']
 
             # ----- Tone (sound cue) -----
             tone_zscores_this_trial = []
-            tone_times_this_trial = []
+            tone_times_this_trial   = []
 
             if len(sound_cues) == 0:
-                print(f"Trial {row['trial']}: No sound cues, assigning NaNs.")
+                # No sound cues => store NaNs
                 tone_zscores_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
                 tone_times_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
             else:
                 for sound_event in sound_cues:
-                    for sound_event in sound_cues:
-                        window_start = sound_event - pre_time
-                        window_end   = sound_event + post_time
+                    # Window for the tone
+                    window_start = sound_event - pre_time
+                    window_end   = sound_event + post_time
 
-                        mask = (timestamps >= window_start) & (timestamps <= window_end)
+                    mask = (timestamps >= window_start) & (timestamps <= window_end)
+                    if not np.any(mask):
+                        tone_zscores_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
+                        tone_times_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
+                        continue
 
-                        if np.sum(mask) < 2:  # Require at least two points for interpolation
-                            print(f"Trial {row['trial']}: Not enough data points for event window ({window_start} to {window_end}). Assigning NaNs.")
-                            tone_zscores_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
-                            tone_times_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
-                            continue
+                    # Time relative to the sound cue
+                    rel_time = timestamps[mask] - sound_event
+                    signal   = zscore[mask]
 
-                        # Time relative to the sound cue
-                        rel_time = timestamps[mask] - sound_event
-                        signal   = zscore[mask]
+                    # Baseline: from (sound_event - pre_time) up to the sound_event
+                    baseline_mask = (rel_time < 0)
+                    baseline = np.nanmean(signal[baseline_mask]) if np.any(baseline_mask) else 0
 
-                        # Baseline computation
-                        baseline_mask = (rel_time < 0)
-                        if np.any(baseline_mask):
-                            baseline = np.nanmean(signal[baseline_mask])
-                        else:
-                            print(f"Trial {row['trial']}: No valid baseline values found for event at {sound_event}. Defaulting to 0.")
-                            baseline = 0
-
-                    # Baseline correction
+                    # Baseline-correct
                     corrected_signal = signal - baseline
 
-                    # Interpolate
+                    # Interpolate onto [-pre_time, post_time]
                     interp_signal = np.interp(common_tone_time_axis, rel_time, corrected_signal)
 
                     tone_zscores_this_trial.append(interp_signal)
@@ -790,28 +795,35 @@ class Reward_Competition(Experiment):
             lick_times_this_trial   = []
 
             if len(lick_cues) == 0:
-                print(f"Trial {row['trial']}: No licks, assigning NaNs.")
+                # No licks => store NaNs
                 lick_zscores_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
                 lick_times_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
             else:
                 for i, lick_event in enumerate(lick_cues):
-                    sound_event_for_baseline = sound_cues[i] if i < len(sound_cues) else None
+                    # Attempt to pair with the i-th sound cue for baseline
+                    if i < len(sound_cues):
+                        sound_event_for_baseline = sound_cues[i]
+                    else:
+                        sound_event_for_baseline = None  # fallback
 
-                    # Compute baseline
+                    # 1) Compute baseline from the sound cue window
                     if sound_event_for_baseline is not None:
+                        # Baseline window: from (sound_event - pre_time) to sound_event
                         baseline_start = sound_event_for_baseline - pre_time
                         baseline_end   = sound_event_for_baseline
                         baseline_mask = (timestamps >= baseline_start) & (timestamps <= baseline_end)
-                        baseline_val = np.nanmean(zscore[baseline_mask]) if np.any(baseline_mask) else 0
+                        if np.any(baseline_mask):
+                            baseline_val = np.nanmean(zscore[baseline_mask])
+                        else:
+                            baseline_val = 0
                     else:
                         baseline_val = 0
 
-                    # Extract lick window
+                    # 2) Extract the lick window from lick_event (0 to +post_time)
                     window_start = lick_event
                     window_end   = lick_event + post_time
                     mask = (timestamps >= window_start) & (timestamps <= window_end)
-                    if np.sum(mask) < 2:  # Require at least two points
-                        print(f"Trial {row['trial']}: Not enough data points for lick event ({window_start} to {window_end}). Assigning NaNs.")
+                    if not np.any(mask):
                         lick_zscores_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
                         lick_times_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
                         continue
@@ -819,16 +831,16 @@ class Reward_Competition(Experiment):
                     rel_time = timestamps[mask] - lick_event
                     signal   = zscore[mask]
 
-                    # Subtract baseline
+                    # Subtract the tone-based baseline
                     corrected_signal = signal - baseline_val
 
-                    # Interpolate
+                    # Interpolate onto [0, post_time]
                     interp_signal = np.interp(common_lick_time_axis, rel_time, corrected_signal)
 
                     lick_zscores_this_trial.append(interp_signal)
                     lick_times_this_trial.append(common_lick_time_axis.copy())
 
-            # Store in main lists
+            # Store in the main lists
             tone_zscores_all.append(tone_zscores_this_trial)
             tone_times_all.append(tone_times_this_trial)
             lick_zscores_all.append(lick_zscores_this_trial)
@@ -840,7 +852,7 @@ class Reward_Competition(Experiment):
         df['Lick Event_Time_Axis'] = lick_times_all
         df['Lick Event_Zscore']    = lick_zscores_all
 
-    def compute_tone_da(self, df=None, mode='standard'):
+    def compute_tone_da_metrics(self, df=None, mode='standard'):
         if df is None:
             df = self.df
         def compute_da_metrics_for_trial(trial_obj, filtered_sound_cues):
@@ -960,7 +972,7 @@ class Reward_Competition(Experiment):
         else:
             compute_ei(df)
                 
-    def compute_lick_da(self, df=None, mode='standard'):
+    def compute_lick_da_metrics(self, df=None, mode='standard'):
         if df is None:
             df = self.df
         """Iterate through trials in the dataframe and compute DA metrics for each lick trial."""
@@ -1198,8 +1210,8 @@ class Reward_Competition(Experiment):
 
         return mean_array, sem_array
 
-    """*******************************plottinG**********************************"""
-    def plotting_side_by_side(self, df, df1, mean_values, sem_values, mean_values1, sem_values1, bar_color, figsize, metric_name,
+    """*******************************PLOTING**********************************"""
+    def ploting_side_by_side(self, df, df1, mean_values, sem_values, mean_values1, sem_values1, bar_color, figsize, metric_name,
                         ylim, yticks_increment, title, directory_path, pad_inches, label1, label2):    
         print(df)
         print(df1)
@@ -1213,20 +1225,11 @@ class Reward_Competition(Experiment):
         # Create the plot
         fig, ax = plt.subplots(figsize=figsize)
 
-            # Generate unique colors for each subject
-        unique_subjects = df.index
-        colors = plt.cm.viridis(np.linspace(0, 1, len(unique_subjects)))  # Using viridis colormap
-
-        subject_color_map = {subject: color for subject, color in zip(unique_subjects, colors)}
-
         # Plot individual subject values for both dataframes
         for i, subject in enumerate(df.index):
-            ax.scatter(x - bar_width / 2 - gap / 2, df.loc[subject], color=subject_color_map[subject], edgecolors='black', 
-                    s=120, alpha=0.8, linewidth=2, zorder=2, label=f"{subject}" if i == 0 else "_nolegend_")
-
+            ax.scatter(x - bar_width / 2 - gap / 2, df.loc[subject], facecolors='none', edgecolors='gray', s=120, alpha=0.6, linewidth=4, zorder=2)
         for i, subject in enumerate(df1.index):    
-            ax.scatter(x + bar_width / 2 + gap / 2, df1.loc[subject], color=subject_color_map[subject], edgecolors='black', 
-                    s=120, alpha=0.8, linewidth=2, zorder=2)
+            ax.scatter(x + bar_width / 2 + gap / 2, df1.loc[subject], facecolors='none', edgecolors='gray', s=120, alpha=0.6, linewidth=4, zorder=2)
 
         # Plot bars for the mean with error bars
         bars1 = ax.bar(
@@ -1432,7 +1435,7 @@ class Reward_Competition(Experiment):
         mean_values1 = df1.mean()
         sem_values1 = df1.sem()
 
-        self.plotting_side_by_side(df, df1, mean_values, sem_values, mean_values1, sem_values1,
+        self.ploting_side_by_side(df, df1, mean_values, sem_values, mean_values1, sem_values1,
                                   bar_color, figsize, metric_name, ylim, 
                                   yticks_increment, title, directory_path, pad_inches,
                                   label1, label2)
@@ -1501,7 +1504,7 @@ class Reward_Competition(Experiment):
         sem_values1 = lose_df_n.sem()
         # title and plot
         title = metric_name + f' Lick DA ({title_suffix})'
-        self.plotting_side_by_side(win_df_n, lose_df_n, mean_values, sem_values, mean_values1, sem_values1,
+        self.ploting_side_by_side(win_df_n, lose_df_n, mean_values, sem_values, mean_values1, sem_values1,
                                   bar_color, figsize, metric_name, ylim, 
                                   yticks_increment, title, directory_path, pad_inches,
                                   label1, label2)
@@ -1513,7 +1516,7 @@ class Reward_Competition(Experiment):
         mean_values3 = lose_df_p.mean()
         sem_values3 = lose_df_p.sem()
         title1 = metric_name +  f' Lick DA ({title_suffix1})'
-        self.plotting_side_by_side(win_df_p, lose_df_p, mean_values2, sem_values2, mean_values3, sem_values3,
+        self.ploting_side_by_side(win_df_p, lose_df_p, mean_values2, sem_values2, mean_values3, sem_values3,
                                   bar_color1, figsize, metric_name, ylim, 
                                   yticks_increment, title1, directory_path, pad_inches,
                                   'Win', 'Lose')
@@ -1526,7 +1529,7 @@ class Reward_Competition(Experiment):
         mean_values5 = lose_df_n1.mean()
         sem_values5 = lose_df_n1.sem()
         title2 = metric_name + f' Tone DA ({title_suffix})'
-        self.plotting_side_by_side(win_df_n1, lose_df_n1, mean_values4, sem_values4, mean_values5, sem_values5,
+        self.ploting_side_by_side(win_df_n1, lose_df_n1, mean_values4, sem_values4, mean_values5, sem_values5,
                                   bar_color, figsize, metric_name, ylim, 
                                   yticks_increment, title2, directory_path, pad_inches,
                                   'Win', 'Lose')
@@ -1539,7 +1542,7 @@ class Reward_Competition(Experiment):
         mean_values7 = lose_df_p1.mean()
         sem_values7 = lose_df_p1.sem()
         title3 = metric_name +  f' Tone DA ({title_suffix1})'
-        self.plotting_side_by_side(win_df_p1, lose_df_p1, mean_values6, sem_values6, mean_values7, sem_values7,
+        self.ploting_side_by_side(win_df_p1, lose_df_p1, mean_values6, sem_values6, mean_values7, sem_values7,
                                   bar_color1, figsize, metric_name, ylim, 
                                   yticks_increment, title3, directory_path, pad_inches,
                                   'Win', 'Lose')
@@ -1667,7 +1670,7 @@ class Reward_Competition(Experiment):
                 return df_n
 
         df = split_by_subject(df, brain_region)
-        bin_size = 125
+        bin_size = 100
         if brain_region == 'mPFC':
             color = '#FFAF00'
         else:
@@ -1959,7 +1962,7 @@ class Reward_Competition(Experiment):
 
             # Create the scatter plot with a regression line
             plt.figure(figsize=(8, 6))
-            sns.scatterplot(data=df_sorted, x='Rank', y=f'Tone {metric_value} Mean{method}', color=color, s=125)
+            sns.scatterplot(data=df_sorted, x='Rank', y=f'Tone {metric_value} Mean{method}', color=color, s=100)
 
             # Add a regression line with R², and remove the shading (confidence interval)
             sns.regplot(data=df_sorted, x='Rank', y=f'Tone {metric_value} Mean{method}', scatter=False, color='black', line_kws={'lw': 2}, ci=None)
@@ -2258,15 +2261,10 @@ class Reward_Competition(Experiment):
         def split_by_subject(df1, region):            
             df_n = df1[df1['subject_name'].str.startswith('n')]
             df_p = df1[df1['subject_name'].str.startswith('p')]
-            if region == 'mPFC':
-                print(df_p)
-                return df_p
-            else:
-                print(df_n)
-                return df_n
+            return df_p if region == 'mPFC' else df_n
 
         df = split_by_subject(df, brain_region)
-        bin_size = 125
+        bin_size = 100
         if brain_region == 'mPFC':
             color = '#FFAF00'
         else:
@@ -2431,12 +2429,12 @@ class Reward_Competition(Experiment):
         df2 = df_p[f'{behavior} {metric_name} Mean EI'].to_frame()
         df3 = df1_p[f'{behavior} {metric_name} Mean EI'].to_frame()
 
-        self.plotting_side_by_side(df, df1, mean_values, sem_values, mean_values1, sem_values1,
+        self.ploting_side_by_side(df, df1, mean_values, sem_values, mean_values1, sem_values1,
                             nac_color, figsize, metric_name, ylim, 
                             yticks_increment, title, directory_path, pad_inches,
                             'Alone', 'Competition')
         
-        self.plotting_side_by_side(df2, df3, mean_values2, sem_values2, mean_values3, sem_values3,
+        self.ploting_side_by_side(df2, df3, mean_values2, sem_values2, mean_values3, sem_values3,
                             mpfc_color, figsize, metric_name, ylim, 
                             yticks_increment, title1, directory_path, pad_inches,
                             'Alone', 'Competition')
