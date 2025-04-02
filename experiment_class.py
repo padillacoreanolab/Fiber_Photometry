@@ -14,7 +14,6 @@ class Experiment:
 
         self.load_trials()
     
-
     '''********************************** GROUP PROCESSING **********************************'''
     def load_trials(self):
         """

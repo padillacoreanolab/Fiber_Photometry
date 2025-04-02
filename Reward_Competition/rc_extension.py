@@ -17,7 +17,7 @@ from matplotlib.colors import LinearSegmentedColormap
 class Reward_Competition(Experiment):
     def __init__(self, experiment_folder_path, behavior_folder_path):
         super().__init__(experiment_folder_path, behavior_folder_path)
-        # self.trials = {}  # Reset trials to avoid loading from parent class
+        self.port_bnc = {}  # Reset trials to avoid loading from parent class
         self.df = pd.DataFrame()
         if "Cohort_1_2" in experiment_folder_path:
             self.load_rtc1_trials()  # Load 1 RTC trial
@@ -53,10 +53,13 @@ class Reward_Competition(Experiment):
             trial_folder2 = trial_name2 + '-' + '-'.join(trial_folder.split('_')[1].split('-')[1:])
             self.trials[trial_folder1] = trial_obj1
             self.trials[trial_folder2] = trial_obj2
+            del self.trials[trial_folder]
+            self.port_bnc[trial_folder1] = 3
+            self.port_bnc[trial_folder2] = 2
 
-    def rc_processing(self, time_segments_to_remove=None):
+    def rc_processing1(self, time_segments_to_remove=None):
         """
-        Batch processes reward training
+        Batch processes rc with 1 box
         """
         print(self.trials.items())
         for trial_folder, trial in self.trials.items():
@@ -78,8 +81,6 @@ class Reward_Competition(Experiment):
             trial.verify_signal()
 
             # PC0 = Tones
-            # PC3 = Box 3
-            # PC2 = Box 4
             """
             Using RIG DATA
             """
@@ -94,6 +95,53 @@ class Reward_Competition(Experiment):
 
             
             # Finding instances after first tone is played
+            port_entries_onset = np.array(trial.behaviors1['port entries'].onset_times)
+            port_entries_offset = np.array(trial.behaviors1['port entries'].offset_times)
+            first_sound_cue_onset = trial.behaviors1['sound cues'].onset_times[0]
+            indices = np.where(port_entries_onset >= first_sound_cue_onset)[0]
+            trial.behaviors1['port entries'].onset_times = port_entries_onset[indices].tolist()
+            trial.behaviors1['port entries'].offset_times = port_entries_offset[indices].tolist()
+
+            self.combine_consecutive_behaviors1(behavior_name='all', bout_time_threshold=0.5)
+
+    def rc_processing2(self, time_segments_to_remove=None):
+        """
+        Batch processes rc with 2 box
+        """
+        print(self.trials.items())
+        for (trial_folder, trial), (trial_folder1, trial1) in zip(self.trials.items(), self.port_bnc.items()):
+            # Check if the subject name is in the time_segments_to_remove dictionary
+            if time_segments_to_remove and trial.subject_name in time_segments_to_remove:
+                self.remove_time_segments_from_block(trial_folder, time_segments_to_remove[trial.subject_name])
+
+            print(f"Reward Training Processing {trial_folder}...")
+
+            trial.remove_initial_LED_artifact(t=30)
+            trial.highpass_baseline_drift()
+            trial.align_channels()
+            trial.compute_dFF()
+            baseline_start, baseline_end = trial.find_baseline_period()
+            trial.compute_zscore(method='standard')
+            trial.verify_signal()
+
+            # Using RIG DATA
+            print(f"Available behaviors in trial: {trial.behaviors1.keys()}")
+            trial.behaviors1['sound cues'] = trial.behaviors1.pop('PC0_')
+            
+            # Correct the way 'port entries' is assigned for trial1 based on self.port_bnc
+            trial_type1 = self.port_bnc.get(trial_folder1, None)  # Fetch trial type from self.port_bnc
+            if trial_type1 == 3:
+                trial.behaviors1['port entries'] = trial.behaviors1.pop('PC3_')
+            elif trial_type1 == 2:
+                trial.behaviors1['port entries'] = trial.behaviors1.pop('PC2_')
+
+            # Remove the first entry because it doesn't count
+            trial.behaviors1['sound cues'].onset_times = trial.behaviors1['sound cues'].onset[1:]
+            trial.behaviors1['sound cues'].offset_times = trial.behaviors1['sound cues'].offset[1:]
+            trial.behaviors1['port entries'].onset_times = trial.behaviors1['port entries'].onset[1:]
+            trial.behaviors1['port entries'].offset_times = trial.behaviors1['port entries'].offset[1:]
+
+            # Finding instances after the first tone is played
             port_entries_onset = np.array(trial.behaviors1['port entries'].onset_times)
             port_entries_offset = np.array(trial.behaviors1['port entries'].offset_times)
             first_sound_cue_onset = trial.behaviors1['sound cues'].onset_times[0]
@@ -2151,7 +2199,7 @@ class Reward_Competition(Experiment):
                 return df_n
 
         df = split_by_subject(df, brain_region)
-        bin_size = 100
+        bin_size = 125
         if brain_region == 'mPFC':
             color = '#FFAF00'
         else:
