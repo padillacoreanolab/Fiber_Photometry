@@ -767,7 +767,7 @@ class Reward_Training(Experiment):
         df['Lick Event_Time_Axis'] = event_time_list
         df['Lick Event_Zscore'] = event_zscores
 
-    def compute_tone_da(self, df=None, mode='standard'):
+    def compute_tone_da_metrics(self, df=None, mode='standard'):
         if df is None:
             df = self.df
         def compute_da_metrics_for_trial(trial_obj, filtered_sound_cues):
@@ -887,7 +887,7 @@ class Reward_Training(Experiment):
         else:
             compute_ei(df)
                 
-    def compute_lick_da(self, df=None, mode='standard'):
+    def compute_lick_da_metrics(self, df=None, mode='standard'):
         if df is None:
             df = self.df
         """Iterate through trials in the dataframe and compute DA metrics for each lick trial."""
@@ -1256,36 +1256,87 @@ class Reward_Training(Experiment):
         plt.title('', fontsize=10)
         plt.legend(fontsize=20)"""
         if df is None:
-            df = self.df
+            df = self.df  # Use class DataFrame if no input is given
 
+        # Function to filter subjects based on brain region
         def split_by_subject(df1, region):            
             df_n = df1[df1['subject_name'].str.startswith('n')]
             df_p = df1[df1['subject_name'].str.startswith('p')]
-            # Return filtered dataframes and subject_name column
-            if region == 'mPFC':
-                return df_p
-            else:
-                return df_n
+            return df_p if region == 'mPFC' else df_n
+
         df = split_by_subject(df, brain_region)
+
+        # Extract and truncate the first 15 elements of each array
         filtered_arrays = [np.array(arr[:15]) for arr in df['Mean Z-score EI'] if isinstance(arr, list)]
 
-        # Stack them into a 2D array (rows = trials, columns = 15 time points)
+        # Stack into a 2D array (trials x 15 time points)
         stacked_arrays = np.vstack(filtered_arrays)  # Shape: (num_trials, 15)
 
-        # Compute the mean across trials (axis=0), resulting in a single 1D array
+        # Compute the mean across trials
         mean_array = np.nanmean(stacked_arrays, axis=0)  # Shape: (15,)
 
-        print(len(mean_array))  # Should print 15
+        # Check array length
+        print(f"Mean array length: {len(mean_array)}")  # Should print 15
 
+        # Generate trial numbers (assuming sequential indexing)
+        x_data = np.arange(1, len(mean_array) + 1)
+        y_data = mean_array
+
+        # Perform linear regression
+        slope, intercept, r_value, p_value, std_err = linregress(x_data, y_data)
+        y_fitted = intercept + slope * x_data
+
+        # Set figure size
+        plt.figure(figsize=(30, 7))
 
         # Scatter plot
-        plt.scatter(range(len(mean_array)), mean_array)
-        plt.xlabel("Index")
-        plt.ylabel("AUC")
-        plt.title("AUC Scatter Plot")
-        plt.legend()
+        plt.errorbar(x_data, y_data, yerr=np.nanstd(stacked_arrays, axis=0), fmt='o', label='DA during Port Entry', 
+                    color=color, capsize=10, markersize=20, elinewidth=4, capthick=3)
+        
+        # Regression line
+        plt.plot(x_data, y_fitted, 'r--', label=f'$R^2$ = {r_value**2:.2f}, p = {p_value:.3f}', linewidth=3)
+
+        # Axis labels
+        plt.xlabel("Tone Number", fontsize=36, labelpad=12)
+        plt.ylabel("Global Z-scored ΔF/F", fontsize=36, labelpad=12)
+        plt.title('', fontsize=10)
+        plt.legend(fontsize=20)
+
+        # Set custom x-ticks from 1 to 15 (every 2 steps)
+        plt.xticks(np.arange(1, 16, 2), fontsize=26)
+
+        # Define y-axis limits based on the brain region
+        if "NAc" in str(directory_path):
+            y_lower_limit, y_upper_limit = -1, 4
+        else:  # mPFC
+            y_lower_limit, y_upper_limit = -1, 3
+
+        # Set y-axis ticks
+        plt.yticks(np.arange(y_lower_limit, y_upper_limit), fontsize=26)
+
+        # Remove the top and right spines
+        ax = plt.gca()
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_linewidth(2)
+        ax.spines['bottom'].set_linewidth(2)
+
+        # Adjust tick label sizes
+        ax.tick_params(axis='both', which='major', labelsize=32, width=2)
+
+        # Ensure a tight layout
+        plt.tight_layout()
+
+        # Save figure
+        """save_path = os.path.join(str(directory_path), 'linear.png')
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")"""
+
+        # Show the plot
         plt.show()
 
+        # Print regression stats
+        print(f"Slope: {slope:.4f}, Intercept: {intercept:.4f}")
+        print(f"Pearson correlation coefficient (R): {r_value:.4f}, p-value: {p_value:.4e}")
         """# Set custom x-ticks from 2 to 16 (whole numbers)
         plt.xticks(np.arange(1, 15, 2), fontsize=26)
 
