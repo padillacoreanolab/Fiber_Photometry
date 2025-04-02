@@ -736,15 +736,12 @@ class Reward_Training(Experiment):
                 # Print to debug the timestamp coverage
                 print(f"Trial {trial_obj}: Lick Start = {lick_start}, Window Start = {window_start}, Window End = {window_end}")
 
-                mask = (timestamps >= window_start) & (timestamps <= window_end)
-                if not np.any(mask):
-                    print(f"Warning: No timestamps found for event at {event_start}")
-                    trial_event_zscores.append(np.full((1,), np.nan))
-                    trial_event_times.append(np.full((1,), np.nan))
-                    continue
+                start_idx = np.searchsorted(timestamps, window_start, side="left")
+                end_idx = np.searchsorted(timestamps, window_end, side="right")
 
-                rel_time = timestamps[mask] - lick_start
-                signal = zscore[mask]
+                rel_time = timestamps[start_idx:end_idx] - lick_start
+                signal = zscore[start_idx:end_idx]
+                print(len(signal))
 
                 # Print to debug time range
                 print(f"Relative Time Min = {np.min(rel_time)}, Max = {np.max(rel_time)}")
@@ -754,6 +751,7 @@ class Reward_Training(Experiment):
                 corrected_signal = signal - baseline
 
                 common_time_axis = np.arange(-pre_time, post_time + min_dt, min_dt)
+                print(len(common_time_axis))
 
                 # Debug common time axis
                 print(f"Common Time Axis Min = {np.min(common_time_axis)}, Max = {np.max(common_time_axis)}")
@@ -1219,7 +1217,7 @@ class Reward_Training(Experiment):
         plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         plt.show()
 
-    def plot_linear_fit_with_error_bars(self, directory_path, color='blue', y_limits=None):
+    def plot_linear_fit_with_error_bars(self, df, directory_path='directory_path', color='blue', y_limits=None, brain_region='mPFC'):
         """
         Plots the mean DA values with SEM error bars, fits a line of best fit,
         and computes the Pearson correlation coefficient.
@@ -1235,7 +1233,7 @@ class Reward_Training(Experiment):
         - r_value: The Pearson correlation coefficient.
         - p_value: The p-value for the correlation coefficient.
         """
-        # Sort the DataFrame by Trial
+        """# Sort the DataFrame by Trial
         df_sorted = self.df.sort_values('Trial')
         
         # Extract trial numbers, mean DA values, and SEMs
@@ -1256,9 +1254,39 @@ class Reward_Training(Experiment):
         plt.xlabel('Tone Number', fontsize=36, labelpad=12)
         plt.ylabel('Global Z-scored ΔF/F', fontsize=36, labelpad=12)
         plt.title('', fontsize=10)
-        plt.legend(fontsize=20)
-        
-        # Set custom x-ticks from 2 to 16 (whole numbers)
+        plt.legend(fontsize=20)"""
+        if df is None:
+            df = self.df
+
+        def split_by_subject(df1, region):            
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            # Return filtered dataframes and subject_name column
+            if region == 'mPFC':
+                return df_p
+            else:
+                return df_n
+        df = split_by_subject(df, brain_region)
+        filtered_arrays = [np.array(arr[:15]) for arr in df['Mean Z-score EI'] if isinstance(arr, list)]
+
+        # Stack them into a 2D array (rows = trials, columns = 15 time points)
+        stacked_arrays = np.vstack(filtered_arrays)  # Shape: (num_trials, 15)
+
+        # Compute the mean across trials (axis=0), resulting in a single 1D array
+        mean_array = np.nanmean(stacked_arrays, axis=0)  # Shape: (15,)
+
+        print(len(mean_array))  # Should print 15
+
+
+        # Scatter plot
+        plt.scatter(range(len(mean_array)), mean_array)
+        plt.xlabel("Index")
+        plt.ylabel("AUC")
+        plt.title("AUC Scatter Plot")
+        plt.legend()
+        plt.show()
+
+        """# Set custom x-ticks from 2 to 16 (whole numbers)
         plt.xticks(np.arange(1, 15, 2), fontsize=26)
 
         if "NAc" in str(directory_path):
@@ -1292,7 +1320,7 @@ class Reward_Training(Experiment):
         plt.show()
         
         print(f"Slope: {slope:.4f}, Intercept: {intercept:.4f}")
-        print(f"Pearson correlation coefficient (R): {r_value:.4f}, p-value: {p_value:.4e}")
+        print(f"Pearson correlation coefficient (R): {r_value:.4f}, p-value: {p_value:.4e}")"""
 
     def rc_plot_peth_per_event(self, df, i, directory_path, title='PETH graph for n trials', signal_type='zscore', 
                             error_type='sem', display_pre_time=4, display_post_time=10, yticks_interval=2):
