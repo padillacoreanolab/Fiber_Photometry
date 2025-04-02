@@ -45,7 +45,8 @@ class Trial:
         self.streams['ISOS'] = tdtdata.streams[stream_ISOS].data
 
         self.behaviors = None
-        self.behaviors1 = {key: value for key, value in tdtdata.epocs.items() if key not in ['Cam1', 'Cam2', 'Tick']}
+        # For RTC
+        self.rtc_events = {key: value for key, value in tdtdata.epocs.items() if key not in ['Cam1', 'Cam2', 'Tick']}
 
         self.updated_DA = self.streams['DA']
         self.updated_ISOS = self.streams['ISOS']

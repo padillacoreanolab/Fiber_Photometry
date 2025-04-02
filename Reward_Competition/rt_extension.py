@@ -3,7 +3,7 @@ import os
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(parent_dir)
 
-from experiment_class import Experiment
+from experiment_class import Experiment 
 from trial_class import Trial
 import numpy as np
 import matplotlib.pyplot as plt
@@ -619,8 +619,6 @@ class Reward_Training(Experiment):
         Note: If multiple cues/licks exist, each is processed. The i-th lick uses
             the i-th sound cue's baseline if available. Otherwise, baseline=0.
         """
-        import numpy as np
-
         if df is None:
             df = self.df
 

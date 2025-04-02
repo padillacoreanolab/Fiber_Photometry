@@ -57,65 +57,32 @@ class Rtc(Experiment):
             self.port_bnc[trial_folder1] = 3
             self.port_bnc[trial_folder2] = 2
 
-    def rc_processing1(self, time_segments_to_remove=None):
+
+    def rtc_processing(self, time_segments_to_remove=None):
         """
-        Batch processes rc with 1 box
+        Unified processing for RTC recordings that handles both unisubject and multisubject trials.
+
+        For each trial:
+        1. Optionally remove designated time segments.
+        2. Remove initial LED artifact.
+        3. Highpass filter to remove baseline drift.
+        4. Align channels, compute dFF, determine baseline period.
+        5. Compute standard z-score and verify the signal.
+        6. Reassign behavior channels for tone and port entries.
+            - For multisubject, use self.port_bnc to decide whether to use PC3_ (port value 3) or PC2_ (port value 2).
+            - For unisubject, try PC2_ first, then PC3_.
+        7. Remove the first behavior entry (if it is not counting).
+        8. Filter port entries so that only those after the first sound cue remain.
+        9. Combine consecutive behaviors.
         """
-        print(self.trials.items())
         for trial_folder, trial in self.trials.items():
-            # Check if the subject name is in the time_segments_to_remove dictionary
+            # (Optional) Remove time segments if provided.
             if time_segments_to_remove and trial.subject_name in time_segments_to_remove:
                 self.remove_time_segments_from_block(trial_folder, time_segments_to_remove[trial.subject_name])
 
-            print(f"Reward Training Processing {trial_folder}...")
-            trial.remove_initial_LED_artifact(t=30)
-            # trial.remove_final_data_segment(t = 10)
-            
-            trial.highpass_baseline_drift()
-            trial.align_channels()
-            trial.compute_dFF()
-            baseline_start, baseline_end = trial.find_baseline_period()  
-            # trial.compute_zscore(method = 'baseline', baseline_start = baseline_start, baseline_end = baseline_end)
-            trial.compute_zscore(method = 'standard')
-            # trial.compute_zscore(method = 'modified')
-            trial.verify_signal()
+            print(f"Processing trial {trial_folder}...")
 
-            # PC0 = Tones
-            """
-            Using RIG DATA
-            """
-            trial.behaviors1['sound cues'] = trial.behaviors1.pop('PC0_')
-            trial.behaviors1['port entries'] = trial.behaviors1.pop('PC2_', trial.behaviors1.pop('PC3_'))
-
-            # Remove the first entry because it doesn't count
-            trial.behaviors1['sound cues'].onset_times = trial.behaviors1['sound cues'].onset[1:]
-            trial.behaviors1['sound cues'].offset_times = trial.behaviors1['sound cues'].offset[1:]
-            trial.behaviors1['port entries'].onset_times = trial.behaviors1['port entries'].onset[1:]
-            trial.behaviors1['port entries'].offset_times = trial.behaviors1['port entries'].offset[1:]
-
-            
-            # Finding instances after first tone is played
-            port_entries_onset = np.array(trial.behaviors1['port entries'].onset_times)
-            port_entries_offset = np.array(trial.behaviors1['port entries'].offset_times)
-            first_sound_cue_onset = trial.behaviors1['sound cues'].onset_times[0]
-            indices = np.where(port_entries_onset >= first_sound_cue_onset)[0]
-            trial.behaviors1['port entries'].onset_times = port_entries_onset[indices].tolist()
-            trial.behaviors1['port entries'].offset_times = port_entries_offset[indices].tolist()
-
-            self.combine_consecutive_behaviors1(behavior_name='all', bout_time_threshold=0.5)
-
-    def rc_processing2(self, time_segments_to_remove=None):
-        """
-        Batch processes rc with 2 box
-        """
-        print(self.trials.items())
-        for (trial_folder, trial), (trial_folder1, trial1) in zip(self.trials.items(), self.port_bnc.items()):
-            # Check if the subject name is in the time_segments_to_remove dictionary
-            if time_segments_to_remove and trial.subject_name in time_segments_to_remove:
-                self.remove_time_segments_from_block(trial_folder, time_segments_to_remove[trial.subject_name])
-
-            print(f"Reward Training Processing {trial_folder}...")
-
+            # ----- Preprocessing Steps -----
             trial.remove_initial_LED_artifact(t=30)
             trial.highpass_baseline_drift()
             trial.align_channels()
@@ -124,33 +91,43 @@ class Rtc(Experiment):
             trial.compute_zscore(method='standard')
             trial.verify_signal()
 
-            # Using RIG DATA
-            print(f"Available behaviors in trial: {trial.behaviors1.keys()}")
+            # ----- Reassign Behavior Channels -----
+            # Sound cues always come from PC0_
             trial.behaviors1['sound cues'] = trial.behaviors1.pop('PC0_')
-            
-            # Correct the way 'port entries' is assigned for trial1 based on self.port_bnc
-            trial_type1 = self.port_bnc.get(trial_folder1, None)  # Fetch trial type from self.port_bnc
-            if trial_type1 == 3:
-                trial.behaviors1['port entries'] = trial.behaviors1.pop('PC3_')
-            elif trial_type1 == 2:
-                trial.behaviors1['port entries'] = trial.behaviors1.pop('PC2_')
 
-            # Remove the first entry because it doesn't count
+            # Determine if this trial is multisubject.
+            if trial_folder in self.port_bnc:
+                # Multisubject: use port info to select the proper channel.
+                port_val = self.port_bnc[trial_folder]
+                if port_val == 3:
+                    trial.behaviors1['port entries'] = trial.behaviors1.pop('PC3_')
+                elif port_val == 2:
+                    trial.behaviors1['port entries'] = trial.behaviors1.pop('PC2_')
+                else:
+                    print(f"Warning: Unexpected port value ({port_val}) for trial {trial_folder}")
+            else:
+                # Unisubject: try PC2_ first; if not available, try PC3_.
+                if 'PC2_' in trial.behaviors1:
+                    trial.behaviors1['port entries'] = trial.behaviors1.pop('PC2_')
+                elif 'PC3_' in trial.behaviors1:
+                    trial.behaviors1['port entries'] = trial.behaviors1.pop('PC3_')
+                else:
+                    print(f"Warning: No port entries channel found for trial {trial_folder}")
+
+            # ----- Post-Processing of Behaviors -----
+            # Remove the first (non-counting) entry for both behaviors.
             trial.behaviors1['sound cues'].onset_times = trial.behaviors1['sound cues'].onset[1:]
             trial.behaviors1['sound cues'].offset_times = trial.behaviors1['sound cues'].offset[1:]
             trial.behaviors1['port entries'].onset_times = trial.behaviors1['port entries'].onset[1:]
             trial.behaviors1['port entries'].offset_times = trial.behaviors1['port entries'].offset[1:]
 
-            # Finding instances after the first tone is played
-            port_entries_onset = np.array(trial.behaviors1['port entries'].onset_times)
-            port_entries_offset = np.array(trial.behaviors1['port entries'].offset_times)
-            first_sound_cue_onset = trial.behaviors1['sound cues'].onset_times[0]
-            indices = np.where(port_entries_onset >= first_sound_cue_onset)[0]
-            trial.behaviors1['port entries'].onset_times = port_entries_onset[indices].tolist()
-            trial.behaviors1['port entries'].offset_times = port_entries_offset[indices].tolist()
-
-            self.combine_consecutive_behaviors1(behavior_name='all', bout_time_threshold=0.5)
-
+            # Keep only port entries that occur after the first sound cue.
+            port_onset = np.array(trial.behaviors1['port entries'].onset_times)
+            port_offset = np.array(trial.behaviors1['port entries'].offset_times)
+            first_tone = trial.behaviors1['sound cues'].onset_times[0]
+            indices = np.where(port_onset >= first_tone)[0]
+            trial.behaviors1['port entries'].onset_times = port_onset[indices].tolist()
+            trial.behaviors1['port entries'].offset_times = port_offset[indices].tolist()
     """*********************************COMBINE BEHAVIORS AND COHORTS***********************************"""
     def combine_consecutive_behaviors1(self, behavior_name='all', bout_time_threshold=0.5, min_occurrences=1):
         """
