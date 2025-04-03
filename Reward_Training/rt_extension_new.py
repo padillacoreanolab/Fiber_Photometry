@@ -82,7 +82,7 @@ class Reward_Training(RTC):
 
         for index, row in df.iterrows():
             
-            sound_cues_onsets = row['   sound cues onset']
+            sound_cues_onsets = row['sound cues onset']
             port_entries_onsets = row['port entries onset']
             port_entries_offsets = row['port entries offset']
 
@@ -143,11 +143,10 @@ class Reward_Training(RTC):
             print("No valid timestamps found to determine dt.")
             return
 
-        # Two different time axes:
-        common_tone_time_axis = np.arange(-pre_time, post_time, min_dt)   # For the sound cue
-        common_lick_time_axis = np.arange(0, post_time, min_dt)           # For the lick
+        # Define common time axes.
+        common_tone_time_axis = np.arange(-pre_time, post_time, min_dt)   # For tone events.
+        common_lick_time_axis = np.arange(0, post_time, min_dt)           # For lick events.
 
-        # Lists to store results
         tone_zscores_all = []
         tone_times_all = []
         lick_zscores_all = []
@@ -514,3 +513,367 @@ class Reward_Training(RTC):
         df['Lick Mean Z-score'] = lick_mean_z_all
 
         return df
+
+
+    '''********************************** PSTH CODE  **********************************'''
+    def plot_specific_event_psth(self, event_type, event_index, directory_path, brain_region, y_min, y_max, df=None, bin_size=100):
+        """
+        Plots the PSTH (mean and SEM) for a specific event bout (0→4 s after event onset)
+        across trials, using the same averaging logic as for a bout response.
+
+        Parameters:
+            event_type (str): The event type (e.g. 'Tone' or 'Lick').
+            event_index (int): 1-indexed event number to plot.
+            directory_path (str or None): Directory to save the plot (if None, the plot is not saved).
+            brain_region (str): Brain region ('mPFC' or other) to filter subjects.
+            y_min (float): Lower bound of the y-axis.
+            y_max (float): Upper bound of the y-axis.
+            df (DataFrame, optional): DataFrame to use (defaults to self.df).
+            bin_size (int, optional): Bin size for downsampling.
+        """
+        import numpy as np
+        import matplotlib.pyplot as plt
+        import os
+
+        if df is None:
+            df = self.df
+
+        def split_by_subject(df1, region):
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            return df_p if region == 'mPFC' else df_n
+
+        df = split_by_subject(df, brain_region)
+        idx = event_index - 1
+        print(f"[DEBUG] PSTH: Plotting {event_type} event index {event_index} (0-indexed {idx}) for brain region {brain_region}")
+
+        selected_traces = []
+        for i, row in df.iterrows():
+            event_z_list = row.get(f'{event_type} Event_Zscore', [])
+            if isinstance(event_z_list, list) and len(event_z_list) > idx:
+                trace = np.array(event_z_list[idx])
+                print(f"[DEBUG] Row {i}, subject {row['subject_name']}: trace shape {trace.shape}, first 5 values: {trace[:5]}")
+                selected_traces.append(trace)
+        if len(selected_traces) == 0:
+            print(f"No trials have an event at index {event_index} for {event_type}.")
+            return
+
+        common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][idx]
+        selected_traces = np.array(selected_traces)
+
+        mean_trace = np.mean(selected_traces, axis=0)
+        sem_trace = np.std(selected_traces, axis=0) / np.sqrt(selected_traces.shape[0])
+        
+        if hasattr(self, 'downsample_data'):
+            mean_trace, downsampled_time_axis = self.downsample_data(mean_trace, common_time_axis, bin_size)
+            sem_trace, _ = self.downsample_data(sem_trace, common_time_axis, bin_size)
+        else:
+            downsampled_time_axis = common_time_axis
+
+        # --- Debug: Check values in the 4–10 s window ---
+        post_window = (downsampled_time_axis >= 4) & (downsampled_time_axis <= 10)
+        post_vals = mean_trace[post_window]
+        print("[DEBUG] PSTH: Final mean trace shape:", mean_trace.shape)
+        print("[DEBUG] PSTH: Final mean trace first 10 values:", mean_trace[:10])
+        print("[DEBUG] PSTH: 4–10 s window values, first 10:", post_vals[:10])
+        print("[DEBUG] PSTH: Max in 4–10 s window:", np.max(post_vals))
+        # --- End Debug ---
+
+        # Choose trace color based on brain region.
+        if brain_region == 'mPFC':
+            trace_color = '#FFAF00'
+        else:
+            trace_color = '#15616F'
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(downsampled_time_axis, mean_trace, color=trace_color, lw=3, label='Mean DA')
+        plt.fill_between(downsampled_time_axis, mean_trace - sem_trace, mean_trace + sem_trace,
+                        color=trace_color, alpha=0.4, label='SEM')
+        plt.axvline(0, color='black', linestyle='--', lw=2)
+        plt.axvline(4, color='#FF69B4', linestyle='-', lw=2)
+
+        # Set x-axis ticks to [-4, 0, 4, 10]
+        plt.xlabel('Time from Tone Onset (s)', fontsize=30)
+        plt.ylabel('Z-scored ΔF/F', fontsize=30)
+        plt.title(f'{event_type} Event {event_index} PSTH', fontsize=30, pad=30)
+        plt.ylim(y_min, y_max)
+        plt.xticks([-4, 0, 4, 10], fontsize=30)
+        plt.yticks(fontsize=30)
+        plt.xlim(downsampled_time_axis[0], downsampled_time_axis[-1])
+        # plt.legend(fontsize=30)
+
+        ax = plt.gca()
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_linewidth(3)
+        ax.spines['left'].set_linewidth(3)
+
+        if directory_path is not None:
+            save_path = os.path.join(directory_path, f'{brain_region}_{event_type}_Event{event_index}_PSTH.png')
+            plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        plt.show()
+
+
+
+
+
+    def plot_event_index_heatmap(self, event_type, max_events, directory_path, brain_region, 
+                             vmin, vmax, df=None, bin_size=125):
+        """
+        Plots a heatmap in which each row is the average DA trace (PSTH) for a given 
+        event number (e.g., tone number) across subjects/trials, with tone #1 at the top.
+        
+        Parameters:
+            event_type (str): The event type (e.g., 'Tone' or 'Lick').
+            max_events (int): The maximum event number to include.
+            directory_path (str or None): Directory to save the plot (if None, the plot is not saved).
+            brain_region (str): Brain region used to filter subjects.
+            vmin (float): Lower bound of the color scale (Z-score).
+            vmax (float): Upper bound of the color scale (Z-score).
+            df (DataFrame, optional): DataFrame to use (defaults to self.df).
+            bin_size (int, optional): Bin size for downsampling.
+        """
+        import numpy as np
+        import matplotlib.pyplot as plt
+        import os
+
+        if df is None:
+            df = self.df
+
+        def split_by_subject(df1, region):
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            return df_p if region == 'mPFC' else df_n
+
+        df = split_by_subject(df, brain_region)
+
+        first_row = df.iloc[0]
+        event_time_axes = first_row.get(f'{event_type} Event_Time_Axis', [])
+        if not isinstance(event_time_axes, list) or len(event_time_axes) == 0:
+            print(f"No {event_type} event time axes found.")
+            return
+        common_time_axis = event_time_axes[0]
+
+        print(f"[DEBUG] Heatmap: Averaging {event_type} data for first {max_events} events in brain region {brain_region}")
+
+        averaged_event_traces = []
+        for event_idx in range(max_events):
+            event_traces = []
+            for i, row in df.iterrows():
+                event_z_list = row.get(f'{event_type} Event_Zscore', [])
+                if isinstance(event_z_list, list) and len(event_z_list) > event_idx:
+                    trace = np.array(event_z_list[event_idx])
+                    print(f"[DEBUG] Row {i}, subject {row['subject_name']}, event {event_idx+1}: trace shape {trace.shape}, first 5 values: {trace[:5]}")
+                    event_traces.append(trace)
+            if len(event_traces) > 0:
+                avg_trace = np.mean(np.vstack(event_traces), axis=0)
+                print(f"[DEBUG] Averaged trace for event {event_idx+1}: first 10 values: {avg_trace[:10]}")
+            else:
+                avg_trace = np.full(len(common_time_axis), np.nan)
+            averaged_event_traces.append(avg_trace)
+
+        heatmap_data = np.array(averaged_event_traces)
+
+        if hasattr(self, 'downsample_data'):
+            downsampled_data = []
+            for row_trace in heatmap_data:
+                down_row, _ = self.downsample_data(row_trace, common_time_axis, bin_size)
+                downsampled_data.append(down_row)
+            heatmap_data = np.array(downsampled_data)
+            dummy = np.zeros(len(common_time_axis))
+            _, downsampled_time_axis = self.downsample_data(dummy, common_time_axis, bin_size)
+        else:
+            downsampled_time_axis = common_time_axis
+
+        # --- Debug: For event 14, print values in the 4–10 s window ---
+        debug_event = 14  # 1-indexed event 14
+        debug_idx = debug_event - 1
+        if debug_idx < heatmap_data.shape[0]:
+            event_trace = heatmap_data[debug_idx]
+            post_window = (downsampled_time_axis >= 4) & (downsampled_time_axis <= 10)
+            post_vals = event_trace[post_window]
+            print(f"[DEBUG] Heatmap event {debug_event} (row {debug_idx+1}) mean trace, first 10 values: {event_trace[:10]}")
+            print(f"[DEBUG] Heatmap event {debug_event} (row {debug_idx+1}) 4–10 s window, first 10 values: {post_vals[:10]}")
+            print(f"[DEBUG] Heatmap event {debug_event} (row {debug_idx+1}) max in 4–10 s window: {np.max(post_vals)}")
+        else:
+            print(f"[DEBUG] There is no event {debug_event} in the heatmap data.")
+
+        # Invert the y-axis so that tone 1 appears at the top.
+        x_min, x_max = downsampled_time_axis[0], downsampled_time_axis[-1]
+        extent = [x_min, x_max, max_events, 1]
+
+        fig, ax = plt.subplots(figsize=(12, 8))
+        im = ax.imshow(heatmap_data, aspect='auto', 
+                    cmap='inferno' if brain_region == 'mPFC' else 'viridis',
+                    origin='upper', extent=extent, vmin=vmin, vmax=vmax)
+
+        ax.set_xlim(x_min, x_max)
+        ax.set_xlabel('Time from Tone Onset (s)', fontsize=30)
+        ax.set_ylabel(f'{event_type} Number', fontsize=30)
+        
+        # Force x-axis ticks to be exactly [-4, 0, 4, 10]
+        ax.set_xticks([-4, 0, 4, 10])
+        ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=30)
+        
+        # For the y-axis, we'll display 5 ticks (evenly spaced).
+        yticks = np.linspace(1, max_events, 5)
+        ax.set_yticks(yticks)
+        ax.set_yticklabels([f"{int(round(t))}" for t in yticks], fontsize=30)
+
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_linewidth(3)
+        ax.spines['left'].set_linewidth(3)
+        ax.axvline(0, color='white', linestyle='--', linewidth=2)
+        ax.axvline(4, color='#FF69B4', linestyle='-', linewidth=2)
+        ax.set_title(f'{brain_region} {event_type} Averaged Heatmap (Tone 1–{max_events})', 
+                    fontsize=32, pad=30)
+
+        cbar = fig.colorbar(im, ax=ax, orientation='vertical', shrink=0.7)
+        cbar.ax.tick_params(labelsize=30)
+        cbar.set_label("Event Induced Z-score", fontsize=30)
+
+        if directory_path is not None:
+            save_name = f'{brain_region}_{event_type}_Heatmap_Averaged_1to{max_events}.png'
+            save_path = os.path.join(directory_path, save_name)
+            plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+
+        plt.show()
+
+
+
+
+
+
+
+    def downsample_data(self, data, time_axis, bin_size):
+        """
+        Downsamples a 1D data array and its corresponding time axis by averaging in bins.
+
+        Parameters:
+            data (1D numpy array): The data to be downsampled.
+            time_axis (1D numpy array): The corresponding time axis.
+            bin_size (int): The number of samples per bin.
+        
+        Returns:
+            downsampled_data (1D numpy array): The downsampled data.
+            downsampled_time_axis (1D numpy array): The downsampled time axis.
+        """
+        import numpy as np
+
+        n = len(data)
+        num_bins = n // bin_size  # Number of complete bins.
+        if num_bins == 0:
+            # If bin_size is larger than the data length, return original.
+            return data, time_axis
+
+        # Trim data to fit an integer number of bins.
+        trimmed_length = num_bins * bin_size
+        data_trimmed = data[:trimmed_length]
+        time_trimmed = time_axis[:trimmed_length]
+
+        # Reshape and compute the mean in each bin.
+        downsampled_data = data_trimmed.reshape(num_bins, bin_size).mean(axis=1)
+        downsampled_time_axis = time_trimmed.reshape(num_bins, bin_size).mean(axis=1)
+
+        return downsampled_data, downsampled_time_axis
+
+
+    def get_psth_mean_trace(self, event_type, event_index, df=None, bin_size=100):
+        """
+        Mimics the averaging logic from plot_specific_event_psth:
+        For the given event_index (1-indexed), this function returns the mean
+        trace across trials (downsampled if available).
+        """
+        import numpy as np
+
+        if df is None:
+            df = self.df
+
+        idx = event_index - 1  # convert 1-indexed to 0-indexed
+        selected_traces = []
+        for i, row in df.iterrows():
+            event_z_list = row.get(f'{event_type} Event_Zscore', [])
+            if isinstance(event_z_list, list) and len(event_z_list) > idx:
+                selected_traces.append(np.array(event_z_list[idx]))
+        if len(selected_traces) == 0:
+            print(f"No trials have an event at index {event_index} for {event_type}.")
+            return None
+
+        mean_trace = np.mean(np.array(selected_traces), axis=0)
+        common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][idx]
+        if hasattr(self, 'downsample_data'):
+            mean_trace, _ = self.downsample_data(mean_trace, common_time_axis, bin_size)
+        return mean_trace
+
+    def get_heatmap_mean_trace(self, event_type, event_index, df=None, bin_size=125):
+        """
+        Mimics the averaging logic from plot_event_index_heatmap:
+        For the given event_index (1-indexed), this function returns the mean trace
+        (averaged across all trials) for that event. (Assumes all events share the same time axis.)
+        """
+        import numpy as np
+
+        if df is None:
+            df = self.df
+
+        idx = event_index - 1  # convert 1-indexed to 0-indexed
+        selected_traces = []
+        for i, row in df.iterrows():
+            event_z_list = row.get(f'{event_type} Event_Zscore', [])
+            if isinstance(event_z_list, list) and len(event_z_list) > idx:
+                selected_traces.append(np.array(event_z_list[idx]))
+        if len(selected_traces) == 0:
+            print(f"No trials have an event at index {event_index} for {event_type}.")
+            return None
+
+        avg_trace = np.mean(np.vstack(selected_traces), axis=0)
+        # Note: In the heatmap function, the common time axis is taken from index 0.
+        common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
+        if hasattr(self, 'downsample_data'):
+            avg_trace, _ = self.downsample_data(avg_trace, common_time_axis, bin_size)
+        return avg_trace
+
+    def compare_arrays(self, arr1, arr2, tol=1e-6):
+        """
+        Compares two numpy arrays elementwise and prints out the maximum difference.
+        Returns True if they are equal within tolerance, False otherwise.
+        """
+        import numpy as np
+        if arr1 is None or arr2 is None:
+            print("One of the arrays is None.")
+            return False
+        if arr1.shape != arr2.shape:
+            print(f"Arrays have different shapes: {arr1.shape} vs {arr2.shape}")
+            return False
+        if np.allclose(arr1, arr2, atol=tol):
+            print("Arrays are the same within the tolerance.")
+            return True
+        else:
+            diff = np.abs(arr1 - arr2)
+            max_diff = np.max(diff)
+            print(f"Arrays differ. Maximum absolute difference: {max_diff:.6f}")
+            print("First 10 differences:", diff.flatten()[:10])
+            return False
+
+    def debug_compare_event_14(self, event_type='Tone', event_index=14, df=None, bin_size=100):
+        """
+        Retrieves the mean event trace for a given event index (e.g., Tone 14)
+        using both the PSTH and heatmap averaging logic, and then compares them.
+        """
+        if df is None:
+            df = self.df
+
+        print(f"Comparing {event_type} event {event_index} mean traces using PSTH and Heatmap logic:")
+
+        psth_mean = self.get_psth_mean_trace(event_type, event_index, df, bin_size)
+        heatmap_mean = self.get_heatmap_mean_trace(event_type, event_index, df, bin_size)
+
+        print("[DEBUG] PSTH mean trace (first 10 values):", psth_mean[:10] if psth_mean is not None else "None")
+        print("[DEBUG] Heatmap mean trace (first 10 values):", heatmap_mean[:10] if heatmap_mean is not None else "None")
+
+        same = self.compare_arrays(psth_mean, heatmap_mean)
+        if same:
+            print("The arrays for event", event_index, "are the same.")
+        else:
+            print("The arrays for event", event_index, "differ.")
