@@ -516,6 +516,7 @@ class Reward_Training(RTC):
         if df is None:
             df = self.df
 
+        # Filter subjects by brain region.
         def split_by_subject(df1, region):
             df_n = df1[df1['subject_name'].str.startswith('n')]
             df_p = df1[df1['subject_name'].str.startswith('p')]
@@ -536,6 +537,7 @@ class Reward_Training(RTC):
             print(f"No trials have an event at index {event_index} for {event_type}.")
             return
 
+        # Use the common time axis from the first trial's bout.
         common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][idx]
         selected_traces = np.array(selected_traces)
 
@@ -558,10 +560,7 @@ class Reward_Training(RTC):
         # --- End Debug ---
 
         # Choose trace color based on brain region.
-        if brain_region == 'mPFC':
-            trace_color = '#FFAF00'
-        else:
-            trace_color = '#15616F'
+        trace_color = '#FFAF00' if brain_region == 'mPFC' else '#15616F'
 
         plt.figure(figsize=(10, 6))
         plt.plot(downsampled_time_axis, mean_trace, color=trace_color, lw=3, label='Mean DA')
@@ -570,15 +569,14 @@ class Reward_Training(RTC):
         plt.axvline(0, color='black', linestyle='--', lw=2)
         plt.axvline(4, color='#FF69B4', linestyle='-', lw=2)
 
-        # Set x-axis ticks to [-4, 0, 4, 10]
+        # Force the x-axis to be from -4 to 10 seconds.
         plt.xlabel('Time from Tone Onset (s)', fontsize=30)
-        plt.ylabel('Z-scored ΔF/F', fontsize=30)
+        plt.ylabel('Event-Induced z-scored ΔF/F', fontsize=30)
         plt.title(f'{event_type} Event {event_index} PSTH', fontsize=30, pad=30)
         plt.ylim(y_min, y_max)
         plt.xticks([-4, 0, 4, 10], fontsize=30)
         plt.yticks(fontsize=30)
-        plt.xlim(downsampled_time_axis[0], downsampled_time_axis[-1])
-        # plt.legend(fontsize=30)
+        plt.xlim(-4, 10)  # Force x-axis limits
 
         ax = plt.gca()
         ax.spines['top'].set_visible(False)
@@ -587,9 +585,12 @@ class Reward_Training(RTC):
         ax.spines['left'].set_linewidth(3)
 
         if directory_path is not None:
+            # Ensure the directory exists.
+            os.makedirs(directory_path, exist_ok=True)
             save_path = os.path.join(directory_path, f'{brain_region}_{event_type}_Event{event_index}_PSTH.png')
             plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         plt.show()
+
 
 
 
