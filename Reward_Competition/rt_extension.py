@@ -267,7 +267,7 @@ class Reward_Training(Experiment):
         df_combined = pd.concat([self.df, df1], ignore_index=True)
         # Filter rows where 'subject_name' is either 'n4', 'n7', or other specified 'n' values
         # List of subject names to remove
-        subjects_to_remove = ["n4", "n3", "n2", "n1"]
+        subjects_to_remove = ["n4", "n3", "n2", "n1", 'p4']
 
         # Remove rows where 'subject_names' are in the list
         df_combined = df_combined[~df_combined['subject_name'].isin(subjects_to_remove)]
@@ -1228,7 +1228,7 @@ class Reward_Training(Experiment):
             vmin, vmax = -3, 4
         else:
             vmin, vmax = -2, 10
-        cmap = 'inferno' if brain_region == "mPFC" else 'PuBu_r'
+        cmap = 'inferno' if brain_region == "mPFC" else 'viridis'
 
         # Set figure size dynamically based on the number of trials
         fig, ax = plt.subplots(figsize=(12, 6))
@@ -1316,7 +1316,7 @@ class Reward_Training(Experiment):
         if brain_region == "mPFC":
             cmap = 'inferno'
         else:
-            cmap = 'PuBu_r'
+            cmap = 'viridis'
 
         # Plot heatmap with mean trial data
         cax = ax.imshow(mean_trial, aspect='auto', cmap=cmap, origin='upper',

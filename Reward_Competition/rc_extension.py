@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 from scipy.stats import ttest_ind
+import itertools
 from matplotlib.colors import LinearSegmentedColormap
 
 class Reward_Competition(Experiment):
@@ -93,7 +94,9 @@ class Reward_Competition(Experiment):
             trial.rtc_events['port entries'].onset_times = trial.rtc_events['port entries'].onset[1:]
             trial.rtc_events['port entries'].offset_times = trial.rtc_events['port entries'].offset[1:]
 
-            
+            valid_sound_cues = [t for t in trial.rtc_events['sound cues'].onset_times if t >= 200]
+            trial.rtc_events['sound cues'].onset_times = valid_sound_cues
+
             # Finding instances after first tone is played
             port_entries_onset = np.array(trial.rtc_events['port entries'].onset_times)
             port_entries_offset = np.array(trial.rtc_events['port entries'].offset_times)
@@ -594,22 +597,18 @@ class Reward_Competition(Experiment):
 
     """*************************COMBINING COHORTS*************************"""
     def combining_cohorts(self, df1):
-        filter_string = "p"
-
-        # Filter df1 to only include rows where 'subject_name' contains the filter_string
-        filtered_df2 = df1[df1['subject_name'].str.contains(filter_string, na=False)]
-
+        df_combined = pd.concat([self.df, df1], ignore_index=True)
         # Filter rows where 'subject_name' is either 'n4', 'n7', or other specified 'n' values
-        filtered_n4_n7 = df1[df1['subject_name'].isin(['n7', 'n6', 'n5', 'n8'])]
+        # List of subject names to remove
+        subjects_to_remove = ["n4", "n3", "n2", "n1", 'p4']
 
-        # Keep only nn8, nn7, nn5, and nn4 from self.df, and retain all other subjects
+        # Remove rows where 'subject_names' are in the list
+        df_combined = df_combined[~df_combined['subject_name'].isin(subjects_to_remove)]
 
-        # Concatenate all filtered data
-        final_df = pd.concat([self.df, filtered_df2, filtered_n4_n7], ignore_index=True)
+        # Display the result
+        print(df_combined)
         
-        self.df = final_df  # Update the dataframe
-
-
+        self.df = df_combined
 
     """*******************************LICKS********************************"""
     def find_first_lick_after_sound_cue(self, df=None):
@@ -1212,82 +1211,36 @@ class Reward_Competition(Experiment):
 
     """*******************************PLOTING**********************************"""
     def ploting_side_by_side(self, df, df1, mean_values, sem_values, mean_values1, sem_values1, bar_color, figsize, metric_name,
-                        ylim, yticks_increment, title, directory_path, pad_inches, label1, label2):    
+                         ylim, yticks_increment, title, directory_path, pad_inches, label1, label2):    
         print(df)
         print(df1)
-        # Define bar width for side-by-side bars with gap between them
-        bar_width = 0.35  # Width of each bar
-        gap = 0.075  # Adjust this value to control the gap between the bars
 
-        # Calculate the x positions for both Tone and Lick, leaving a gap between the bars
-        x = np.arange(len(df.columns))  # Positions for the x-ticks
+        bar_width = 0.35  
+        gap = 0.075  
+        x = np.arange(len(df.columns))  
 
-        # Create the plot
         fig, ax = plt.subplots(figsize=figsize)
 
-        # Plot individual subject values for both dataframes
-        for i, subject in enumerate(df.index):
-            ax.scatter(x - bar_width / 2 - gap / 2, df.loc[subject], facecolors='none', edgecolors='gray', s=120, alpha=0.6, linewidth=4, zorder=2)
-        for i, subject in enumerate(df1.index):    
-            ax.scatter(x + bar_width / 2 + gap / 2, df1.loc[subject], facecolors='none', edgecolors='gray', s=120, alpha=0.6, linewidth=4, zorder=2)
+        # Plot bars for the mean with error bars (behind everything)
+        ax.bar(x - bar_width / 2 - gap / 2, mean_values, yerr=sem_values, capsize=6, color=bar_color, 
+               edgecolor='black', linewidth=4, width=bar_width, label=label1, 
+               error_kw=dict(elinewidth=4, capthick=4, capsize=10, zorder=1))
 
-        # Plot bars for the mean with error bars
-        bars1 = ax.bar(
-            x - bar_width / 2 - gap / 2,  # Adjust x to leave a gap for Tone
-            mean_values, 
-            yerr=sem_values, 
-            capsize=6, 
-            color=bar_color, 
-            edgecolor='black', 
-            linewidth=4, 
-            width=bar_width,
-            label=label1,  # Label for legend
-            error_kw=dict(elinewidth=4, capthick=4, capsize=10, zorder=5)
-        )
+        ax.bar(x + bar_width / 2 + gap / 2, mean_values1, yerr=sem_values1, capsize=6, color=bar_color, 
+               edgecolor='black', linewidth=4, width=bar_width, label=label2, 
+               error_kw=dict(elinewidth=4, capthick=4, capsize=10, zorder=1))
 
-        bars2 = ax.bar(
-            x + bar_width / 2 + gap / 2,  # Adjust x to leave a gap for Lick
-            mean_values1, 
-            yerr=sem_values1, 
-            capsize=6, 
-            color=bar_color,
-            edgecolor='black', 
-            linewidth=4, 
-            width=bar_width,
-            label=label2,  # Label for legend
-            error_kw=dict(elinewidth=4, capthick=4, capsize=10, zorder=5)
-        )
-
-        # Set x-ticks in the center of each grouped pair of bars
-        # Define the positions for the x-ticks of both bars
-        x_left = x - bar_width / 2 - gap / 2  # Position for Tone
-        x_right = x + bar_width / 2 + gap / 2  # Position for Lick
-
-        # Combine the tick positions for both
-        combined_x_ticks = np.concatenate([x_left, x_right])
-
-        # Set the tick positions
-        ax.set_xticks(combined_x_ticks)  # All positions for ticks (Tone and Lick)
-
-        # Set the corresponding labels (alternating "Tone" and "Lick")
-        combined_labels = [label1] * len(df.columns) + [label2] * len(df.columns)
-        ax.set_xticklabels(combined_labels, fontsize=36)
-
-        # Optionally adjust the alignment of the labels if needed
+        # Set x-ticks and labels
+        ax.set_xticks(x)
+        ax.set_xticklabels([label1, label2] * (len(df.columns) // 2), fontsize=36)
         ax.tick_params(axis='x', which='major', labelsize=36, direction='out', length=6, width=2)
-        
-        # Adjust y-tick marks to extend further
         ax.tick_params(axis='y', which='major', labelsize=36, direction='out', length=10, width=2)
 
-        # Increase font sizes
         ax.set_ylabel(metric_name, fontsize=36, labelpad=12)
         ax.set_xlabel("Event", fontsize=40, labelpad=12)
-        ax.tick_params(axis='y', labelsize=32)
-        ax.tick_params(axis='x', labelsize=32)
-        # Add a dashed gray line at y = 0
+
         ax.axhline(0, color='gray', linestyle='--', linewidth=2, zorder=1)
 
-        # Automatically adjust y-limits based on the data
         if ylim is None:
             all_values = np.concatenate([df.values.flatten(), df1.values.flatten()])
             min_val = np.nanmin(all_values)
@@ -1298,38 +1251,23 @@ class Reward_Competition(Experiment):
             if ylim[0] < 0:
                 ax.axhline(0, color='black', linestyle='--', linewidth=2, zorder=1)
 
-        # Add y-ticks if specified
         if yticks_increment is not None:
             y_min, y_max = ax.get_ylim()
             ax.set_yticks(np.arange(np.floor(y_min), np.ceil(y_max) + yticks_increment, yticks_increment))
 
-        # Remove unnecessary spines
         ax.spines['right'].set_visible(False)
         ax.spines['top'].set_visible(False)
         ax.spines['left'].set_linewidth(5)
         ax.spines['bottom'].set_linewidth(5)
 
+        # Statistical Testing
         p_values = []
-        print(df.columns)
         for col in df.columns:
-            print(f"Processing column: {col}")
-            
-            # Check if 'Last' column exists in df1, corresponding to the 'First' column in df
-            col_last = col.replace('First', 'Last')  # Create the 'Last' column name
-            
-            # Check if the 'Last' column is in df1
+            col_last = col.replace('First', 'Last')  
             if col_last in df1.columns:
-                print(f"df: {df[col]}")
-                print(f"df1: {df1[col_last]}")
-                
-                # Run t-test between the 'First' and 'Last' columns
                 t_stat, p_value = ttest_ind(df[col], df1[col_last], nan_policy='omit', equal_var=False)
                 p_values.append(p_value)
-                print(f"T-test for {col} and {col_last}: t={t_stat:.3f}, p={p_value:.3e}")  # Print results
-            else:
-                print(f"Column {col_last} not found in df1. Skipping t-test for {col}.")
 
-        # Function to convert p-values to asterisks
         def get_p_value_asterisks(p_value):
             if p_value < 0.001:
                 return "***"
@@ -1340,27 +1278,19 @@ class Reward_Competition(Experiment):
             else:
                 return None
 
-        # Get the top y-limit to position the significance bar
-        y_top = ax.get_ylim()[1] * 0.95  # Position at 95% of max y-limit
+        y_top = ax.get_ylim()[1] * 0.95  
 
-        # Add significance annotations (only for significant p-values)
         for i, p_value in enumerate(p_values):
-            p_text = get_p_value_asterisks(p_value)  # Convert p-value to asterisk notation
-
-            if p_text:  # Only add bar if significant
-                x1 = x[i] - bar_width / 2 - gap / 2  # Left bar
-                x2 = x[i] + bar_width / 2 + gap / 2  # Right bar
-
-                # Draw the black significance bar
+            p_text = get_p_value_asterisks(p_value)
+            if p_text:
+                x1 = x[i] - bar_width / 2 - gap / 2
+                x2 = x[i] + bar_width / 2 + gap / 2
                 ax.plot([x1, x2], [y_top, y_top], color='black', linewidth=6)
-
-                # Add asterisk annotation above the bar
                 ax.text((x1 + x2) / 2, y_top + 0.02, p_text, ha='center', fontsize=40, fontweight='bold')
 
-        # Add title
         plt.title(title, fontsize=40, fontweight='bold', pad=24)
 
-        save_path = os.path.join(str(directory_path) + '\\' + f'{title}.png')
+        save_path = os.path.join(str(directory_path), f'{title}.png')
         plt.savefig(save_path, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
         plt.show()
 
@@ -1777,7 +1707,7 @@ class Reward_Competition(Experiment):
                 break  # Only need one subject's trials
 
         # Convert to 2D arrays (shape: (1, time_bins)) for heatmap
-        bin_size = 125  
+        bin_size = 100
 
         # Downsample first and last trial data
         first_trial, new_time_axis = self.downsample_data(first_trial, common_time_axis, bin_size)
@@ -1794,7 +1724,7 @@ class Reward_Competition(Experiment):
         if brain_region == "mPFC":
             cmap = 'inferno'
         else:
-            cmap = 'PuBu_r'
+            cmap = 'viridis'
 
         for ax, trial_data, title in zip(axes, [first_trial, last_trial], 
                                         [f'First {condition} trial', f'Last {condition} trial']):
@@ -1810,7 +1740,7 @@ class Reward_Competition(Experiment):
             if brain_region == "mPFC":
                 line_color='blue'
             else:
-                line_color='red'
+                line_color='pink'
             ax.axvline(4, color=line_color, linestyle='-', linewidth=2)
 
         # Set x-axis labels only on the bottom plot
@@ -1855,7 +1785,7 @@ class Reward_Competition(Experiment):
                 break  # Only need one subject's trials
 
         # Convert to 2D arrays (shape: (1, time_bins)) for heatmap
-        bin_size = 125  
+        bin_size = 100  
 
         # Downsample first and last trial data
         first_trial, new_time_axis = self.downsample_data(first_trial, common_time_axis, bin_size)
@@ -1876,7 +1806,7 @@ class Reward_Competition(Experiment):
         else:
             # colors = ["#08306b", "#4292c6", "#deebf7", "#ffffff"]  
             # cmap = LinearSegmentedColormap.from_list("custom_blue", colors, N=256)
-            cmap = 'PuBu_r'
+            cmap = 'viridis'
 
         # Choose the trial to plot (first or last trial based on plot_first argument)
         if plot_first:
@@ -1895,7 +1825,7 @@ class Reward_Competition(Experiment):
         ax.set_title(title, fontsize=24)
         ax.set_yticks([])  # Remove y-axis ticks (since only one row)
         ax.axvline(0, color='white', linestyle='--', linewidth=2)  # Mark event onset
-        ax.axvline(4, color='red', linestyle='-', linewidth=2)
+        ax.axvline(4, color='pink', linestyle='-', linewidth=2)
 
         # Set x-axis labels
         ax.set_xlabel('Time (s)', fontsize=20)
@@ -2181,7 +2111,7 @@ class Reward_Competition(Experiment):
                 return df_n
 
         df = split_by_subject(df, brain_region)
-        bin_size = 125
+        bin_size = 100
         if brain_region == 'mPFC':
             color = '#FFAF00'
         else:
@@ -2236,7 +2166,7 @@ class Reward_Competition(Experiment):
         ax.plot(downsampled_time_axis, mean_peth, color=color, label='Mean DA')
         ax.fill_between(downsampled_time_axis, mean_peth - sem_peth, mean_peth + sem_peth, color=color, alpha=0.4)
         ax.axvline(0, color='black', linestyle='--')  # Mark event onset
-        ax.axvline(4, color='red', linestyle='-')
+        ax.axvline(4, color='pink', linestyle='-')
 
         ax.set_title(title, fontsize=18)
         ax.set_xlabel('Time (s)', fontsize=20)
@@ -2341,7 +2271,7 @@ class Reward_Competition(Experiment):
         mean_per_row = np.vstack(mean_per_row)
 
         # Downsample each row
-        bin_size = 125  
+        bin_size = 100  
         downsampled_means = []
         
         for row_mean in mean_per_row:
@@ -2352,12 +2282,12 @@ class Reward_Competition(Experiment):
 
         # Normalize color scale
         if brain_region == "mPFC":
-            vmin, vmax = -0.7, 1.2
+            vmin, vmax = -0.3, 2
         else:
-            vmin, vmax = 0, 5
+            vmin, vmax = -0.2, 6
 
         # Define colormap
-        cmap = 'inferno' if brain_region == "mPFC" else 'PuBu_r'
+        cmap = 'inferno' if brain_region == "mPFC" else 'viridis'
 
         # Create figure
         fig, ax = plt.subplots(figsize=(12, 6))
@@ -2385,7 +2315,7 @@ class Reward_Competition(Experiment):
         # Colorbar
         cbar = fig.colorbar(cax, ax=ax, orientation='vertical', shrink=0.7)
         cbar.ax.tick_params(labelsize=20)
-        cbar.set_ticks(np.arange(vmin, vmax + 1, 1))
+        cbar.set_ticks(np.arange(vmin, vmax, 1))
         cbar.set_label("Z-score", fontsize=20)
 
         # Save and show
@@ -2424,10 +2354,10 @@ class Reward_Competition(Experiment):
         mean_values3 = df1_p[f'{behavior} {metric_name} Mean EI'].mean()
         sem_values3 = df1_p[f'{behavior} {metric_name} Mean EI'].sem()
 
-        df = df_n[f'{behavior} {metric_name} Mean EI'].to_frame()
-        df1 = df1_n[f'{behavior} {metric_name} Mean EI'].to_frame()
-        df2 = df_p[f'{behavior} {metric_name} Mean EI'].to_frame()
-        df3 = df1_p[f'{behavior} {metric_name} Mean EI'].to_frame()
+        df = df_n[[f'{behavior} {metric_name} Mean EI']]
+        df1 = df1_n[[f'{behavior} {metric_name} Mean EI']]
+        df2 = df_p[[f'{behavior} {metric_name} Mean EI']]
+        df3 = df1_p[[f'{behavior} {metric_name} Mean EI']]
 
         self.ploting_side_by_side(df, df1, mean_values, sem_values, mean_values1, sem_values1,
                             nac_color, figsize, metric_name, ylim, 
