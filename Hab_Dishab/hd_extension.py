@@ -669,13 +669,15 @@ def plot_behavior_times_across_bouts_gray_bars_only(metadata_df,
         pivot_df.columns, 
         mean_values, 
         yerr=sem_values, 
-        capsize=6,
+        capsize=10,  # slightly larger cap width
         color=bar_color,
         edgecolor='black', 
         linewidth=5,
         width=0.6,
-        error_kw=dict(elinewidth=3, capthick=3, zorder=5)
+        error_kw=dict(elinewidth=6, capthick=6, capsize=10, ecolor='black', zorder=5)
     )
+
+
 
     # (No individual subject lines or dots)
 
