@@ -639,10 +639,14 @@ def plot_behavior_times_across_bouts_gray_bars_only(metadata_df,
                                           save=False,
                                           save_name=None):
     """
-    Plots a bar chart with error bars (SEM) for each bout. No individual subject lines or dots.
+    Plots a bar chart with error bars (SEM) for each bout, with gray bars only 
+    (no individual subject lines or dots). It also calculates paired t-test p-values 
+    comparing each bout with each other and prints the significance table.
     """
     import matplotlib.pyplot as plt
     import numpy as np
+    import pandas as pd
+    from scipy.stats import ttest_rel
 
     # 1) Optionally filter by behavior
     if behavior is not None:
@@ -656,7 +660,7 @@ def plot_behavior_times_across_bouts_gray_bars_only(metadata_df,
 
     # 3) Pivot the DataFrame: rows -> Subjects, columns -> Bout, values -> y_col
     pivot_df = metadata_df.pivot(index="Subject", columns="Bout", values=y_col)
-
+    
     # 4) Calculate mean and SEM across subjects for each bout
     mean_values = pivot_df.mean()
     sem_values = pivot_df.sem()
@@ -669,15 +673,13 @@ def plot_behavior_times_across_bouts_gray_bars_only(metadata_df,
         pivot_df.columns, 
         mean_values, 
         yerr=sem_values, 
-        capsize=10,  # slightly larger cap width
+        capsize=10,  # larger cap width
         color=bar_color,
         edgecolor='black', 
         linewidth=5,
         width=0.6,
         error_kw=dict(elinewidth=6, capthick=6, capsize=10, ecolor='black', zorder=5)
     )
-
-
 
     # (No individual subject lines or dots)
 
@@ -719,8 +721,8 @@ def plot_behavior_times_across_bouts_gray_bars_only(metadata_df,
 
     # 10) Set y-ticks if an increment is provided
     if yticks_increment is not None:
-        y_min, y_max = ax.get_ylim()
-        y_ticks = np.arange(np.floor(y_min), np.ceil(y_max) + yticks_increment, yticks_increment)
+        y_min_val, y_max_val = ax.get_ylim()
+        y_ticks = np.arange(np.floor(y_min_val), np.ceil(y_max_val) + yticks_increment, yticks_increment)
         ax.set_yticks(y_ticks)
 
     # 11) Remove right & top spines; thicken left & bottom spines
@@ -729,11 +731,33 @@ def plot_behavior_times_across_bouts_gray_bars_only(metadata_df,
     ax.spines['left'].set_linewidth(5)
     ax.spines['bottom'].set_linewidth(5)
 
-    # 12) Adjust layout, and save the figure if requested
     plt.tight_layout()
+
+    # 12) Save the figure if requested.
     if save:
         if save_name is None:
             raise ValueError("save_name must be provided if save is True.")
         plt.savefig(save_name, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
-    
+
     plt.show()
+
+    # 13) Calculate paired t-test p-values comparing each bout with each other.
+    # For each pair of bouts (columns in pivot_df), perform a paired t-test.
+    bout_names = pivot_df.columns
+    pval_matrix = pd.DataFrame(index=bout_names, columns=bout_names)
+
+    for i in bout_names:
+        for j in bout_names:
+            if i == j:
+                pval_matrix.loc[i, j] = np.nan
+            else:
+                # Only use subjects that have values in both bouts.
+                valid_data = pivot_df[[i, j]].dropna()
+                if len(valid_data) < 2:
+                    pval_matrix.loc[i, j] = np.nan
+                else:
+                    t_stat, p_val = ttest_rel(valid_data[i], valid_data[j])
+                    pval_matrix.loc[i, j] = p_val
+
+    print("\nPaired t-test p-value matrix:")
+    print(pval_matrix.to_string())
