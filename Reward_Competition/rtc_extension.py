@@ -57,32 +57,65 @@ class Rtc(Experiment):
             self.port_bnc[trial_folder1] = 3
             self.port_bnc[trial_folder2] = 2
 
-
-    def rtc_processing(self, time_segments_to_remove=None):
+    def rc_processing1(self, time_segments_to_remove=None):
         """
-        Unified processing for RTC recordings that handles both unisubject and multisubject trials.
-
-        For each trial:
-        1. Optionally remove designated time segments.
-        2. Remove initial LED artifact.
-        3. Highpass filter to remove baseline drift.
-        4. Align channels, compute dFF, determine baseline period.
-        5. Compute standard z-score and verify the signal.
-        6. Reassign behavior channels for tone and port entries.
-            - For multisubject, use self.port_bnc to decide whether to use PC3_ (port value 3) or PC2_ (port value 2).
-            - For unisubject, try PC2_ first, then PC3_.
-        7. Remove the first behavior entry (if it is not counting).
-        8. Filter port entries so that only those after the first sound cue remain.
-        9. Combine consecutive behaviors.
+        Batch processes rc with 1 box
         """
+        print(self.trials.items())
         for trial_folder, trial in self.trials.items():
-            # (Optional) Remove time segments if provided.
+            # Check if the subject name is in the time_segments_to_remove dictionary
             if time_segments_to_remove and trial.subject_name in time_segments_to_remove:
                 self.remove_time_segments_from_block(trial_folder, time_segments_to_remove[trial.subject_name])
 
-            print(f"Processing trial {trial_folder}...")
+            print(f"Reward Training Processing {trial_folder}...")
+            trial.remove_initial_LED_artifact(t=30)
+            # trial.remove_final_data_segment(t = 10)
+            
+            trial.highpass_baseline_drift()
+            trial.align_channels()
+            trial.compute_dFF()
+            baseline_start, baseline_end = trial.find_baseline_period()  
+            # trial.compute_zscore(method = 'baseline', baseline_start = baseline_start, baseline_end = baseline_end)
+            trial.compute_zscore(method = 'standard')
+            # trial.compute_zscore(method = 'modified')
+            trial.verify_signal()
 
-            # ----- Preprocessing Steps -----
+            # PC0 = Tones
+            """
+            Using RIG DATA
+            """
+            trial.behaviors1['sound cues'] = trial.behaviors1.pop('PC0_')
+            trial.behaviors1['port entries'] = trial.behaviors1.pop('PC2_', trial.behaviors1.pop('PC3_'))
+
+            # Remove the first entry because it doesn't count
+            trial.behaviors1['sound cues'].onset_times = trial.behaviors1['sound cues'].onset[1:]
+            trial.behaviors1['sound cues'].offset_times = trial.behaviors1['sound cues'].offset[1:]
+            trial.behaviors1['port entries'].onset_times = trial.behaviors1['port entries'].onset[1:]
+            trial.behaviors1['port entries'].offset_times = trial.behaviors1['port entries'].offset[1:]
+
+            
+            # Finding instances after first tone is played
+            port_entries_onset = np.array(trial.behaviors1['port entries'].onset_times)
+            port_entries_offset = np.array(trial.behaviors1['port entries'].offset_times)
+            first_sound_cue_onset = trial.behaviors1['sound cues'].onset_times[0]
+            indices = np.where(port_entries_onset >= first_sound_cue_onset)[0]
+            trial.behaviors1['port entries'].onset_times = port_entries_onset[indices].tolist()
+            trial.behaviors1['port entries'].offset_times = port_entries_offset[indices].tolist()
+
+            self.combine_consecutive_behaviors1(behavior_name='all', bout_time_threshold=0.5)
+
+    def rc_processing2(self, time_segments_to_remove=None):
+        """
+        Batch processes rc with 2 box
+        """
+        print(self.trials.items())
+        for (trial_folder, trial), (trial_folder1, trial1) in zip(self.trials.items(), self.port_bnc.items()):
+            # Check if the subject name is in the time_segments_to_remove dictionary
+            if time_segments_to_remove and trial.subject_name in time_segments_to_remove:
+                self.remove_time_segments_from_block(trial_folder, time_segments_to_remove[trial.subject_name])
+
+            print(f"Reward Training Processing {trial_folder}...")
+
             trial.remove_initial_LED_artifact(t=30)
             trial.highpass_baseline_drift()
             trial.align_channels()
@@ -91,43 +124,33 @@ class Rtc(Experiment):
             trial.compute_zscore(method='standard')
             trial.verify_signal()
 
-            # ----- Reassign Behavior Channels -----
-            # Sound cues always come from PC0_
+            # Using RIG DATA
+            print(f"Available behaviors in trial: {trial.behaviors1.keys()}")
             trial.behaviors1['sound cues'] = trial.behaviors1.pop('PC0_')
+            
+            # Correct the way 'port entries' is assigned for trial1 based on self.port_bnc
+            trial_type1 = self.port_bnc.get(trial_folder1, None)  # Fetch trial type from self.port_bnc
+            if trial_type1 == 3:
+                trial.behaviors1['port entries'] = trial.behaviors1.pop('PC3_')
+            elif trial_type1 == 2:
+                trial.behaviors1['port entries'] = trial.behaviors1.pop('PC2_')
 
-            # Determine if this trial is multisubject.
-            if trial_folder in self.port_bnc:
-                # Multisubject: use port info to select the proper channel.
-                port_val = self.port_bnc[trial_folder]
-                if port_val == 3:
-                    trial.behaviors1['port entries'] = trial.behaviors1.pop('PC3_')
-                elif port_val == 2:
-                    trial.behaviors1['port entries'] = trial.behaviors1.pop('PC2_')
-                else:
-                    print(f"Warning: Unexpected port value ({port_val}) for trial {trial_folder}")
-            else:
-                # Unisubject: try PC2_ first; if not available, try PC3_.
-                if 'PC2_' in trial.behaviors1:
-                    trial.behaviors1['port entries'] = trial.behaviors1.pop('PC2_')
-                elif 'PC3_' in trial.behaviors1:
-                    trial.behaviors1['port entries'] = trial.behaviors1.pop('PC3_')
-                else:
-                    print(f"Warning: No port entries channel found for trial {trial_folder}")
-
-            # ----- Post-Processing of Behaviors -----
-            # Remove the first (non-counting) entry for both behaviors.
+            # Remove the first entry because it doesn't count
             trial.behaviors1['sound cues'].onset_times = trial.behaviors1['sound cues'].onset[1:]
             trial.behaviors1['sound cues'].offset_times = trial.behaviors1['sound cues'].offset[1:]
             trial.behaviors1['port entries'].onset_times = trial.behaviors1['port entries'].onset[1:]
             trial.behaviors1['port entries'].offset_times = trial.behaviors1['port entries'].offset[1:]
 
-            # Keep only port entries that occur after the first sound cue.
-            port_onset = np.array(trial.behaviors1['port entries'].onset_times)
-            port_offset = np.array(trial.behaviors1['port entries'].offset_times)
-            first_tone = trial.behaviors1['sound cues'].onset_times[0]
-            indices = np.where(port_onset >= first_tone)[0]
-            trial.behaviors1['port entries'].onset_times = port_onset[indices].tolist()
-            trial.behaviors1['port entries'].offset_times = port_offset[indices].tolist()
+            # Finding instances after the first tone is played
+            port_entries_onset = np.array(trial.behaviors1['port entries'].onset_times)
+            port_entries_offset = np.array(trial.behaviors1['port entries'].offset_times)
+            first_sound_cue_onset = trial.behaviors1['sound cues'].onset_times[0]
+            indices = np.where(port_entries_onset >= first_sound_cue_onset)[0]
+            trial.behaviors1['port entries'].onset_times = port_entries_onset[indices].tolist()
+            trial.behaviors1['port entries'].offset_times = port_entries_offset[indices].tolist()
+
+            self.combine_consecutive_behaviors1(behavior_name='all', bout_time_threshold=0.5)
+
     """*********************************COMBINE BEHAVIORS AND COHORTS***********************************"""
     def combine_consecutive_behaviors1(self, behavior_name='all', bout_time_threshold=0.5, min_occurrences=1):
         """
@@ -207,153 +230,153 @@ class Rtc(Experiment):
         
         self.df = df_combined
 
-        def compute_event_induced_DA(self, df=None, pre_time=4, post_time=10):
-            """
-            Computes event-induced DA responses for tone (sound cue) and lick.
+    def compute_event_induced_DA(self, df=None, pre_time=4, post_time=10):
+        """
+        Computes event-induced DA responses for tone (sound cue) and lick.
 
-            - Tone Event:
-            * Time axis: -pre_time to +post_time around each sound cue onset.
-            * Baseline: mean of the DA signal in the 4 seconds before the sound cue.
+        - Tone Event:
+        * Time axis: -pre_time to +post_time around each sound cue onset.
+        * Baseline: mean of the DA signal in the 4 seconds before the sound cue.
 
-            - Lick Event:
-            * Time axis: 0 to +post_time around the lick onset.
-            * Baseline: same as the tone event (i.e., computed from the 4 seconds before the sound cue).
+        - Lick Event:
+        * Time axis: 0 to +post_time around the lick onset.
+        * Baseline: same as the tone event (i.e., computed from the 4 seconds before the sound cue).
 
-            Note: If multiple cues/licks exist, each is processed. The i-th lick uses
-                the i-th sound cue's baseline if available. Otherwise, baseline=0.
-            """
-            if df is None:
-                df = self.df
+        Note: If multiple cues/licks exist, each is processed. The i-th lick uses
+            the i-th sound cue's baseline if available. Otherwise, baseline=0.
+        """
+        if df is None:
+            df = self.df
 
-            # -- 1) Determine global dt from all trials --
-            min_dt = np.inf
-            for _, row in df.iterrows():
-                trial_obj = row['trial']
-                timestamps = np.array(trial_obj.timestamps)
-                if len(timestamps) > 1:
-                    dt = np.min(np.diff(timestamps))
-                    min_dt = min(min_dt, dt)
-            if min_dt == np.inf:
-                print("No valid timestamps found to determine dt.")
-                return
+        # -- 1) Determine global dt from all trials --
+        min_dt = np.inf
+        for _, row in df.iterrows():
+            trial_obj = row['trial']
+            timestamps = np.array(trial_obj.timestamps)
+            if len(timestamps) > 1:
+                dt = np.min(np.diff(timestamps))
+                min_dt = min(min_dt, dt)
+        if min_dt == np.inf:
+            print("No valid timestamps found to determine dt.")
+            return
 
-            # Two different time axes:
-            common_tone_time_axis = np.arange(-pre_time, post_time, min_dt)   # For the sound cue
-            common_lick_time_axis = np.arange(0, post_time, min_dt)           # For the lick
+        # Two different time axes:
+        common_tone_time_axis = np.arange(-pre_time, post_time, min_dt)   # For the sound cue
+        common_lick_time_axis = np.arange(0, post_time, min_dt)           # For the lick
 
-            # Lists to store results
-            tone_zscores_all = []
-            tone_times_all = []
-            lick_zscores_all = []
-            lick_times_all = []
+        # Lists to store results
+        tone_zscores_all = []
+        tone_times_all = []
+        lick_zscores_all = []
+        lick_times_all = []
 
-            for _, row in df.iterrows():
-                trial_obj = row['trial']
-                timestamps = np.array(trial_obj.timestamps)
-                zscore = np.array(trial_obj.zscore)
+        for _, row in df.iterrows():
+            trial_obj = row['trial']
+            timestamps = np.array(trial_obj.timestamps)
+            zscore = np.array(trial_obj.zscore)
 
-                # Sound and lick onsets
-                sound_cues = row['sound cues onset']
-                lick_cues  = row['first_lick_after_sound_cue']
+            # Sound and lick onsets
+            sound_cues = row['sound cues onset']
+            lick_cues  = row['first_lick_after_sound_cue']
 
-                # ----- Tone (sound cue) -----
-                tone_zscores_this_trial = []
-                tone_times_this_trial   = []
+            # ----- Tone (sound cue) -----
+            tone_zscores_this_trial = []
+            tone_times_this_trial   = []
 
-                if len(sound_cues) == 0:
-                    # No sound cues => store NaNs
-                    tone_zscores_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
-                    tone_times_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
-                else:
-                    for sound_event in sound_cues:
-                        # Window for the tone
-                        window_start = sound_event - pre_time
-                        window_end   = sound_event + post_time
+            if len(sound_cues) == 0:
+                # No sound cues => store NaNs
+                tone_zscores_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
+                tone_times_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
+            else:
+                for sound_event in sound_cues:
+                    # Window for the tone
+                    window_start = sound_event - pre_time
+                    window_end   = sound_event + post_time
 
-                        mask = (timestamps >= window_start) & (timestamps <= window_end)
-                        if not np.any(mask):
-                            tone_zscores_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
-                            tone_times_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
-                            continue
+                    mask = (timestamps >= window_start) & (timestamps <= window_end)
+                    if not np.any(mask):
+                        tone_zscores_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
+                        tone_times_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
+                        continue
 
-                        # Time relative to the sound cue
-                        rel_time = timestamps[mask] - sound_event
-                        signal   = zscore[mask]
+                    # Time relative to the sound cue
+                    rel_time = timestamps[mask] - sound_event
+                    signal   = zscore[mask]
 
-                        # Baseline: from (sound_event - pre_time) up to the sound_event
-                        baseline_mask = (rel_time < 0)
-                        baseline = np.nanmean(signal[baseline_mask]) if np.any(baseline_mask) else 0
+                    # Baseline: from (sound_event - pre_time) up to the sound_event
+                    baseline_mask = (rel_time < 0)
+                    baseline = np.nanmean(signal[baseline_mask]) if np.any(baseline_mask) else 0
 
-                        # Baseline-correct
-                        corrected_signal = signal - baseline
+                    # Baseline-correct
+                    corrected_signal = signal - baseline
 
-                        # Interpolate onto [-pre_time, post_time]
-                        interp_signal = np.interp(common_tone_time_axis, rel_time, corrected_signal)
+                    # Interpolate onto [-pre_time, post_time]
+                    interp_signal = np.interp(common_tone_time_axis, rel_time, corrected_signal)
 
-                        tone_zscores_this_trial.append(interp_signal)
-                        tone_times_this_trial.append(common_tone_time_axis.copy())
+                    tone_zscores_this_trial.append(interp_signal)
+                    tone_times_this_trial.append(common_tone_time_axis.copy())
 
-                # ----- Lick -----
-                lick_zscores_this_trial = []
-                lick_times_this_trial   = []
+            # ----- Lick -----
+            lick_zscores_this_trial = []
+            lick_times_this_trial   = []
 
-                if len(lick_cues) == 0:
-                    # No licks => store NaNs
-                    lick_zscores_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
-                    lick_times_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
-                else:
-                    for i, lick_event in enumerate(lick_cues):
-                        # Attempt to pair with the i-th sound cue for baseline
-                        if i < len(sound_cues):
-                            sound_event_for_baseline = sound_cues[i]
-                        else:
-                            sound_event_for_baseline = None  # fallback
+            if len(lick_cues) == 0:
+                # No licks => store NaNs
+                lick_zscores_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
+                lick_times_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
+            else:
+                for i, lick_event in enumerate(lick_cues):
+                    # Attempt to pair with the i-th sound cue for baseline
+                    if i < len(sound_cues):
+                        sound_event_for_baseline = sound_cues[i]
+                    else:
+                        sound_event_for_baseline = None  # fallback
 
-                        # 1) Compute baseline from the sound cue window
-                        if sound_event_for_baseline is not None:
-                            # Baseline window: from (sound_event - pre_time) to sound_event
-                            baseline_start = sound_event_for_baseline - pre_time
-                            baseline_end   = sound_event_for_baseline
-                            baseline_mask = (timestamps >= baseline_start) & (timestamps <= baseline_end)
-                            if np.any(baseline_mask):
-                                baseline_val = np.nanmean(zscore[baseline_mask])
-                            else:
-                                baseline_val = 0
+                    # 1) Compute baseline from the sound cue window
+                    if sound_event_for_baseline is not None:
+                        # Baseline window: from (sound_event - pre_time) to sound_event
+                        baseline_start = sound_event_for_baseline - pre_time
+                        baseline_end   = sound_event_for_baseline
+                        baseline_mask = (timestamps >= baseline_start) & (timestamps <= baseline_end)
+                        if np.any(baseline_mask):
+                            baseline_val = np.nanmean(zscore[baseline_mask])
                         else:
                             baseline_val = 0
+                    else:
+                        baseline_val = 0
 
-                        # 2) Extract the lick window from lick_event (0 to +post_time)
-                        window_start = lick_event
-                        window_end   = lick_event + post_time
-                        mask = (timestamps >= window_start) & (timestamps <= window_end)
-                        if not np.any(mask):
-                            lick_zscores_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
-                            lick_times_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
-                            continue
+                    # 2) Extract the lick window from lick_event (0 to +post_time)
+                    window_start = lick_event
+                    window_end   = lick_event + post_time
+                    mask = (timestamps >= window_start) & (timestamps <= window_end)
+                    if not np.any(mask):
+                        lick_zscores_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
+                        lick_times_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
+                        continue
 
-                        rel_time = timestamps[mask] - lick_event
-                        signal   = zscore[mask]
+                    rel_time = timestamps[mask] - lick_event
+                    signal   = zscore[mask]
 
-                        # Subtract the tone-based baseline
-                        corrected_signal = signal - baseline_val
+                    # Subtract the tone-based baseline
+                    corrected_signal = signal - baseline_val
 
-                        # Interpolate onto [0, post_time]
-                        interp_signal = np.interp(common_lick_time_axis, rel_time, corrected_signal)
+                    # Interpolate onto [0, post_time]
+                    interp_signal = np.interp(common_lick_time_axis, rel_time, corrected_signal)
 
-                        lick_zscores_this_trial.append(interp_signal)
-                        lick_times_this_trial.append(common_lick_time_axis.copy())
+                    lick_zscores_this_trial.append(interp_signal)
+                    lick_times_this_trial.append(common_lick_time_axis.copy())
 
-                # Store in the main lists
-                tone_zscores_all.append(tone_zscores_this_trial)
-                tone_times_all.append(tone_times_this_trial)
-                lick_zscores_all.append(lick_zscores_this_trial)
-                lick_times_all.append(lick_times_this_trial)
+            # Store in the main lists
+            tone_zscores_all.append(tone_zscores_this_trial)
+            tone_times_all.append(tone_times_this_trial)
+            lick_zscores_all.append(lick_zscores_this_trial)
+            lick_times_all.append(lick_times_this_trial)
 
-            # Save columns
-            df['Tone Event_Time_Axis'] = tone_times_all
-            df['Tone Event_Zscore']    = tone_zscores_all
-            df['Lick Event_Time_Axis'] = lick_times_all
-            df['Lick Event_Zscore']    = lick_zscores_all
+        # Save columns
+        df['Tone Event_Time_Axis'] = tone_times_all
+        df['Tone Event_Zscore']    = tone_zscores_all
+        df['Lick Event_Time_Axis'] = lick_times_all
+        df['Lick Event_Zscore']    = lick_zscores_all
             
     def compute_tone_da_metrics(self, df=None, mode='standard'):
         if df is None:

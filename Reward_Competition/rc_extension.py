@@ -893,64 +893,48 @@ class Reward_Competition(Experiment):
                 })
             return computed_metrics
         def compute_ei(df):
-            # EI mode: use event-induced data.
-            if 'Tone Event_Time_Axis' not in df.columns or 'Tone Event_Zscore' not in df.columns:
+            if 'Tone Event_Time_Axis' not in df.columns or 'Mean Tone Event_Zscore' not in df.columns:
                 print("Event-induced data not found in behaviors. Please run compute_event_induced_DA() first.")
                 return df
 
-            # Lists to store computed arrays for each row
             mean_zscores_all = []
             auc_values_all = []
             max_peaks_all = []
             peak_times_all = []
 
-            for i, row in df.iterrows():
-                # Extract all trials (lists) within the row
-                time_axes = np.array(row['Tone Event_Time_Axis'])  # 1D array
-                event_zscores = np.array(row['Tone Event_Zscore'])  # 2D array (list of lists)
+            for _, row in df.iterrows():
+                final_time = np.array(row['Tone Event_Time_Axis'], dtype=float)[0]  # Ensure full array
+                mean_event_zscore = np.array(row['Mean Tone Event_Zscore'], dtype=float)  # Convert to NumPy array
 
-                # Lists to store per-trial metrics
-                mean_zscores = []
-                auc_values = []
-                max_peaks = []
-                peak_times = []
+                if len(final_time) < len(mean_event_zscore):
+                    print(f"Warning: final_time length {len(final_time)} < mean_event_zscore length {len(mean_event_zscore)}. Skipping.")
+                    continue  
 
-                for time_axis, event_zscore in zip(time_axes, event_zscores):
-                    time_axis = np.array(time_axis)
-                    event_zscore = np.array(event_zscore)
+                final_time = final_time[-len(mean_event_zscore):]  # Trim to match z-score length
 
-                    # Mask for time_axis >= 0
-                    mask = (time_axis >= 0) & (time_axis <= 4)
-                    if not np.any(mask):
-                        mean_zscores.append(np.nan)
-                        auc_values.append(np.nan)
-                        max_peaks.append(np.nan)
-                        peak_times.append(np.nan)
-                        continue
+                # Apply mask for values between 0 and 4 seconds
+                mask = (final_time >= 0) & (final_time <= 4)
+                time_masked = final_time[mask]
+                zscore_masked = mean_event_zscore[mask]
 
-                    final_time = time_axis[mask]
-                    final_z = event_zscore[mask]
+                if len(time_masked) == 0:
+                    print("Warning: No values in the selected time range (0-4s). Skipping.")
+                    continue  
 
-                    # Compute metrics
-                    mean_z = np.mean(final_z)
-                    auc = np.trapz(final_z, final_time)
-                    max_idx = np.argmax(final_z)
-                    max_peak = final_z[max_idx]
-                    peak_time = final_time[max_idx]
+                # Compute metrics
+                mean_z = np.mean(zscore_masked)
+                auc = np.trapz(zscore_masked, time_masked)  
+                max_idx = np.argmax(zscore_masked)
+                max_peak = zscore_masked[max_idx]
+                peak_time = time_masked[max_idx]
 
-                    # Append results for this trial
-                    mean_zscores.append(mean_z)
-                    auc_values.append(auc)
-                    max_peaks.append(max_peak)
-                    peak_times.append(peak_time)
+                print(f"AUC (0-4s): {auc}")
 
-                # Append lists of results for this row
-                mean_zscores_all.append(mean_zscores)
-                auc_values_all.append(auc_values)
-                max_peaks_all.append(max_peaks)
-                peak_times_all.append(peak_times)
+                mean_zscores_all.append(mean_z)
+                auc_values_all.append(auc)
+                max_peaks_all.append(max_peak)
+                peak_times_all.append(peak_time)
 
-            # Store computed values as lists inside new DataFrame columns
             df['Mean Z-score EI'] = mean_zscores_all
             df['AUC EI'] = auc_values_all
             df['Max Peak EI'] = max_peaks_all
@@ -1062,62 +1046,46 @@ class Reward_Competition(Experiment):
                 })
             return computed_metrics
         def compute_ei(df):
-            # EI mode: use event-induced data.
-            if 'Lick Event_Time_Axis' not in df.columns or 'Lick Event_Zscore' not in df.columns:
+            if 'Lick Event_Time_Axis' not in df.columns or 'Mean Lick Event_Zscore' not in df.columns:
                 print("Event-induced data not found in behaviors. Please run compute_event_induced_DA() first.")
                 return df
 
-            # Lists to store computed arrays for each row
             mean_zscores_all = []
             auc_values_all = []
             max_peaks_all = []
             peak_times_all = []
 
-            for i, row in df.iterrows():
-                # Extract all trials (lists) within the row
-                time_axes = [np.array(x) for x in row['Lick Event_Time_Axis']]   # 2D array (list of lists)
-                event_zscores = [np.array(x) for x in row['Lick Event_Zscore']]  # 2D array (list of lists)
+            for _, row in df.iterrows():
+                final_time = np.array(row['Lick Event_Time_Axis'], dtype=float)[0] 
+                mean_event_zscore = np.array(row['Mean Lick Event_Zscore'], dtype=float)  # Convert to NumPy array
 
-                # Lists to store per-trial metrics
-                mean_zscores = []
-                auc_values = []
-                max_peaks = []
-                peak_times = []
+                final_time = final_time[-len(mean_event_zscore):]  # Trim to match z-score length
 
-                for time_axis, event_zscore in zip(time_axes, event_zscores):
-                    time_axis = np.array(time_axis)
-                    event_zscore = np.array(event_zscore)
+                # Apply mask for values between 0 and 4 seconds
+                mask = (final_time >= 0) & (final_time <= 4)
+                time_masked = final_time[mask]
+                
+                mean_event_zscore = mean_event_zscore[-len(time_masked):]  
+                zscore_masked = mean_event_zscore  # Now it matches time_masked
+                # zscore_masked = mean_event_zscore[mask]
 
-                    # Mask for time_axis >= 0
-                    mask = time_axis >= 0
-                    if not np.any(mask):
-                        mean_zscores.append(np.nan)
-                        auc_values.append(np.nan)
-                        max_peaks.append(np.nan)
-                        peak_times.append(np.nan)
-                        continue
+                if len(time_masked) == 0:
+                    print("Warning: No values in the selected time range (0-4s). Skipping.")
+                    continue  
 
-                    final_time = time_axis[mask]
-                    final_z = event_zscore[mask]
+                # Compute metrics
+                mean_z = np.mean(zscore_masked)
+                auc = np.trapz(zscore_masked, time_masked)  
+                max_idx = np.argmax(zscore_masked)
+                max_peak = zscore_masked[max_idx]
+                peak_time = time_masked[max_idx]
 
-                    # Compute metrics
-                    mean_z = np.mean(final_z)
-                    auc = np.trapz(final_z, final_time)
-                    max_idx = np.argmax(final_z)
-                    max_peak = final_z[max_idx]
-                    peak_time = final_time[max_idx]
+                print(f"AUC (0-4s): {auc}")
 
-                    # Append results for this trial
-                    mean_zscores.append(mean_z)
-                    auc_values.append(auc)
-                    max_peaks.append(max_peak)
-                    peak_times.append(peak_time)
-
-                # Append lists of results for this row
-                mean_zscores_all.append(mean_zscores)
-                auc_values_all.append(auc_values)
-                max_peaks_all.append(max_peaks)
-                peak_times_all.append(peak_times)
+                mean_zscores_all.append(mean_z)
+                auc_values_all.append(auc)
+                max_peaks_all.append(max_peak)
+                peak_times_all.append(peak_time)
 
             # Store computed values as lists inside new DataFrame columns
             df['Lick Mean Z-score EI'] = mean_zscores_all
@@ -1171,20 +1139,23 @@ class Reward_Competition(Experiment):
 
             # Compute mean for scalar numerical values
             numerical_cols = [
-                'Lick AUC Mean', 'Lick Max Peak Mean', 'Lick Mean Z-score Mean',
-                'Tone AUC Mean', 'Tone Max Peak Mean', 'Tone Mean Z-score Mean',
+                'Lick AUC', 'Lick Max Peak', 'Lick Mean Z-score',
+                'Tone AUC', 'Tone Max Peak', 'Tone Mean Z-score',
                 'Lick AUC First', 'Lick AUC Last', 'Lick Max Peak First', 'Lick Max Peak Last',
                 'Lick Mean Z-score First', 'Lick Mean Z-score Last',
                 'Tone AUC First', 'Tone AUC Last', 'Tone Max Peak First', 'Tone Max Peak Last',
                 'Tone Mean Z-score First', 'Tone Mean Z-score Last',
-                "Lick AUC Mean EI", "Lick Max Peak Mean EI", "Lick Mean Z-score Mean EI",
-                "Tone AUC Mean EI", "Tone Max Peak Mean EI", "Tone Mean Z-score Mean EI",
+                "Lick AUC EI", "Lick Max Peak EI", "Lick Mean Z-score EI",
+                "AUC EI", "Max Peak EI", "Mean Z-score EI",
                 "Lick AUC EI First", "Lick Max Peak EI First", "Tone AUC EI First",
                 "Tone Max Peak EI First", "Tone Mean Z-score EI First",
                 "Lick AUC EI Last", "Lick Max Peak EI Last", "Tone AUC EI Last",
                 "Tone Max Peak EI Last", "Tone Mean Z-score EI Last"
             ]
-            
+            for col in numerical_cols:
+                group[col] = group[col].apply(lambda x: np.mean(x) if isinstance(x, list) else x)
+                group[col] = pd.to_numeric(group[col], errors='coerce')
+
             for col in numerical_cols:
                 result[col] = group[col].mean()
 
@@ -1208,6 +1179,28 @@ class Reward_Competition(Experiment):
         sem_array = np.std(stacked_arrays, axis=0, ddof=1) / np.sqrt(stacked_arrays.shape[0])  # Compute SEM correctly
 
         return mean_array, sem_array
+    
+    def find_mean_event_zscore(self, df = None, behavior = 'Tone'):
+        if df is None:
+            df = self.df
+        if 'Tone Event_Zscore' not in df.columns:
+            print("Event-induced Z-score data not found in dataframe.")
+            return df
+
+        mean_zscores_all = []
+
+        for _, row in df.iterrows():
+            event_zscores = np.array(row['Tone Event_Zscore'])  # 2D array (trials × time points)
+
+            if event_zscores.ndim == 2 and event_zscores.size > 0:
+                mean_zscores = np.mean(event_zscores, axis=0)  # Compute mean across trials (row-wise)
+            else:
+                mean_zscores = np.nan  # Handle empty or invalid cases
+
+            mean_zscores_all.append(mean_zscores)
+
+        df[f'Mean {behavior} Event_Zscore'] = mean_zscores_all  # Store the mean 1D array in a new column
+        return df
 
     """*******************************PLOTING**********************************"""
     def ploting_side_by_side(self, df, df1, mean_values, sem_values, mean_values1, sem_values1, bar_color, figsize, metric_name,
@@ -1221,26 +1214,64 @@ class Reward_Competition(Experiment):
 
         fig, ax = plt.subplots(figsize=figsize)
 
-        # Plot bars for the mean with error bars (behind everything)
-        ax.bar(x - bar_width / 2 - gap / 2, mean_values, yerr=sem_values, capsize=6, color=bar_color, 
-               edgecolor='black', linewidth=4, width=bar_width, label=label1, 
-               error_kw=dict(elinewidth=4, capthick=4, capsize=10, zorder=1))
+                # Plot individual subject values for both dataframes
+        for i, subject in enumerate(df.index):
+            ax.scatter(x - bar_width / 2 - gap / 2, df.loc[subject], facecolors='none', edgecolors='gray', s=120, alpha=0.6, linewidth=4, zorder=2)
+        for i, subject in enumerate(df1.index):    
+            ax.scatter(x + bar_width / 2 + gap / 2, df1.loc[subject], facecolors='none', edgecolors='gray', s=120, alpha=0.6, linewidth=4, zorder=2)
 
-        ax.bar(x + bar_width / 2 + gap / 2, mean_values1, yerr=sem_values1, capsize=6, color=bar_color, 
-               edgecolor='black', linewidth=4, width=bar_width, label=label2, 
-               error_kw=dict(elinewidth=4, capthick=4, capsize=10, zorder=1))
+        # Plot bars for the mean with error bars
+        bars1 = ax.bar(
+            x - bar_width / 2 - gap / 2,  # Adjust x to leave a gap for Tone
+            mean_values, 
+            yerr=sem_values, 
+            capsize=6, 
+            color=bar_color, 
+            edgecolor='black', 
+            linewidth=4, 
+            width=bar_width,
+            label=label1,  # Label for legend
+            error_kw=dict(elinewidth=4, capthick=4, capsize=10, zorder=5)
+        )
 
-        # Set x-ticks and labels
-        ax.set_xticks(x)
-        ax.set_xticklabels([label1, label2] * (len(df.columns) // 2), fontsize=36)
+        bars2 = ax.bar(
+            x + bar_width / 2 + gap / 2,  # Adjust x to leave a gap for Lick
+            mean_values1, 
+            yerr=sem_values1, 
+            capsize=6, 
+            color=bar_color,
+            edgecolor='black', 
+            linewidth=4, 
+            width=bar_width,
+            label=label2,  # Label for legend
+            error_kw=dict(elinewidth=4, capthick=4, capsize=10, zorder=5)
+        )
+
+        # Set x-ticks in the center of each grouped pair of bars
+        # Define the positions for the x-ticks of both bars
+        x_left = x - bar_width / 2 - gap / 2  # Position for Tone
+        x_right = x + bar_width / 2 + gap / 2  # Position for Lick
+
+        # Combine the tick positions for both
+        combined_x_ticks = np.concatenate([x_left, x_right])
+        ax.set_xticks(combined_x_ticks)  # All positions for ticks (Tone and Lick)
+        # Set the corresponding labels (alternating "Tone" and "Lick")
+        combined_labels = [label1] * len(df.columns) + [label2] * len(df.columns)
+        ax.set_xticklabels(combined_labels, fontsize=36)
+
+        # Optionally adjust the alignment of the labels if needed
         ax.tick_params(axis='x', which='major', labelsize=36, direction='out', length=6, width=2)
         ax.tick_params(axis='y', which='major', labelsize=36, direction='out', length=10, width=2)
 
-        ax.set_ylabel(metric_name, fontsize=36, labelpad=12)
+        # Set x-ticks and labels
+        ax.set_ylabel(metric_name + ' Z-scored ΔF/F', fontsize=36, labelpad=12)
         ax.set_xlabel("Event", fontsize=40, labelpad=12)
-
+        ax.tick_params(axis='y', labelsize=32)
+        ax.tick_params(axis='x', labelsize=32)
+        # Add a dashed gray line at y = 0
         ax.axhline(0, color='gray', linestyle='--', linewidth=2, zorder=1)
 
+        # Automatically adjust y-limits based on the data
         if ylim is None:
             all_values = np.concatenate([df.values.flatten(), df1.values.flatten()])
             min_val = np.nanmin(all_values)
@@ -1251,10 +1282,12 @@ class Reward_Competition(Experiment):
             if ylim[0] < 0:
                 ax.axhline(0, color='black', linestyle='--', linewidth=2, zorder=1)
 
+        # Add y-ticks if specified
         if yticks_increment is not None:
             y_min, y_max = ax.get_ylim()
             ax.set_yticks(np.arange(np.floor(y_min), np.ceil(y_max) + yticks_increment, yticks_increment))
 
+        # Remove unnecessary spines
         ax.spines['right'].set_visible(False)
         ax.spines['top'].set_visible(False)
         ax.spines['left'].set_linewidth(5)
@@ -1262,12 +1295,26 @@ class Reward_Competition(Experiment):
 
         # Statistical Testing
         p_values = []
+        print(df.columns)
         for col in df.columns:
-            col_last = col.replace('First', 'Last')  
+            print(f"Processing column: {col}")
+            
+            # Check if 'Last' column exists in df1, corresponding to the 'First' column in df
+            col_last = col.replace('First', 'Last')  # Create the 'Last' column name
+            
+            # Check if the 'Last' column is in df1
             if col_last in df1.columns:
+                print(f"df: {df[col]}")
+                print(f"df1: {df1[col_last]}")
+                
+                # Run t-test between the 'First' and 'Last' columns
                 t_stat, p_value = ttest_ind(df[col], df1[col_last], nan_policy='omit', equal_var=False)
                 p_values.append(p_value)
+                print(f"T-test for {col} and {col_last}: t={t_stat:.3f}, p={p_value:.3e}")  # Print results
+            else:
+                print(f"Column {col_last} not found in df1. Skipping t-test for {col}.")
 
+        # Function to convert p-values to asterisks
         def get_p_value_asterisks(p_value):
             if p_value < 0.001:
                 return "***"
@@ -1277,23 +1324,28 @@ class Reward_Competition(Experiment):
                 return "*"
             else:
                 return None
-
-        y_top = ax.get_ylim()[1] * 0.95  
-
+        # Get the top y-limit to position the significance bar
+        y_top = ax.get_ylim()[1] * 0.95  # Position at 95% of max y-limit
+        # Add significance annotations (only for significant p-values)
         for i, p_value in enumerate(p_values):
-            p_text = get_p_value_asterisks(p_value)
-            if p_text:
-                x1 = x[i] - bar_width / 2 - gap / 2
-                x2 = x[i] + bar_width / 2 + gap / 2
-                ax.plot([x1, x2], [y_top, y_top], color='black', linewidth=6)
-                ax.text((x1 + x2) / 2, y_top + 0.02, p_text, ha='center', fontsize=40, fontweight='bold')
+            p_text = get_p_value_asterisks(p_value)  # Convert p-value to asterisk notation
 
+            if p_text:  # Only add bar if significant
+                x1 = x[i] - bar_width / 2 - gap / 2  # Left bar
+                x2 = x[i] + bar_width / 2 + gap / 2  # Right bar
+
+                # Draw the black significance bar
+                ax.plot([x1, x2], [y_top, y_top], color='black', linewidth=6)
+
+                # Add asterisk annotation above the bar
+                ax.text((x1 + x2) / 2, y_top + 0.02, p_text, ha='center', fontsize=40, fontweight='bold')
+        # Add title
         plt.title(title, fontsize=40, fontweight='bold', pad=24)
 
-        save_path = os.path.join(str(directory_path), f'{title}.png')
+        save_path = os.path.join(str(directory_path) + '\\' + f'{title}.png')
         plt.savefig(save_path, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
         plt.show()
-
+        
     # Response is tone or lick, metric_name is for AUC, Max Peak, or Mean Z-score
     def plot_da_first_last(self, df, metric_name, method, directory_path, condition='Winning',  
                     brain_region='mPFC',  # New parameter to specify the brain region
@@ -1397,10 +1449,10 @@ class Reward_Competition(Experiment):
             return df_n, df_p
 
         def filter_by_metric(df):
-            metric_columns = [col for col in df.columns if col.endswith(metric_name + method) and ('Lick' in col or 'Tone' in col)]
+            metric_columns = [col for col in df.columns if col.endswith(metric_name + method)]
             
-            if len(metric_columns) != 2:
-                raise ValueError(f"Expected exactly 2 columns, but found {len(metric_columns)}: {metric_columns}")
+            # Ensure 'Lick' column is first
+            metric_columns.sort(key=lambda x: 'Lick' not in x) 
 
             # Create two DataFrames, keeping 'subject_name'
             df1 = df[['subject_name', metric_columns[0]]].copy()
@@ -2196,19 +2248,18 @@ class Reward_Competition(Experiment):
         df = split_by_subject(df, brain_region)
         bin_size = 100
         if brain_region == 'mPFC':
-            color = '#FFAF00'
+            trace_color = '#FFAF00'
         else:
-            color = '#15616F'
+            trace_color = '#15616F'
         # Initialize common time axis
         common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
 
         row_means = []  # Store the mean PETH per row
         for _, row in df.iterrows():
-            z_scores = np.array(row[f'{event_type} Event_Zscore'])  # Shape: (num_trials, num_time_bins)
+            z_scores = np.array(row[f'Mean {event_type} Event_Zscore'])  # Shape: (num_trials, num_time_bins)
 
             if z_scores.shape[0] > 0:  # Ensure there is data
-                row_mean = np.mean(z_scores, axis=0)  # Mean across trials in a row
-                row_means.append(row_mean)
+                row_means.append(z_scores)
 
         # Convert to numpy array and compute final mean and SEM
         row_means = np.array(row_means)  # Shape: (num_subjects, num_time_bins)
@@ -2216,31 +2267,36 @@ class Reward_Competition(Experiment):
         sem_peth = np.std(row_means, axis=0) / np.sqrt(row_means.shape[0])  # SEM
 
         # Downsample data
-        mean_peth, downsampled_time_axis = self.downsample_data(mean_peth, common_time_axis, bin_size)
-        sem_peth, _ = self.downsample_data(sem_peth, common_time_axis, bin_size)
+        mean_trace, downsampled_time_axis = self.downsample_data(mean_peth, common_time_axis, bin_size)
+        sem_trace, _ = self.downsample_data(sem_peth, common_time_axis, bin_size)
 
         # Create figure
-        fig, ax = plt.subplots(figsize=(8, 5))
+        plt.figure(figsize=(10, 6))
+        plt.plot(downsampled_time_axis, mean_trace, color=trace_color, lw=3, label='Mean DA')
+        plt.fill_between(downsampled_time_axis, mean_trace - sem_trace, mean_trace + sem_trace,
+                        color=trace_color, alpha=0.4, label='SEM')
+        plt.axvline(0, color='black', linestyle='--', lw=2)
+        plt.axvline(4, color='#FF69B4', linestyle='-', lw=2)
 
-        ax.set_ylabel('Event Induced Z-scored ΔF/F', fontsize=20)
-        ax.tick_params(axis='y', labelsize=16)
+        # Set x-axis ticks to [-4, 0, 4, 10]
+        plt.xlabel('Time from Tone Onset (s)', fontsize=30)
+        plt.ylabel('Event-Induced Z-scored ΔF/F', fontsize=30)
+        plt.title(f'{event_type} PSTH', fontsize=30, pad=30)
+        plt.ylim(y_min, y_max)
+        plt.xticks([-4, 0, 4, 10], fontsize=30)
+        plt.xlim(min(-4, downsampled_time_axis[0]), max(10, downsampled_time_axis[-1]))
+        plt.yticks(fontsize=30)
+        # plt.legend(fontsize=30)
 
-        # Plot mean and SEM
-        ax.plot(downsampled_time_axis, mean_peth, color=color, label='Mean DA')
-        ax.fill_between(downsampled_time_axis, mean_peth - sem_peth, mean_peth + sem_peth, color=color, alpha=0.4)
-        ax.axvline(0, color='black', linestyle='--')  # Event onset
-        ax.axvline(4, color="#39FF14", linestyle='-')  # Reward onset
+        ax = plt.gca()
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_linewidth(3)
+        ax.spines['left'].set_linewidth(3)
 
-        # ax.set_title(f'{condition} bout Z-Score', fontsize=18)
-        ax.set_xlabel('Time (s)', fontsize=20)
-        ax.set_xticks([common_time_axis[0], 0, 4, common_time_axis[-1]])
-        ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=16)
-
-        ax.set_ylim(y_max, y_min)
-
-        # Save figure
-        save_path = os.path.join(str(directory_path), f'{brain_region}_{condition}_PETH.png')
-        plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        if directory_path is not None:
+            save_path = os.path.join(directory_path, f'{brain_region}_{event_type}_{condition}_PSTH.png')
+            plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         plt.show()
 
     def plot_mean_per_row_heatmaps(self, df, condition, event_type, directory_path, brain_region):
@@ -2298,24 +2354,25 @@ class Reward_Competition(Experiment):
                         vmin=vmin, vmax=vmax)
 
         # Formatting
-        ax.set_ylabel('Subjects', fontsize=26)
+        # ax.set_ylabel('Subjects', fontsize=26)
+        ax.set_yticks([])
         ax.axvline(0, color='white', linestyle='--', linewidth=2)  # Event onset
-        ax.axvline(4, color="#39FF14", linestyle='-', linewidth=2)
+        ax.axvline(4, color="pink", linestyle='-', linewidth=2)
 
         # Set x-axis labels
         ax.set_xlabel('Time (s)', fontsize=26)
         ax.set_xticks([new_time_axis[0], 0, 4, new_time_axis[-1]])
         ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=26)
         num_subjects = len(subject_names)
-        ytick_positions = np.arange(num_subjects) + 0.5  # Shift by 0.5 to center labels
+        # ytick_positions = np.arange(num_subjects) + 0.5  # Shift by 0.5 to center labels
 
-        ax.set_yticks(ytick_positions)  # Set new tick positions
-        ax.set_yticklabels(subject_names, fontsize=18, rotation=0)
+        # ax.set_yticks(ytick_positions)  # Set new tick positions
+        # ax.set_yticklabels(subject_names, fontsize=18, rotation=0)
 
         # Colorbar
         cbar = fig.colorbar(cax, ax=ax, orientation='vertical', shrink=0.7)
         cbar.ax.tick_params(labelsize=20)
-        cbar.set_ticks(np.arange(vmin, vmax, 1))
+        cbar.set_ticks(np.arange(np.ceil(vmin), np.floor(vmax) + 1, 1))  # Ensures whole number intervals
         cbar.set_label("Z-score", fontsize=20)
 
         # Save and show
@@ -2332,39 +2389,47 @@ class Reward_Competition(Experiment):
                     yticks_increment=1, 
                     figsize=(7,7),  
                     pad_inches=0.1):
-        title = f'NAc {behavior} alone vs competition'
-        title1 = f'mPFC {behavior} alone vs competition'
+        if behavior == 'Lick':
+            behavior = 'Lick '
+        else:
+            behavior = ''
+        
+        title = f'NAc {behavior}{metric_name} alone vs competition'
+        title1 = f'mPFC {behavior}{metric_name} alone vs competition'
         def split_by_subject(df1):            
             df_n = df1[df1['subject_name'].str.startswith('n')]
             df_p = df1[df1['subject_name'].str.startswith('p')]
+            print(df_n.columns)
+            print(df_p.columns)
             return df_n, df_p
 
         df_n, df_p = split_by_subject(df_alone)
         df1_n, df1_p = split_by_subject(df_comp)
         
-        mean_values = df_n[f'{behavior} {metric_name} Mean EI'].mean()
-        sem_values = df_n[f'{behavior} {metric_name} Mean EI'].sem()
+        mean_values = df_n[f'{behavior}{metric_name} EI'].mean()
+        sem_values = df_n[f'{behavior}{metric_name} EI'].sem()
 
-        mean_values1 = df1_n[f'{behavior} {metric_name} Mean EI'].mean()
-        sem_values1 = df1_n[f'{behavior} {metric_name} Mean EI'].sem()
+        mean_values1 = df1_n[f'{behavior}{metric_name} EI'].mean()
+        sem_values1 = df1_n[f'{behavior}{metric_name} EI'].sem()
 
-        mean_values2 = df_p[f'{behavior} {metric_name} Mean EI'].mean()
-        sem_values2 = df_p[f'{behavior} {metric_name} Mean EI'].sem()
+        mean_values2 = df_p[f'{behavior}{metric_name} EI'].mean()
+        sem_values2 = df_p[f'{behavior}{metric_name} EI'].sem()
 
-        mean_values3 = df1_p[f'{behavior} {metric_name} Mean EI'].mean()
-        sem_values3 = df1_p[f'{behavior} {metric_name} Mean EI'].sem()
+        mean_values3 = df1_p[f'{behavior}{metric_name} EI'].mean()
+        sem_values3 = df1_p[f'{behavior}{metric_name} EI'].sem()
 
-        df = df_n[[f'{behavior} {metric_name} Mean EI']]
-        df1 = df1_n[[f'{behavior} {metric_name} Mean EI']]
-        df2 = df_p[[f'{behavior} {metric_name} Mean EI']]
-        df3 = df1_p[[f'{behavior} {metric_name} Mean EI']]
+        df = df_n[[f'{behavior}{metric_name} EI']]
+        df1 = df1_n[[f'{behavior}{metric_name} EI']]
+        df2 = df_p[[f'{behavior}{metric_name} EI']]
+        df3 = df1_p[[f'{behavior}{metric_name} EI']]
 
-        self.ploting_side_by_side(df, df1, mean_values, sem_values, mean_values1, sem_values1,
-                            nac_color, figsize, metric_name, ylim, 
-                            yticks_increment, title, directory_path, pad_inches,
-                            'Alone', 'Competition')
-        
-        self.ploting_side_by_side(df2, df3, mean_values2, sem_values2, mean_values3, sem_values3,
-                            mpfc_color, figsize, metric_name, ylim, 
-                            yticks_increment, title1, directory_path, pad_inches,
-                            'Alone', 'Competition')
+        if mean_values2 is None:
+            self.ploting_side_by_side(df, df1, mean_values, sem_values, mean_values1, sem_values1,
+                                nac_color, figsize, metric_name, ylim, 
+                                yticks_increment, title, directory_path, pad_inches,
+                                'Alone', 'Competition')
+        else:
+            self.ploting_side_by_side(df2, df3, mean_values2, sem_values2, mean_values3, sem_values3,
+                                mpfc_color, figsize, metric_name, ylim, 
+                                yticks_increment, title1, directory_path, pad_inches,
+                                'Alone', 'Competition')

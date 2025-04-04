@@ -259,9 +259,9 @@ class Reward_Training(Experiment):
         self.df['subject_name'] = self.df['file name'].str.split('-').str[0]
         self.df['sound cues'] = self.df['trial'].apply(lambda x: x.rtc_events.get('sound cues', None) if isinstance(x, object) and hasattr(x, 'rtc_events') else None)
         self.df['port entries'] = self.df['trial'].apply(lambda x: x.rtc_events.get('port entries', None) if isinstance(x, object) and hasattr(x, 'rtc_events') else None)
-        self.df['sound cues onset'] = self.df['sound cues'].apply(lambda x: x.onset_times if x else None)
-        self.df['port entries onset'] = self.df['port entries'].apply(lambda x: x.onset_times if x else None)
-        self.df['port entries offset'] = self.df['port entries'].apply(lambda x: x.offset_times if x else None)
+        self.df['sound cues onset'] = self.df['sound cues'].apply(lambda x: x.onset_times[:15] if x else None)
+        self.df['port entries onset'] = self.df['port entries'].apply(lambda x: x.onset_times[:15] if x else None)
+        self.df['port entries offset'] = self.df['port entries'].apply(lambda x: x.offset_times[:15] if x else None)
 
     def combining_cohorts(self, df1):
         df_combined = pd.concat([self.df, df1], ignore_index=True)
@@ -771,7 +771,9 @@ class Reward_Training(Experiment):
                             baseline_val = 0
                     else:
                         baseline_val = 0
-
+                    if lick_event is None:
+                        print("Warning: lick_event is None, skipping this row.")
+                        continue  # Skip processing this row
                     # 2) Extract the lick window from lick_event (0 to +post_time)
                     window_start = lick_event
                     window_end   = lick_event + post_time
@@ -894,7 +896,7 @@ class Reward_Training(Experiment):
     def compute_tone_da_metrics(self, df=None, mode='standard'):
         if df is None:
             df = self.df
-        def compute_da_metrics_for_trial(trial_obj, filtered_sound_cues):
+        def compute_da_metrics_for_trial(trial_obj, sound_cues):
             """Compute DA metrics (AUC, Max Peak, Time of Max Peak, Mean Z-score) for each sound cue, using adaptive peak-following."""
             """if not hasattr(trial_obj, "timestamps") or not hasattr(trial_obj, "zscore"):
                 return np.nan"""  # Handle missing attributes
@@ -903,7 +905,7 @@ class Reward_Training(Experiment):
             zscores = np.array(trial_obj.zscore)  
 
             computed_metrics = []
-            for cue in filtered_sound_cues:
+            for cue in sound_cues:
                 start_time = cue
                 end_time = cue + 4  # Default window end
 
@@ -933,64 +935,48 @@ class Reward_Training(Experiment):
                 })
             return computed_metrics
         def compute_ei(df):
-            # EI mode: use event-induced data.
-            if 'Tone Event_Time_Axis' not in df.columns or 'Tone Event_Zscore' not in df.columns:
+            if 'Tone Event_Time_Axis' not in df.columns or 'Mean Tone Event_Zscore' not in df.columns:
                 print("Event-induced data not found in behaviors. Please run compute_event_induced_DA() first.")
                 return df
 
-            # Lists to store computed arrays for each row
             mean_zscores_all = []
             auc_values_all = []
             max_peaks_all = []
             peak_times_all = []
 
-            for i, row in df.iterrows():
-                # Extract all trials (lists) within the row
-                time_axes = np.array(row['Tone Event_Time_Axis'])  # 1D array
-                event_zscores = np.array(row['Tone Event_Zscore'])  # 2D array (list of lists)
+            for _, row in df.iterrows():
+                final_time = np.array(row['Tone Event_Time_Axis'], dtype=float)[0]  # Ensure full array
+                mean_event_zscore = np.array(row['Mean Tone Event_Zscore'], dtype=float)  # Convert to NumPy array
 
-                # Lists to store per-trial metrics
-                mean_zscores = []
-                auc_values = []
-                max_peaks = []
-                peak_times = []
+                if len(final_time) < len(mean_event_zscore):
+                    print(f"Warning: final_time length {len(final_time)} < mean_event_zscore length {len(mean_event_zscore)}. Skipping.")
+                    continue  
 
-                for time_axis, event_zscore in zip(time_axes, event_zscores):
-                    time_axis = np.array(time_axis)
-                    event_zscore = np.array(event_zscore)
+                final_time = final_time[-len(mean_event_zscore):]  # Trim to match z-score length
 
-                    # Mask for time_axis >= 0
-                    mask = (time_axis >= 0) & (time_axis <= 4)
-                    if not np.any(mask):
-                        mean_zscores.append(np.nan)
-                        auc_values.append(np.nan)
-                        max_peaks.append(np.nan)
-                        peak_times.append(np.nan)
-                        continue
+                # Apply mask for values between 0 and 4 seconds
+                mask = (final_time >= 0) & (final_time <= 4)
+                time_masked = final_time[mask]
+                zscore_masked = mean_event_zscore[mask]
 
-                    final_time = time_axis[mask]
-                    final_z = event_zscore[mask]
+                if len(time_masked) == 0:
+                    print("Warning: No values in the selected time range (0-4s). Skipping.")
+                    continue  
 
-                    # Compute metrics
-                    mean_z = np.mean(final_z)
-                    auc = np.trapz(final_z, final_time)
-                    max_idx = np.argmax(final_z)
-                    max_peak = final_z[max_idx]
-                    peak_time = final_time[max_idx]
+                # Compute metrics
+                mean_z = np.mean(zscore_masked)
+                auc = np.trapz(zscore_masked, time_masked)  
+                max_idx = np.argmax(zscore_masked)
+                max_peak = zscore_masked[max_idx]
+                peak_time = time_masked[max_idx]
 
-                    # Append results for this trial
-                    mean_zscores.append(mean_z)
-                    auc_values.append(auc)
-                    max_peaks.append(max_peak)
-                    peak_times.append(peak_time)
+                print(f"AUC (0-4s): {auc}")
 
-                # Append lists of results for this row
-                mean_zscores_all.append(mean_zscores)
-                auc_values_all.append(auc_values)
-                max_peaks_all.append(max_peaks)
-                peak_times_all.append(peak_times)
+                mean_zscores_all.append(mean_z)
+                auc_values_all.append(auc)
+                max_peaks_all.append(max_peak)
+                peak_times_all.append(peak_time)
 
-            # Store computed values as lists inside new DataFrame columns
             df['Mean Z-score EI'] = mean_zscores_all
             df['AUC EI'] = auc_values_all
             df['Max Peak EI'] = max_peaks_all
@@ -1015,6 +1001,7 @@ class Reward_Training(Experiment):
         if df is None:
             df = self.df
         """Iterate through trials in the dataframe and compute DA metrics for each lick trial."""
+        
         def compute_da_metrics_for_lick(trial_obj, first_lick_after_tones, closest_port_entry_offsets, 
                                         use_adaptive=False, peak_fall_fraction=0.5, allow_bout_extension=False,
                                         use_fractional=False, max_bout_duration=15):
@@ -1101,61 +1088,46 @@ class Reward_Training(Experiment):
                 })
             return computed_metrics
         def compute_ei(df):
-            # EI mode: use event-induced data.
-            if 'Lick Event_Time_Axis' not in df.columns or 'Lick Event_Zscore' not in df.columns:
+            if 'Lick Event_Time_Axis' not in df.columns or 'Mean Lick Event_Zscore' not in df.columns:
                 print("Event-induced data not found in behaviors. Please run compute_event_induced_DA() first.")
                 return df
 
-            # Lists to store computed arrays for each row
             mean_zscores_all = []
             auc_values_all = []
             max_peaks_all = []
             peak_times_all = []
 
-            for i, row in df.iterrows():
-                time_axes = [np.array(x) for x in row['Lick Event_Time_Axis']]
-                event_zscores = [np.array(x) for x in row['Lick Event_Zscore']]
+            for _, row in df.iterrows():
+                final_time = np.array(row['Lick Event_Time_Axis'], dtype=float)[0] 
+                mean_event_zscore = np.array(row['Mean Lick Event_Zscore'], dtype=float)  # Convert to NumPy array
 
-                # Lists to store per-trial metrics
-                mean_zscores = []
-                auc_values = []
-                max_peaks = []
-                peak_times = []
+                final_time = final_time[-len(mean_event_zscore):]  # Trim to match z-score length
 
-                for time_axis, event_zscore in zip(time_axes, event_zscores):
-                    time_axis = np.array(time_axis)
-                    event_zscore = np.array(event_zscore)
+                # Apply mask for values between 0 and 4 seconds
+                mask = (final_time >= 0) & (final_time <= 4)
+                time_masked = final_time[mask]
+                
+                mean_event_zscore = mean_event_zscore[-len(time_masked):]  
+                zscore_masked = mean_event_zscore  # Now it matches time_masked
+                # zscore_masked = mean_event_zscore[mask]
 
-                    # Mask for time_axis >= 0
-                    mask = time_axis >= 0
-                    if not np.any(mask):
-                        mean_zscores.append(np.nan)
-                        auc_values.append(np.nan)
-                        max_peaks.append(np.nan)
-                        peak_times.append(np.nan)
-                        continue
+                if len(time_masked) == 0:
+                    print("Warning: No values in the selected time range (0-4s). Skipping.")
+                    continue  
 
-                    final_time = time_axis[mask]
-                    final_z = event_zscore[mask]
+                # Compute metrics
+                mean_z = np.mean(zscore_masked)
+                auc = np.trapz(zscore_masked, time_masked)  
+                max_idx = np.argmax(zscore_masked)
+                max_peak = zscore_masked[max_idx]
+                peak_time = time_masked[max_idx]
 
-                    # Compute metrics
-                    mean_z = np.mean(final_z)
-                    auc = np.trapz(final_z, final_time)
-                    max_idx = np.argmax(final_z)
-                    max_peak = final_z[max_idx]
-                    peak_time = final_time[max_idx]
+                print(f"AUC (0-4s): {auc}")
 
-                    # Append results for this trial
-                    mean_zscores.append(mean_z)
-                    auc_values.append(auc)
-                    max_peaks.append(max_peak)
-                    peak_times.append(peak_time)
-
-                # Append lists of results for this row
-                mean_zscores_all.append(mean_zscores)
-                auc_values_all.append(auc_values)
-                max_peaks_all.append(max_peaks)
-                peak_times_all.append(peak_times)
+                mean_zscores_all.append(mean_z)
+                auc_values_all.append(auc)
+                max_peaks_all.append(max_peak)
+                peak_times_all.append(peak_time)
 
             # Store computed values as lists inside new DataFrame columns
             df['Lick Mean Z-score EI'] = mean_zscores_all
@@ -1603,6 +1575,69 @@ class Reward_Training(Experiment):
                 display_post_time=display_post_time, 
                 yticks_interval=yticks_interval
             )
+
+    def plot_mean_psth(self, df, event_type, directory_path, brain_region, y_min, y_max):
+        """
+        Plots the PETH of all bouts averaged together.
+        """
+        if df is None:
+            df = self.df
+
+        # Splitting either mPFC or NAc subjects
+        def split_by_subject(df1, region):            
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            return df_p if region == 'mPFC' else df_n
+
+        df = split_by_subject(df, brain_region)
+        bin_size = 100
+        if brain_region == 'mPFC':
+            color = '#FFAF00'
+        else:
+            color = '#15616F'
+        # Initialize common time axis
+        common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
+
+        row_means = []  # Store the mean PETH per row
+        for _, row in df.iterrows():
+            z_scores = np.array(row[f'{event_type} Event_Zscore'])  # Shape: (num_trials, num_time_bins)
+
+            if z_scores.shape[0] > 0:  # Ensure there is data
+                row_mean = np.mean(z_scores, axis=0)  # Mean across trials in a row
+                row_means.append(row_mean)
+
+        # Convert to numpy array and compute final mean and SEM
+        row_means = np.array(row_means)  # Shape: (num_subjects, num_time_bins)
+        mean_peth = np.mean(row_means, axis=0)  # Mean across subjects
+        sem_peth = np.std(row_means, axis=0) / np.sqrt(row_means.shape[0])  # SEM
+
+        # Downsample data
+        mean_peth, downsampled_time_axis = self.downsample_data(mean_peth, common_time_axis, bin_size)
+        sem_peth, _ = self.downsample_data(sem_peth, common_time_axis, bin_size)
+
+        # Create figure
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        ax.set_ylabel('Event Induced Z-scored ΔF/F', fontsize=20)
+        ax.tick_params(axis='y', labelsize=16)
+
+        # Plot mean and SEM
+        ax.plot(downsampled_time_axis, mean_peth, color=color, label='Mean DA')
+        ax.fill_between(downsampled_time_axis, mean_peth - sem_peth, mean_peth + sem_peth, color=color, alpha=0.4)
+        ax.axvline(0, color='black', linestyle='--')  # Event onset
+        ax.axvline(4, color="pink", linestyle='-')  # Reward onset
+
+        # ax.set_title(f'{condition} bout Z-Score', fontsize=18)
+        ax.set_xlabel('Time (s)', fontsize=20)
+        ax.set_xticks([common_time_axis[0], 0, 4, common_time_axis[-1]])
+        ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=16)
+
+        ax.set_ylim(y_max, y_min)
+
+        # Save figure
+        save_path = os.path.join(str(directory_path), f'{brain_region}_PETH.png')
+        plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        plt.show()
     
     """*********************MISC.************************"""
     def downsample_data(self, data, time_axis, bin_size=10):
@@ -1654,10 +1689,10 @@ class Reward_Training(Experiment):
 
             # Compute mean for scalar numerical values
             numerical_cols = [
-                'Lick AUC Mean', 'Lick Max Peak Mean', 'Lick Mean Z-score Mean',
-                'Tone AUC Mean', 'Tone Max Peak Mean', 'Tone Mean Z-score Mean',
-                "Lick AUC Mean EI", "Lick Max Peak Mean EI", "Lick Mean Z-score Mean EI",
-                "Tone AUC Mean EI", "Tone Max Peak Mean EI", "Tone Mean Z-score Mean EI"
+                'Lick AUC', 'Lick Max Peak', 'Lick Mean Z-score',
+                'Tone AUC', 'Tone Max Peak', 'Tone Mean Z-score',
+                "Lick AUC EI", "Lick Max Peak EI", "Lick Mean Z-score EI",
+                "Tone AUC EI", "Tone Max Peak EI", "Tone Mean Z-score EI"
             ]
             
             for col in numerical_cols:
@@ -1668,3 +1703,25 @@ class Reward_Training(Experiment):
         df_mean = df.groupby('subject_name').apply(mean_arrays).reset_index()
         
         return df_mean
+    
+    def find_mean_event_zscore(self, df = None, behavior = 'Tone'):
+        if df is None:
+            df = self.df
+        if 'Tone Event_Zscore' not in df.columns:
+            print("Event-induced Z-score data not found in dataframe.")
+            return df
+
+        mean_zscores_all = []
+
+        for _, row in df.iterrows():
+            event_zscores = np.array(row['Tone Event_Zscore'])  # 2D array (trials × time points)
+
+            if event_zscores.ndim == 2 and event_zscores.size > 0:
+                mean_zscores = np.mean(event_zscores, axis=0)  # Compute mean across trials (row-wise)
+            else:
+                mean_zscores = np.nan  # Handle empty or invalid cases
+
+            mean_zscores_all.append(mean_zscores)
+
+        df[f'Mean {behavior} Event_Zscore'] = mean_zscores_all  # Store the mean 1D array in a new column
+        return df
