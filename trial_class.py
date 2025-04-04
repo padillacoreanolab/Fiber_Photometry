@@ -832,3 +832,61 @@ class Trial:
             raise ValueError("Mode must be either 'standard' or 'EI'")
 
 
+    def compute_event_induced_DA(self, pre_time=4, post_time=10):
+        """
+        Computes the event-induced DA (EI DA) signal for each behavior event in self.behaviors.
+        
+        For each event, this method:
+        - Extracts DA data from (Event_Start - pre_time) to (Event_Start + post_time) using self.timestamps and self.zscore.
+        - Computes a baseline from the pre-event period and subtracts it from the signal.
+        - Interpolates the corrected signal onto a common time axis (relative to the event onset).
+        
+        The common time axis and the resulting baseline-corrected (event-induced) signal are stored
+        in new columns 'Relative_Time_Axis' and 'Relative_Zscore' in self.behaviors.
+        
+        Parameters:
+            pre_time (float): Seconds before event onset to include (default is 4 s).
+            post_time (float): Seconds after event onset to include (default is 10 s).
+        """
+        if self.behaviors is None or self.behaviors.empty:
+            print(f"Trial {self.subject_name}: No behavior events available for event-induced DA computation.")
+            return
+
+        # Determine the average sampling interval from the timestamps.
+        dt = np.mean(np.diff(self.timestamps))
+        # Create a common time axis from -pre_time to +post_time relative to event onset.
+        common_time_axis = np.arange(-pre_time, post_time, dt)
+        
+        relative_time_list = []
+        relative_zscore_list = []
+        
+        # Process each behavior event.
+        for idx, row in self.behaviors.iterrows():
+            event_start = row['Event_Start']
+            window_start = event_start - pre_time
+            window_end = event_start + post_time
+
+            # Select the DA data within the extraction window.
+            mask = (self.timestamps >= window_start) & (self.timestamps <= window_end)
+            if not np.any(mask):
+                relative_time_list.append(np.full(common_time_axis.shape, np.nan))
+                relative_zscore_list.append(np.full(common_time_axis.shape, np.nan))
+            else:
+                # Convert to relative time (with respect to the event onset).
+                rel_time = self.timestamps[mask] - event_start
+                signal = self.zscore[mask]
+                
+                # Compute baseline from the pre-event period.
+                pre_mask = rel_time < 0
+                baseline = np.nanmean(signal[pre_mask]) if np.any(pre_mask) else 0
+                corrected_signal = signal - baseline
+                
+                # Interpolate the corrected signal onto the common time axis.
+                interp_signal = np.interp(common_time_axis, rel_time, corrected_signal)
+                
+                relative_time_list.append(common_time_axis)
+                relative_zscore_list.append(interp_signal)
+        
+        # Store the computed arrays in new DataFrame columns.
+        self.behaviors["Relative_Time_Axis"] = relative_time_list
+        self.behaviors["Relative_Zscore"] = relative_zscore_list

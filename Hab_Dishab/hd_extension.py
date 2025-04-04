@@ -446,13 +446,13 @@ def exponential_decay(x, A, B, tau):
 
 def plot_peak_for_subsequent_behaviors(
     exp_da_dict,
-    selected_bouts=None,             # e.g. ["s1-1", "s1-2"]
-    behavior=None,                   # e.g. "Defeat"
-    n_subsequent_behaviors=3,        # e.g. keep first 3 behaviors per (Subject, Bout)
-    peak_col="Max Peak",             # which column holds the per-event peak DA
-    metric_type='slope',             # choose 'slope' or 'decay'
+    selected_bouts=None,
+    behavior=None,
+    n_subsequent_behaviors=3,
+    peak_col="Max Peak",
+    metric_type='slope',
     figsize=(14, 8),
-    line_order=None,
+    brain_region="#FF5733",
     custom_colors=None,
     custom_legend_labels=None,
     custom_xtick_labels=None,
@@ -460,8 +460,10 @@ def plot_peak_for_subsequent_behaviors(
     ytick_increment=None,
     xlabel="Behavior Index",
     ylabel="Avg " + "Max Peak",
-    plot_title="Average Peak per Behavior"
+    plot_title="Average Peak per Behavior",
+    save_path="my_plot.png"   # <-- new argument
 ):
+
     """
     1) Merges all DataFrames in exp_da_dict into one big DataFrame.
     2) Filters for the specified bouts (e.g. ["s1-1", "s1-2"]) and behavior (if provided).
@@ -473,10 +475,9 @@ def plot_peak_for_subsequent_behaviors(
        as well as the standard deviation and standard error of the mean (SEM) for error bars.
     6) For each Bout, fits either a linear regression (if metric_type='slope') or an exponential decay
        (if metric_type='decay') to the AvgPeak vs. BehaviorIndex data.
-       The computed value (slope or decay constant) is shown in the legend.
-    7) Plots each Bout as a line with error bars using full custom visual styling.
-    
-    Returns the aggregated DataFrame used for plotting.
+       The computed value (slope or decay constant) is printed to the console.
+    7) Plots each Bout as a line with error bars using the provided brain_region hex code for the color,
+       with thicker error bar edges and no legend.
     """
     # 1) Merge all subject data
     big_df = create_big_df_from_exp_da_dict(exp_da_dict)
@@ -518,9 +519,6 @@ def plot_peak_for_subsequent_behaviors(
     agg_df["SEM"] = agg_df["StdPeak"] / np.sqrt(agg_df["SubjectCount"])
     
     # 6) Create figure with custom styling
-    if custom_colors is None:
-        custom_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    
     fig, ax = plt.subplots(figsize=figsize)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -530,66 +528,56 @@ def plot_peak_for_subsequent_behaviors(
     
     metrics_dict = {}  # to store computed metric for each Bout
     
-    # Determine unique bouts to plot (order by line_order if provided)
-    if line_order is None:
-        unique_bouts = sorted(agg_df["Bout"].unique())
-    else:
-        unique_bouts = line_order
+    # Determine unique bouts to plot (order by natural sorted order)
+    unique_bouts = sorted(agg_df["Bout"].unique())
     
     # 7) For each Bout, fit the data and plot the line with error bars
-    for i, bout in enumerate(unique_bouts):
+    for bout in unique_bouts:
         df_line = agg_df[agg_df["Bout"] == bout].copy()
         df_line.sort_values("BehaviorIndex", inplace=True)
         
         x_vals = df_line["BehaviorIndex"].values
         y_vals = df_line["AvgPeak"].values
-        y_err = df_line["SEM"].values  # error bars
+        y_err = df_line["SEM"].values
         
         if len(x_vals) == 0 or len(y_vals) == 0:
             print(f"Skipping bout '{bout}' due to no data.")
             continue
         
+        # Use the provided brain_region hex code as the color for plotting
+        this_color = brain_region
+        
+        # Fit the chosen metric
         if metric_type.lower() == 'slope':
             slope, intercept, r_val, p_val, std_err = linregress(x_vals, y_vals)
             metrics_dict[bout] = slope
-            metric_label = f"slope: {slope:.3f}"
         elif metric_type.lower() == 'decay':
-            p0 = (np.min(y_vals), np.max(y_vals)-np.min(y_vals), 1.0)  # initial guess: A, B, tau
+            p0 = (np.min(y_vals), np.max(y_vals) - np.min(y_vals), 1.0)  # initial guess: A, B, tau
             try:
                 popt, _ = curve_fit(exponential_decay, x_vals, y_vals, p0=p0)
                 tau = popt[2]
                 metrics_dict[bout] = tau
-                metric_label = f"decay: {tau:.3f}"
             except RuntimeError:
                 metrics_dict[bout] = np.nan
-                metric_label = "decay: N/A"
                 print(f"Warning: exponential fit failed for bout '{bout}'.")
         else:
             raise ValueError("metric_type must be 'slope' or 'decay'.")
         
-        # Prepare legend text; incorporate custom legend labels if provided
-        if custom_legend_labels and i < len(custom_legend_labels):
-            legend_text = custom_legend_labels[i]
-        else:
-            legend_text = bout
-        # Append computed metric and subject count (n) to legend text
-        legend_text += f" ({metric_label}, n={df_line['SubjectCount'].max()})"
-        
-        color = custom_colors[i % len(custom_colors)]
-        # Plot with error bars using errorbar
+        # Plot with thicker error bars and no legend
         ax.errorbar(
             x_vals, y_vals,
             yerr=y_err,
             marker='o', linestyle='-',
-            color=color,
+            color=this_color,
             linewidth=5, markersize=30,
-            label=legend_text,
-            capsize=10  # adds caps to the error bars
+            capsize=10,
+            elinewidth=8,    # Thicker error bar edges
+            capthick=8       # Thicker caps
         )
     
     # 8) Set axis labels and formatting
-    ax.set_xlabel(xlabel, fontsize=44, labelpad=12)
-    ax.set_ylabel(ylabel, fontsize=44, labelpad=12)
+    ax.set_xlabel(xlabel, fontsize=48, labelpad=12)
+    ax.set_ylabel(ylabel, fontsize=48, labelpad=12)
     
     if ylim is not None:
         ax.set_ylim(ylim)
@@ -597,30 +585,33 @@ def plot_peak_for_subsequent_behaviors(
             y_ticks = np.arange(ylim[0], ylim[1] + ytick_increment, ytick_increment)
             ax.set_yticks(y_ticks)
             y_tick_labels = [f"{int(yt)}" if float(yt).is_integer() else f"{yt:.1f}" for yt in y_ticks]
-            ax.set_yticklabels(y_tick_labels, fontsize=44)
+            ax.set_yticklabels(y_tick_labels, fontsize=50)
     
     if custom_xtick_labels:
         ax.set_xticks(np.arange(1, len(custom_xtick_labels) + 1))
-        ax.set_xticklabels(custom_xtick_labels, fontsize=44)
+        ax.set_xticklabels(custom_xtick_labels, fontsize=50)
     else:
         unique_x = sorted(agg_df["BehaviorIndex"].unique())
         ax.set_xticks(unique_x)
-        ax.set_xticklabels([str(x) for x in unique_x], fontsize=44)
+        ax.set_xticklabels([str(x) for x in unique_x], fontsize=50)
     
     if plot_title:
         ax.set_title(plot_title, fontsize=20)
     
-    ax.legend(fontsize=26)
+    # Remove legend
+    # ax.legend(fontsize=26)  # Legend removed
+    
     plt.tight_layout()
-    plt.savefig("my_plot.png", transparent=True, dpi=300)
+    if save_path:
+        plt.savefig(save_path, transparent=True, dpi=300)
+
     plt.show()
     
     print(f"\n=== Computed Metric ({metric_type.upper()}): ===")
     for bout, val in metrics_dict.items():
         print(f"Bout: {bout}, {metric_type} = {val:.3f}")
-    
-    return agg_df
 
+    return agg_df
 
 
 def plot_behavior_times_across_bouts_gray_bars_only(metadata_df,
@@ -761,3 +752,4 @@ def plot_behavior_times_across_bouts_gray_bars_only(metadata_df,
 
     print("\nPaired t-test p-value matrix:")
     print(pval_matrix.to_string())
+

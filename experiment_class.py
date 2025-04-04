@@ -428,3 +428,153 @@ class Experiment:
         """
         for trial in self.trials.values():
             trial.behaviors = pd.DataFrame()
+
+
+    def compute_all_event_induced_DA(self, pre_time=4, post_time=10):
+        """
+        Iterates over all trials in the experiment and computes the event-induced DA signal 
+        for each trial by calling each trial's compute_event_induced_DA() method.
+        
+        Parameters:
+            pre_time (float): Seconds before event onset to include (default is 4 s).
+            post_time (float): Seconds after event onset to include (default is 10 s).
+        """
+        for trial_name, trial in self.trials.items():
+            print(f"Computing event-induced DA for trial {trial_name} ...")
+            trial.compute_event_induced_DA(pre_time=pre_time, post_time=post_time)
+
+
+
+    def plot_average_defeat_bout_psth(self, nth_defeat=1, directory_path=None, bin_size=100,
+                                  y_min=-5, y_max=3, brain_region=None):
+        """
+        Averages the event-induced DA (EI DA) signal for the n-th defeat bout (chronologically)
+        across all trials in the experiment.
+
+        It assumes that each Trial's behaviors DataFrame contains:
+            - A "Behavior" column (with entries like "Defeat"),
+            - "Event_Start" (or similar) to sort chronologically,
+            - "Relative_Time_Axis" and "Relative_Zscore" (computed via compute_event_induced_DA).
+
+        Parameters:
+            nth_defeat (int): The 1-based index of the defeat bout to select (chronologically).
+            directory_path (str or None): Directory to save the plot; if None, the plot is not saved.
+            bin_size (int): Bin size for downsampling the averaged signal.
+            y_min (float): Lower y-axis bound.
+            y_max (float): Upper y-axis bound.
+            brain_region (str): A hex code to set the color of the trace (if not provided, default is '#FFAF00').
+
+        Returns:
+            dict or None: A dictionary containing the downsampled common time axis, mean trace, SEM,
+                        number of trials included, and subject IDs. Returns None if no valid data.
+        """
+        import numpy as np
+        import matplotlib.pyplot as plt
+        import os
+
+        # Set trace color: use brain_region if provided; otherwise default.
+        trace_color = brain_region if brain_region is not None else '#FFAF00'
+        
+        all_traces = []
+        subject_ids = []
+        missing_subjects = []
+
+        for trial in self.trials.values():
+            # If there's no behavior data, skip.
+            if trial.behaviors is None or trial.behaviors.empty:
+                missing_subjects.append(trial.subject_name)
+                continue
+
+            # 1) Filter to rows where Behavior == "Defeat".
+            df_defeat = trial.behaviors[trial.behaviors["Behavior"] == "Defeat"].copy()
+            if df_defeat.empty:
+                missing_subjects.append(trial.subject_name)
+                continue
+            
+            # 2) Sort by the event's start time so we know the chronological order.
+            if "Event_Start" in df_defeat.columns:
+                df_defeat.sort_values(by="Event_Start", inplace=True)
+            else:
+                df_defeat.sort_index(inplace=True)
+
+            # 3) Check if there is an nth row in the sorted subset.
+            if len(df_defeat) < nth_defeat:
+                missing_subjects.append(trial.subject_name)
+                continue
+            
+            # 4) Select the nth defeat bout in chronological order.
+            row = df_defeat.iloc[nth_defeat - 1]
+            
+            # Ensure the row has a valid Relative_Zscore.
+            if "Relative_Zscore" not in row or row["Relative_Zscore"] is None:
+                missing_subjects.append(trial.subject_name)
+                continue
+            
+            trace = np.array(row["Relative_Zscore"])
+            all_traces.append(trace)
+            subject_ids.append(trial.subject_name)
+
+        if missing_subjects:
+            print(f"The following subjects did not have the {nth_defeat}-th defeat bout: {', '.join(missing_subjects)}")
+
+        if len(all_traces) == 0:
+            print(f"No valid data found for the {nth_defeat}-th defeat bout across trials.")
+            return None
+
+        # Use the common time axis from the first valid row we found.
+        common_time_axis = np.array(row["Relative_Time_Axis"])
+
+        # Stack the traces to compute mean and SEM.
+        traces_stacked = np.vstack(all_traces)
+        mean_trace = np.mean(traces_stacked, axis=0)
+        sem_trace = np.std(traces_stacked, axis=0) / np.sqrt(traces_stacked.shape[0])
+
+        # Optional downsampling if the experiment has a downsample_data method.
+        if hasattr(self, 'downsample_data'):
+            mean_trace, downsampled_time_axis = self.downsample_data(mean_trace, common_time_axis, bin_size)
+            sem_trace, _ = self.downsample_data(sem_trace, common_time_axis, bin_size)
+        else:
+            downsampled_time_axis = common_time_axis
+
+        # Plot
+        plt.figure(figsize=(14, 7))
+        plt.plot(downsampled_time_axis, mean_trace, color=trace_color, lw=3, label='Mean Defeat DA')
+        plt.fill_between(downsampled_time_axis, mean_trace - sem_trace, mean_trace + sem_trace,
+                        color=trace_color, alpha=0.4, label='SEM')
+        plt.axvline(0, color='black', linestyle='--', lw=2)  # event onset line
+        
+        plt.xlabel('Time from Defeat Onset (s)', fontsize=36)
+        plt.ylabel('Event-Induced z-scored ΔF/F', fontsize=32, labelpad=20)
+        plt.ylim(y_min, y_max)
+        plt.xlim(-4, 10)
+
+        ax = plt.gca()
+        ax.tick_params(axis='both', labelsize=40, width=3)
+        plt.xticks(fontsize=44)
+        plt.yticks(fontsize=44)
+        
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_linewidth(3)
+        ax.spines['left'].set_linewidth(3)
+
+        plt.tight_layout()
+        # Increase left margin to ensure y-axis label is not cut out.
+        plt.subplots_adjust(left=0.35)
+
+        if directory_path is not None:
+            os.makedirs(directory_path, exist_ok=True)
+            # Create a unique file name using nth_defeat.
+            save_path = os.path.join(directory_path, f"DefeatBout{nth_defeat}_PSTH_Average.png")
+            plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight", pad_inches=0.5)
+        plt.show()
+
+        aggregated_data = {
+            "common_time_axis": downsampled_time_axis,
+            "mean_trace": mean_trace,
+            "sem_trace": sem_trace,
+            "n_trials": len(all_traces),
+            "subject_ids": subject_ids
+        }
+        return aggregated_data
+
