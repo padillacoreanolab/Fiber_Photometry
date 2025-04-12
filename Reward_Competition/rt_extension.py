@@ -419,7 +419,7 @@ class Reward_Training(Experiment):
             ax.plot(downsampled_time_axis, mean_peth, color=color, label='Mean DA')
             ax.fill_between(downsampled_time_axis, mean_peth - sem_peth, mean_peth + sem_peth, color=color, alpha=0.4)
             ax.axvline(0, color='black', linestyle='--', linewidth=3)  # Event onset
-            ax.axvline(4, color='skyblue', linestyle='-', linewidth=3)  # Reward onset
+            ax.axvline(4, color='red', linestyle='-', linewidth=3)  # Reward onset
 
             ax.set_title(title, fontsize=36)
             ax.set_xlabel('Time (s)', fontsize=24)
@@ -1520,7 +1520,7 @@ class Reward_Training(Experiment):
             # Plot the traces (without error bars)
             ax.plot(time_axis, event_traces.T, color='b', label=f'Event {event_index + 1}', linewidth=1.5)  # Transpose for proper plotting
             ax.axvline(0, color='black', linestyle='--', label='Event onset')
-            ax.axvline(4, color='skyblue', linestyle='--', linewidth=2, label='t=4')
+            ax.axvline(4, color='red', linestyle='--', linewidth=2, label='t=4')
 
             # Set the x-ticks to show only the last time, 0, and the very end time
             ax.set_xticks([time_axis[0], 0, 4, time_axis[-1]])
@@ -1638,6 +1638,84 @@ class Reward_Training(Experiment):
         save_path = os.path.join(str(directory_path), f'{brain_region}_PETH.png')
         plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         plt.show()
+
+    def plot_mean_per_row_heatmaps(self, df, condition, event_type, directory_path, brain_region):
+        """
+        Plots a heatmap where each row represents the Z-score time series for each subject/session.
+        """
+
+        # Function to filter data by brain region
+        def split_by_subject(df1, region):            
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            return df_p if region == 'mPFC' else df_n
+
+        df = split_by_subject(df, brain_region)
+
+        subject_names = df['subject_name'].tolist()
+        
+        # Extract time axis (assumes all subjects share the same time axis)
+        common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
+
+        # Collect Z-score time series for each subject/session
+        mean_per_row = []
+        for _, row in df.iterrows():
+            z_scores = np.array(row[f'{event_type} Event_Zscore'])  # Now a 1D array
+            mean_per_row.append(z_scores)  # No need to average over trials
+
+        # Convert list of time series to 2D NumPy array (num_subjects, num_time_bins)
+        mean_per_row = np.vstack(mean_per_row)
+
+        # Downsample each row
+        bin_size = 100  
+        downsampled_means = []
+        
+        for row_mean in mean_per_row:
+            downsampled_row, new_time_axis = self.downsample_data(row_mean, common_time_axis, bin_size)
+            downsampled_means.append(downsampled_row)
+
+        downsampled_means = np.array(downsampled_means)  # (num_subjects, downsampled_time_bins)
+
+        # Normalize color scale
+        if brain_region == "mPFC":
+            vmin, vmax = -1, 5
+        else:
+            vmin, vmax = -1.5, 8
+
+        # Define colormap
+        cmap = 'inferno' if brain_region == "mPFC" else 'viridis'
+
+        # Create figure
+        fig, ax = plt.subplots(figsize=(12, 6))
+
+        # Plot heatmap
+        cax = ax.imshow(downsampled_means, aspect='auto', cmap=cmap, origin='upper',
+                        extent=[new_time_axis[0], new_time_axis[-1], 0, len(downsampled_means)],
+                        vmin=vmin, vmax=vmax)
+
+        # Add subject labels (centered)
+        num_subjects = len(subject_names)
+        ytick_positions = np.arange(num_subjects) + 0.5  # Shift labels to center
+        ax.set_yticks(ytick_positions)
+        ax.set_yticklabels(subject_names, fontsize=18, rotation=0)
+        ax.set_ylabel("Subjects", fontsize=26)
+
+        # Formatting
+        ax.axvline(0, color='white', linestyle='--', linewidth=2)  # Event onset
+        ax.axvline(4, color="pink", linestyle='-', linewidth=2)
+        ax.set_xlabel('Time (s)', fontsize=26)
+        ax.set_xticks([new_time_axis[0], 0, 4, new_time_axis[-1]])
+        ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=26)
+
+        # Colorbar
+        cbar = fig.colorbar(cax, ax=ax, orientation='vertical', shrink=0.7)
+        cbar.ax.tick_params(labelsize=20)
+        cbar.set_label("Z-score", fontsize=20)
+
+        # Save and show
+        save_path = os.path.join(directory_path, f'{brain_region}_{condition}_Row_Mean_Heatmap.png')
+        plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        plt.show()
     
     """*********************MISC.************************"""
     def downsample_data(self, data, time_axis, bin_size=10):
@@ -1691,12 +1769,22 @@ class Reward_Training(Experiment):
             numerical_cols = [
                 'Lick AUC', 'Lick Max Peak', 'Lick Mean Z-score',
                 'Tone AUC', 'Tone Max Peak', 'Tone Mean Z-score',
-                "Lick AUC EI", "Lick Max Peak EI", "Lick Mean Z-score EI",
-                "Tone AUC EI", "Tone Max Peak EI", "Tone Mean Z-score EI"
+                # "Lick AUC EI", "Lick Max Peak EI", "Lick Mean Z-score EI",
+                # "Tone AUC EI", "Tone Max Peak EI", "Tone Mean Z-score EI"
             ]
             
             for col in numerical_cols:
+                group[col] = group[col].apply(lambda x: np.mean(x) if isinstance(x, list) else x)
+                group[col] = pd.to_numeric(group[col], errors='coerce')
+
+            for col in numerical_cols:
                 result[col] = group[col].mean()
+
+            # Compute element-wise mean for array columns
+            array_cols = ["Tone Event_Zscore", "Lick Event_Zscore"]
+            for col in array_cols:
+                stacked_arrays = np.vstack(group[col].values)  # Stack into 2D array
+                result[col] = np.mean(stacked_arrays, axis=0)  # Element-wise mean
 
             return pd.Series(result)
 

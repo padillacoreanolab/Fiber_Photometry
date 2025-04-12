@@ -1208,8 +1208,8 @@ class Reward_Competition(Experiment):
         print(df)
         print(df1)
 
-        bar_width = 0.35  
-        gap = 0.075  
+        bar_width = 0.25  
+        gap = 0.05  
         x = np.arange(len(df.columns))  
 
         fig, ax = plt.subplots(figsize=figsize)
@@ -1902,7 +1902,7 @@ class Reward_Competition(Experiment):
         Scatter plot of dominance rank in a cage.
         """
         def filter_by_metric(df, metric_name):
-            metric_columns = df.columns[df.columns == f'Tone {metric_name} Mean{method}']
+            metric_columns = df.columns[df.columns == f'{metric_name} {method}']
 
             # Create two DataFrames, keeping 'subject_name'
             df_tone = df[['subject_name', 'Cage', 'Rank'] + metric_columns.tolist()].copy()
@@ -1934,7 +1934,8 @@ class Reward_Competition(Experiment):
             # Drop rows where 'Rank' is NaN
             df_sorted = df_sorted.dropna(subset=['Rank'])
             x = df_sorted['Rank']
-            y = df_sorted[f'Tone {metric_value} Mean{method}']
+            y = df_sorted[f'{metric_value} {method}']
+            
             if len(x) > 1:  # Pearson requires at least 2 points
                 r_value, p_value = pearsonr(x, y)
             else:
@@ -1943,29 +1944,43 @@ class Reward_Competition(Experiment):
             n_value = len(df_sorted)
 
             # Create the scatter plot with a regression line
-            plt.figure(figsize=(8, 6))
-            sns.scatterplot(data=df_sorted, x='Rank', y=f'Tone {metric_value} Mean{method}', color=color, s=100)
+            plt.figure(figsize=(6, 6))
+            sns.scatterplot(data=df_sorted, x='Rank', y=f'{metric_value} {method}', color=color, s=150, edgecolor='black')
 
             # Add a regression line with R², and remove the shading (confidence interval)
-            sns.regplot(data=df_sorted, x='Rank', y=f'Tone {metric_value} Mean{method}', scatter=False, color='black', line_kws={'lw': 2}, ci=None)
+            sns.regplot(data=df_sorted, x='Rank', y=f'{metric_value} {method}', scatter=False, color='black', line_kws={'lw': 2.5}, ci=None)
 
             print(df_sorted['Rank'].isna().sum())
             print(df_sorted[['Rank']].dropna().head())  # Show non-NaN values
 
             # Set the x-axis ticks to be separated by increments of 1
-            plt.xticks(ticks=range(int(df_sorted['Rank'].min()), int(df_sorted['Rank'].max()) + 1, 1))
+            plt.xticks(ticks=range(int(df_sorted['Rank'].min()), int(df_sorted['Rank'].max()) + 1, 1), fontsize=18)
+            plt.yticks(fontsize=18)
 
-            # Labels and title
-            plt.xlabel('Rank')
-            plt.ylabel('Tone Mean AUC')
-            plt.title(f'{condition} {metric_value} Tone Response to Rank')
+            # Labels and title with larger fonts
+            plt.xlabel('Rank', fontsize=20, labelpad=10)
+            plt.ylabel('AUC Event Induced Z-scored ΔF/F', fontsize=20, labelpad=10)
+            plt.title(f'{condition} {metric_value} Tone Response to Rank', fontsize=22, fontweight='bold', pad=15)
+
+            # Remove the top and right spines (graph borders)
+            plt.gca().spines['top'].set_visible(False)
+            plt.gca().spines['right'].set_visible(False)
+
+            # Thicken left and bottom spines
+            plt.gca().spines['left'].set_linewidth(2.5)
+            plt.gca().spines['bottom'].set_linewidth(2.5)
+
+            # Save the figure
             title = f'{metric_value} {condition} DA response Rank ({brain_region})'
-            save_path = os.path.join(str(directory_path) + '\\' + f'{title}.png')
-            plt.savefig(save_path, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
+            save_path = os.path.join(str(directory_path), f'{title}.png')
+            plt.savefig(save_path, transparent=True, bbox_inches='tight', pad_inches=0.2)
+            plt.show()
+
             return r_value, p_value, n_value
 
         r_nac, p_nac, n_nac = scatter_plot(directory_path, df_sorted_n, method=method, metric_value=metric_name, condition=condition, brain_region="NAc")
         r_mpfc, p_mpfc, n_mpfc = scatter_plot(directory_path, df_sorted_p, method=method, metric_value=metric_name, condition=condition, brain_region="mPFC")
+
         print(f"NAc: r={r_nac:.3f}, p={p_nac:.3f}, n={n_nac}")
         print(f"mPFC: r={r_mpfc:.3f}, p={p_mpfc:.3f}, n={n_mpfc}")
 
@@ -2387,7 +2402,7 @@ class Reward_Competition(Experiment):
                     nac_color='#15616F',   # Color for NAc
                     mpfc_color='#FFAF00',  # Color for mPFC
                     yticks_increment=1, 
-                    figsize=(7,7),  
+                    figsize=(5,7),  
                     pad_inches=0.1):
         if behavior == 'Lick':
             behavior = 'Lick '
@@ -2423,13 +2438,11 @@ class Reward_Competition(Experiment):
         df2 = df_p[[f'{behavior}{metric_name} EI']]
         df3 = df1_p[[f'{behavior}{metric_name} EI']]
 
-        if mean_values2 is None:
-            self.ploting_side_by_side(df, df1, mean_values, sem_values, mean_values1, sem_values1,
+        self.ploting_side_by_side(df, df1, mean_values, sem_values, mean_values1, sem_values1,
                                 nac_color, figsize, metric_name, ylim, 
                                 yticks_increment, title, directory_path, pad_inches,
                                 'Alone', 'Competition')
-        else:
-            self.ploting_side_by_side(df2, df3, mean_values2, sem_values2, mean_values3, sem_values3,
+        self.ploting_side_by_side(df2, df3, mean_values2, sem_values2, mean_values3, sem_values3,
                                 mpfc_color, figsize, metric_name, ylim, 
                                 yticks_increment, title1, directory_path, pad_inches,
                                 'Alone', 'Competition')
