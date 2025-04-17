@@ -1,22 +1,105 @@
+from trial_class import *
+import os
+import re
+
 import numpy as np
 import pandas as pd
 import tdt
+
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-import re
-import os
-from scipy.signal import butter, filtfilt
-from sklearn.linear_model import LinearRegression
-from trial_class import *
-import seaborn as sns
-
-import matplotlib.pyplot as plt
-import re
-from scipy.stats import ttest_rel
-from scipy.stats import linregress
+import matplotlib.colors as mcolors
 import matplotlib.cm as cm
 
-# Behavior Processing
+from scipy.signal import butter, filtfilt
+from scipy.stats import ttest_rel, linregress
+from scipy.optimize import curve_fit
+
+from sklearn.linear_model import LinearRegression
+import seaborn as sns
+from itertools import combinations
+
+# Behavior processing -----------------------------------------------
+def get_trial_dataframes(experiment):
+    """
+    Given an Experiment object, return a dictionary where:
+    - Keys are subject IDs (Trial.subject_name).
+    - Values are DataFrames corresponding to the behaviors of each trial.
+    """
+    trial_data = {}
+
+    for trial in experiment.trials.values():
+        subject_id = trial.subject_name  # Extract subject ID
+        trial_data[subject_id] = trial.behaviors  # Store behaviors DataFrame
+
+    return trial_data
+
+def create_metadata_dataframe(trial_data, behavior="Investigation", desired_bouts=None):
+    """
+    Parameters
+    ----------
+    trial_data : dict
+        Dictionary of { subject_id : DataFrame }, 
+        where each DataFrame has columns: 
+        [Bout, Behavior, Event_Start, Event_End, Duration (s)], etc.
+    
+    behavior : str, optional
+        The behavior type to filter for (default = "Investigation").
+
+    desired_bouts : list or None, optional
+        A list of bout labels to keep. If None, all bouts present in the subject's DataFrame are retained.
+
+    Returns
+    -------
+    pd.DataFrame
+        Metadata DataFrame with columns:
+        [Subject, Bout, Behavior, Total Investigation Time, Average Bout Duration]
+        For each subject and bout in the specified list (or all bouts if None),
+        if the subject never exhibits the specified behavior, a row is included with 
+        Total Investigation Time and Average Bout Duration set to 0.
+    """
+    
+    metadata_rows = []
+
+    # Loop through each subject and its corresponding DataFrame
+    for subject_id, df in trial_data.items():
+        # Determine which bouts to include: use the desired list if provided,
+        # otherwise use all unique bout labels from the DataFrame.
+        if desired_bouts is not None:
+            bouts = desired_bouts
+        else:
+            bouts = df["Bout"].unique()
+
+        # Process each bout for the current subject.
+        for bout in bouts:
+            # Filter the subject's DataFrame for the current bout.
+            df_bout = df[df["Bout"] == bout]
+            # Then, filter for the specified behavior.
+            df_behavior = df_bout[df_bout["Behavior"] == behavior]
+            
+            if df_behavior.empty:
+                # If no investigation events are present in this bout, set metrics to 0.
+                total_investigation_time = 0
+                average_bout_duration = 0
+            else:
+                # Compute total investigation time and average bout duration.
+                total_investigation_time = df_behavior["Duration (s)"].sum()
+                count = df_behavior["Duration (s)"].count()
+                average_bout_duration = total_investigation_time / count if count > 0 else 0
+            
+            metadata_rows.append({
+                "Subject": subject_id,
+                "Bout": bout,
+                "Behavior": behavior,
+                "Total Investigation Time": total_investigation_time,
+                "Average Bout Duration": average_bout_duration
+            })
+
+    # Concatenate all rows into a single DataFrame.
+    final_df = pd.DataFrame(metadata_rows)
+    
+    return final_df
+
 def trim_short_term_to_5min(trial_data, short_term_bout='Short_Term-1', max_duration=300):
     """
     Trims the 'Short_Term-1' bout to only include behavior events within the first 5 minutes (300 seconds)
@@ -66,8 +149,25 @@ def trim_short_term_to_5min(trial_data, short_term_bout='Short_Term-1', max_dura
 
     return trimmed_data 
 
-# Behavior Plotting
-def hc_plot_behavior_times_across_bouts_gray(metadata_df,
+# DA processing -----------------------------------------------------
+def create_big_df_from_exp_da_dict(exp_da_dict):
+    """
+    Merges all subjects' DataFrames from exp_da_dict into one big DataFrame.
+    Adds a 'Subject' column for each row.
+    """
+    all_list = []
+    for subject_id, df_subj in exp_da_dict.items():
+        df_copy = df_subj.copy()
+        df_copy["Subject"] = subject_id
+        all_list.append(df_copy)
+    big_df = pd.concat(all_list, ignore_index=True)
+    return big_df
+
+def exponential_decay(x, A, B, tau):
+    return A + B * np.exp(-x / tau)
+
+# Behavior plotting -------------------------------------------------
+def hc_plot_behavior_times_across_agents_gray(metadata_df,
                                              y_col="Total Investigation Time",
                                              behavior=None,
                                              title='Mean Across Bouts',
@@ -83,11 +183,12 @@ def hc_plot_behavior_times_across_bouts_gray(metadata_df,
                                              save=False,
                                              save_name=None,
                                              bout_order=None):
+    
     """
-    Plots a bar chart with error bars (SEM) and individual subject lines in gray,
+    Plots a bar chart with error bars (SEM) and individual subject lines in grey,
     based on a metadata DataFrame containing columns:
       [Subject, Bout, Behavior, Total Investigation Time, Average Bout Duration].
-    
+
     Parameters:
         - metadata_df (pd.DataFrame): DataFrame with columns:
           [Subject, Bout, Behavior, Total Investigation Time, Average Bout Duration].
@@ -108,35 +209,44 @@ def hc_plot_behavior_times_across_bouts_gray(metadata_df,
         - save_name (str or None): Full file path (with filename and extension) where the image should be saved.
                                    Required if save is True.
         - bout_order (list or None): A list specifying the exact order of the bouts (x-axis categories).
-                                     Example: ['short_term-1', 'novel', 'short_term-2', 'long_term'].
+                                     Example: ['Short_Term-1', 'Novel', 'Short_Term-2', 'Long_Term-1'].
     """
-    # 1) Optionally filter by behavior
+
+    # --- Optional filtering ---
     if behavior is not None:
         metadata_df = metadata_df[metadata_df["Behavior"] == behavior].copy()
         if metadata_df.empty:
             raise ValueError(f"No data found for behavior='{behavior}'.")
 
-    # 2) Check if the desired y_col exists
     if y_col not in metadata_df.columns:
         raise ValueError(f"'{y_col}' not found in metadata_df columns.")
 
-    # 3) Pivot the DataFrame: rows -> Subjects, columns -> Bout, values -> y_col
+    # --- Pivot Data ---
     pivot_df = metadata_df.pivot(index="Subject", columns="Bout", values=y_col)
 
-    # 4) If a bout order is provided, reorder the columns
     if bout_order is not None:
-        # Reindex columns based on the desired order
-        # (Any missing columns will become NaN; if that’s not desired, you could check first)
         pivot_df = pivot_df.reindex(columns=bout_order)
 
-    # 5) Calculate mean and SEM across subjects for each bout
+    # --- Compute stats ---
     mean_values = pivot_df.mean()
     sem_values = pivot_df.sem()
 
-    # 6) Create the plot
+    # --- Perform all pairwise t-tests ---
+    def perform_t_tests(pivot_df):
+        results = {}
+        bout_names = pivot_df.columns.tolist()
+        for bout1, bout2 in combinations(bout_names, 2):
+            paired_df = pivot_df[[bout1, bout2]].dropna()
+            if len(paired_df) > 1:
+                t_stat, p_value = ttest_rel(paired_df[bout1], paired_df[bout2])
+                results[f"{bout1} vs {bout2}"] = {"t_stat": t_stat, "p_value": p_value}
+        return results
+
+    t_test_results = perform_t_tests(pivot_df)
+
+    # --- Plotting ---
     fig, ax = plt.subplots(figsize=figsize)
 
-    # 7) Bar plot with error bars (SEM)
     bars = ax.bar(
         pivot_df.columns, 
         mean_values, 
@@ -149,7 +259,6 @@ def hc_plot_behavior_times_across_bouts_gray(metadata_df,
         error_kw=dict(elinewidth=3, capthick=3, zorder=5)
     )
 
-    # 8) Plot individual subject data in gray (lines and unfilled circles)
     for subject in pivot_df.index:
         ax.plot(pivot_df.columns, pivot_df.loc[subject],
                 linestyle='-', color='gray', alpha=0.5,
@@ -158,14 +267,12 @@ def hc_plot_behavior_times_across_bouts_gray(metadata_df,
                    facecolors='none', edgecolors='gray',
                    s=120, alpha=0.6, linewidth=4, zorder=2)
 
-    # 9) Set axis labels and title
     if ylabel is None:
         ylabel = y_col
     ax.set_ylabel(ylabel, fontsize=30, labelpad=12)
     ax.set_xlabel(xlabel, fontsize=30, labelpad=12)
     ax.set_title(title, fontsize=16)
 
-    # 10) Set x-ticks and labels
     ax.set_xticks(np.arange(len(pivot_df.columns)))
     if custom_xtick_labels is not None:
         ax.set_xticklabels(custom_xtick_labels, fontsize=28)
@@ -175,11 +282,9 @@ def hc_plot_behavior_times_across_bouts_gray(metadata_df,
     else:
         ax.set_xticklabels(pivot_df.columns, fontsize=26)
 
-    # Increase tick label sizes
     ax.tick_params(axis='y', labelsize=30)
     ax.tick_params(axis='x', labelsize=30)
 
-    # 11) Set y-axis limits
     if ylim is None:
         all_values = np.concatenate([pivot_df.values.flatten(), mean_values.values.flatten()])
         min_val = np.nanmin(all_values)
@@ -194,29 +299,39 @@ def hc_plot_behavior_times_across_bouts_gray(metadata_df,
         if ylim[0] < 0:
             ax.axhline(0, color='black', linestyle='--', linewidth=2, zorder=1)
 
-    # 12) Set y-ticks if an increment is provided
     if yticks_increment is not None:
         y_min, y_max = ax.get_ylim()
         y_ticks = np.arange(np.floor(y_min), np.ceil(y_max) + yticks_increment, yticks_increment)
         ax.set_yticks(y_ticks)
 
-    # 13) Remove right & top spines; thicken left & bottom spines
     ax.spines['right'].set_visible(False)
     ax.spines['top'].set_visible(False)
     ax.spines['left'].set_linewidth(5)
     ax.spines['bottom'].set_linewidth(5)
 
-    # 14) Adjust layout, and save the figure if requested
     plt.tight_layout()
     if save:
         if save_name is None:
             raise ValueError("save_name must be provided if save is True.")
         plt.savefig(save_name, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
-    
+
     plt.show()
 
+    # --- Print T-test Results ---
+    if t_test_results:
+        print("\nPaired t-test results (all pairwise comparisons):")
+        for comp, stats in t_test_results.items():
+            p = stats["p_value"]
+            stars = "ns"
+            if p < 0.001:
+                stars = "***"
+            elif p < 0.01:
+                stars = "**"
+            elif p < 0.05:
+                stars = "*"
+            print(f"{comp}: p = {p:.4f} ({stars})")
 
-def plot_behavior_times_across_bouts_colored(metadata_df,
+def hc_plot_behavior_times_across_agents_colored(metadata_df,
                                              y_col="Total Investigation Time",
                                              behavior=None,
                                              title='Mean Across Bouts',
@@ -375,386 +490,391 @@ def plot_behavior_times_across_bouts_colored(metadata_df,
     
     plt.show()
 
-# DA Plotting
-# Plots DA bar graphs
-def plot_da_metrics_combined_oneplot_integrated(experiment, 
-                                                metric_name="Mean Z-score", 
-                                                title="Combined DA Metrics", 
-                                                ylabel="DA Metric", 
-                                                xlabel="Bout", 
-                                                custom_xtick_labels=None, 
-                                                custom_xtick_colors=None, 
-                                                ylim=None, 
-                                                bar_color="#00B7D7", 
-                                                yticks_increment=None, 
-                                                figsize=(14,8), 
-                                                pad_inches=0.1,
-                                                save=False,
-                                                save_name=None):
+# DA plotting -------------------------------------------------------
+def hc_plot_da_across_agents_gray(precomputed_df, 
+             metric_name="Mean Z-score", 
+             title="Combined DA Metrics", 
+             ylabel="DA Metric", 
+             xlabel="Bout", 
+             custom_xtick_labels=None, 
+             custom_xtick_colors=None, 
+             ylim=None, 
+             bar_color="#00B7D7", 
+             yticks_increment=None, 
+             figsize=(14,8), 
+             pad_inches=0.1,
+             save=False,
+             save_name=None):
     """
-    Plots DA metrics across specific bouts for all trials in the experiment.
-    If p-value < 0.05, it adds a horizontal significance line + asterisk above bars.
-
-    Updates:
-    - Unfilled circle markers for individual trials
-    - Thick grey outlines for visibility
+    Plots DA metrics across specific bouts using a provided DataFrame.
+    Prints paired t-test results comparing all pairwise combinations of bouts.
     """
 
     def perform_t_tests(pivot_df):
-        """Performs paired t-tests comparing Acq-ST with Short Term, Long Term, and Novel."""
-        comparisons = {
-            "acq_st_vs_short_term": ("Acq-ST", "Short Term"),
-            "acq_st_vs_long_term": ("Acq-ST", "Long Term"),
-            "acq_st_vs_novel": ("Acq-ST", "Novel")
-        }
-
         results = {}
-
-        for key, (bout1, bout2) in comparisons.items():
-            if bout1 in pivot_df.columns and bout2 in pivot_df.columns:
-                paired_df = pivot_df[[bout1, bout2]].dropna()
-                
-                if len(paired_df) > 1:
-                    t_stat, p_value = ttest_rel(paired_df[bout1], paired_df[bout2])
-                    results[key] = {"t_stat": t_stat, "p_value": p_value}
-        
+        bout_names = pivot_df.columns.tolist()
+        for bout1, bout2 in combinations(bout_names, 2):  # all pairwise combos
+            paired_df = pivot_df[[bout1, bout2]].dropna()
+            if len(paired_df) > 1:
+                t_stat, p_value = ttest_rel(paired_df[bout1], paired_df[bout2])
+                results[f"{bout1} vs {bout2}"] = {"t_stat": t_stat, "p_value": p_value}
         return results
 
-    # Collect per-trial data for the chosen metric
-    trial_data = []
-    for trial_name, trial in experiment.trials.items():
-        if hasattr(trial, "behaviors") and not trial.behaviors.empty:
-            trial_df = trial.behaviors.copy()
-            if metric_name not in trial_df.columns:
-                print(f"Warning: Trial '{trial_name}' does not contain metric '{metric_name}'. Skipping.")
-                continue
-            df_grouped = trial_df.groupby("Bout", as_index=False)[metric_name].mean()
-            df_grouped["Trial"] = trial_name
-            trial_data.append(df_grouped)
-        else:
-            print(f"Warning: Trial '{trial_name}' has no behavior data.")
+    df = precomputed_df.copy()
 
-    if not trial_data:
-        print("No data available to plot.")
-        return
-
-    # Combine all trial data into a single DataFrame.
-    combined_df = pd.concat(trial_data, ignore_index=True)
-
-    # Select only 6 bouts
-    selected_bouts = combined_df["Bout"].unique()[:6]
-    combined_df = combined_df[combined_df["Bout"].isin(selected_bouts)]
-
-    # Pivot the data for line plots: rows=Trial, columns=Bout, values=metric_name
     try:
-        pivot_df = combined_df.pivot(index="Trial", columns="Bout", values=metric_name).fillna(0)
+        pivot_df = df.pivot(index="Subject", columns="Bout", values=metric_name)
     except Exception as e:
-        print("Error pivoting data for line plots:", e)
+        print("Error pivoting data:", e)
         return
 
-    # Compute overall average and SEM for each Bout
-    overall_stats = combined_df.groupby("Bout")[metric_name].agg(['mean', 'sem']).reset_index()
-
-    # Now that pivot_df is created, perform t-tests
+    overall_stats = df.groupby("Bout")[metric_name].agg(['mean', 'sem']).reset_index()
     t_test_results = perform_t_tests(pivot_df)
 
-    # Create the plot
+    # --- Plotting ---
     fig, ax = plt.subplots(figsize=figsize)
+    bar_positions = np.arange(len(overall_stats))
 
-    # Plot the overall average as a bar chart with error bars
-    ax.bar(overall_stats["Bout"], overall_stats["mean"], yerr=overall_stats["sem"],
+    ax.bar(bar_positions, overall_stats["mean"], yerr=overall_stats["sem"],
            capsize=6, color=bar_color, edgecolor='black', linewidth=5, width=0.6,
            error_kw=dict(elinewidth=3, capthick=3, zorder=5))
-    
-    # Overlay individual trial lines (all in gray)
-    for trial in pivot_df.index:
-        ax.plot(pivot_df.columns, pivot_df.loc[trial], linestyle='-', color='gray', 
+
+    # Individual subject lines
+    for subject_id in pivot_df.index:
+        ax.plot(bar_positions, pivot_df.loc[subject_id], linestyle='-', color='gray', 
                 alpha=0.5, linewidth=3, marker='o', markerfacecolor='none', 
-                markeredgecolor='gray', markeredgewidth=2, markersize=10)
+                markeredgecolor='gray', markeredgewidth=3, markersize=10)
 
-    # Set labels and title
-    ax.set_ylabel(ylabel, fontsize=30, labelpad=12)
-    ax.set_xlabel(xlabel, fontsize=30, labelpad=12)
+    # Labels
+    ax.set_ylabel(ylabel, fontsize=35, labelpad=12)
+    ax.set_xlabel(xlabel, fontsize=35, labelpad=12)
     ax.set_title(title, fontsize=28)
 
-    # Set exactly 6 x-tick labels
-    xtick_labels=["Acq-ST", "Short Term", "Long Term", "Novel"]
-    xtick_colors=["teal", "blue", "purple", "orange"]
+    ax.set_xticks(bar_positions)
+    xtick_labels = custom_xtick_labels if custom_xtick_labels else overall_stats["Bout"].tolist()
+    ax.set_xticklabels(xtick_labels, fontsize=35)
+    if custom_xtick_colors:
+        for tick, color in zip(ax.get_xticklabels(), custom_xtick_colors):
+            tick.set_color(color)
 
-    ax.set_xticks(np.arange(4))
-    ax.set_xticklabels(xtick_labels, fontsize=28)
+    ax.tick_params(axis='y', labelsize=35)
+    ax.tick_params(axis='x', labelsize=35)
 
-    # Apply custom colors
-    for tick, color in zip(ax.get_xticklabels(), xtick_colors):
-        tick.set_color(color)
-
-    ax.tick_params(axis='y', labelsize=30)
-    ax.tick_params(axis='x', labelsize=30)
-    
-    # Set y-limits
-    if ylim is None:
-        all_values = np.concatenate([pivot_df.values.flatten(), overall_stats["mean"].values])
-        ax.set_ylim(0, np.nanmax(all_values) * 1.2)
-    else:
+    if ylim:
         ax.set_ylim(ylim)
+    else:
+        all_vals = np.concatenate([pivot_df.values.flatten(), overall_stats["mean"].values])
+        ax.set_ylim(0, np.nanmax(all_vals) * 1.2)
 
-    ax.axhline(y=0, color='black', linestyle='--', linewidth=2)
-
-    # Set y-ticks increment
-    if yticks_increment is not None:
+    if yticks_increment:
         y_min, y_max = ax.get_ylim()
         ax.set_yticks(np.arange(np.floor(y_min), np.ceil(y_max) + yticks_increment, yticks_increment))
 
-    # Remove spines
+    ax.axhline(y=0, color='black', linestyle='--', linewidth=2)
+
     ax.spines['right'].set_visible(False)
     ax.spines['top'].set_visible(False)
     ax.spines['left'].set_linewidth(5)
     ax.spines['bottom'].set_linewidth(5)
 
-    # ---- Plot significance markers ---- #
-    if t_test_results:
-        max_y = ax.get_ylim()[1]
-        sig_y_offset = max_y * 0.05  # Offset above bars
-
-        comparisons = {
-            "acq_st_vs_short_term": (0, 1),
-            "acq_st_vs_long_term": (0, 2),
-            "acq_st_vs_novel": (0, 3)
-        }
-
-        line_spacing = sig_y_offset * 2.5  # Adjust spacing between lines
-        current_y = np.nanmax(overall_stats["mean"]) + sig_y_offset  # Initial line position
-
-        for key, (x1, x2) in comparisons.items():
-            if key in t_test_results:
-                p_value = t_test_results[key]["p_value"]
-                if p_value < 0.05:
-                    significance = "**" if p_value < 0.01 else "*" 
-
-                    # Draw horizontal line
-                    ax.plot([x1, x2], [current_y, current_y], color='black', linewidth=5)
-
-                    # Add asterisks centered above the line
-                    ax.text((x1 + x2) / 2, current_y + sig_y_offset / 1.5, significance, 
-                            fontsize=40, ha='center', color='black')
-
-                    # Move the next line slightly higher to avoid overlap
-                    current_y += line_spacing
-
-    # 13) Adjust layout, and save the figure if requested
     plt.tight_layout()
     if save:
         if save_name is None:
             raise ValueError("save_name must be provided if save is True.")
         plt.savefig(save_name, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
-    
     plt.show()
 
-# Bar graphs with colored identities
-def plot_da_metrics_colored_combined_oneplot_integrated(experiment, 
-                                                metric_name="Mean Z-score", 
-                                                title="Combined DA Metrics", 
-                                                ylabel="DA Metric", 
-                                                xlabel="Bout", 
-                                                custom_xtick_labels=None, 
-                                                custom_xtick_colors=None, 
-                                                ylim=None, 
-                                                bar_color="#00B7D7", 
-                                                yticks_increment=None, 
-                                                figsize=(14,8), 
-                                                pad_inches=0.1,
-                                                save=False,
-                                                save_name=None):
-    """
-    Plots DA metrics across specific bouts for all trials in the experiment.
-    If p-value < 0.05, it adds a horizontal significance line + asterisk above bars.
+    # --- Print T-test Results ---
+    if t_test_results:
+        print("\nPaired t-test results (all pairwise comparisons):")
+        for comp, stats in t_test_results.items():
+            p = stats["p_value"]
+            stars = "ns"
+            if p < 0.001:
+                stars = "***"
+            elif p < 0.01:
+                stars = "**"
+            elif p < 0.05:
+                stars = "*"
+            print(f"{comp}: p = {p:.4f} ({stars})")
 
-    Updates:
-    - Unfilled circle markers for individual trials
-    - Thick grey outlines for visibility
+def hc_plot_da_across_agents_colored(precomputed_df, 
+             metric_name="Mean Z-score", 
+             title="Combined DA Metrics", 
+             ylabel="DA Metric", 
+             xlabel="Bout", 
+             custom_xtick_labels=None, 
+             custom_xtick_colors=None, 
+             ylim=None, 
+             bar_color="#00B7D7", 
+             yticks_increment=None, 
+             figsize=(14,8), 
+             pad_inches=0.1,
+             save=False,
+             save_name=None):
+    """
+    Plots DA metrics across specific bouts using a provided DataFrame.
+    Individual subjects are plotted in unique colors with a legend.
+    Also prints paired t-test results for all pairwise comparisons of bouts.
     """
 
     def perform_t_tests(pivot_df):
-        """Performs paired t-tests comparing Acq-ST with Short Term, Long Term, and Novel."""
-        comparisons = {
-            "acq_st_vs_short_term": ("Acq-ST", "Short Term"),
-            "acq_st_vs_long_term": ("Acq-ST", "Long Term"),
-            "acq_st_vs_novel": ("Acq-ST", "Novel")
-        }
-
         results = {}
-
-        for key, (bout1, bout2) in comparisons.items():
-            if bout1 in pivot_df.columns and bout2 in pivot_df.columns:
-                paired_df = pivot_df[[bout1, bout2]].dropna()
-                
-                if len(paired_df) > 1:
-                    t_stat, p_value = ttest_rel(paired_df[bout1], paired_df[bout2])
-                    results[key] = {"t_stat": t_stat, "p_value": p_value}
-        
+        bout_names = pivot_df.columns.tolist()
+        for bout1, bout2 in combinations(bout_names, 2):
+            paired_df = pivot_df[[bout1, bout2]].dropna()
+            if len(paired_df) > 1:
+                t_stat, p_value = ttest_rel(paired_df[bout1], paired_df[bout2])
+                results[f"{bout1} vs {bout2}"] = {"t_stat": t_stat, "p_value": p_value}
         return results
 
-    # Collect per-trial data for the chosen metric
-    trial_data = []
-    for trial_name, trial in experiment.trials.items():
-        if hasattr(trial, "behaviors") and not trial.behaviors.empty:
-            trial_df = trial.behaviors.copy()
-            if metric_name not in trial_df.columns:
-                print(f"Warning: Trial '{trial_name}' does not contain metric '{metric_name}'. Skipping.")
-                continue
-            df_grouped = trial_df.groupby("Bout", as_index=False)[metric_name].mean()
-            df_grouped["Trial"] = trial_name
-            trial_data.append(df_grouped)
-        else:
-            print(f"Warning: Trial '{trial_name}' has no behavior data.")
+    df = precomputed_df.copy()
 
-    if not trial_data:
-        print("No data available to plot.")
-        return
-
-    # Combine all trial data into a single DataFrame.
-    combined_df = pd.concat(trial_data, ignore_index=True)
-
-    # Select only 6 bouts
-    selected_bouts = combined_df["Bout"].unique()[:6]
-    combined_df = combined_df[combined_df["Bout"].isin(selected_bouts)]
-
-    # Pivot the data for line plots: rows=Trial, columns=Bout, values=metric_name
     try:
-        pivot_df = combined_df.pivot(index="Trial", columns="Bout", values=metric_name).fillna(0)
+        pivot_df = df.pivot(index="Subject", columns="Bout", values=metric_name)
     except Exception as e:
-        print("Error pivoting data for line plots:", e)
+        print("Error pivoting data:", e)
         return
 
-    # Compute overall average and SEM for each Bout
-    overall_stats = combined_df.groupby("Bout")[metric_name].agg(['mean', 'sem']).reset_index()
-
-    # Now that pivot_df is created, perform t-tests
+    overall_stats = df.groupby("Bout")[metric_name].agg(['mean', 'sem']).reset_index()
     t_test_results = perform_t_tests(pivot_df)
 
-    # Create the plot
-    fig, ax = plt.subplots(figsize=figsize)
+    # --- Unique colors for subjects ---
+    subjects = pivot_df.index.tolist()
+    cmap = cm.get_cmap('tab20', len(subjects))
+    color_map = {subject: cmap(i) for i, subject in enumerate(subjects)}
 
-    # Plot the overall average as a bar chart with error bars
-    ax.bar(overall_stats["Bout"], overall_stats["mean"], yerr=overall_stats["sem"],
+    # --- Plotting ---
+    fig, ax = plt.subplots(figsize=figsize)
+    bar_positions = np.arange(len(overall_stats))
+
+    ax.bar(bar_positions, overall_stats["mean"], yerr=overall_stats["sem"],
            capsize=6, color=bar_color, edgecolor='black', linewidth=5, width=0.6,
            error_kw=dict(elinewidth=3, capthick=3, zorder=5))
-    
-    # Assign unique colors per trial using tab20 colormap
-    import matplotlib.cm as cm
-    colormap = cm.get_cmap('tab20', len(pivot_df.index))  # Create enough unique colors
-    trial_colors = {trial: colormap(i) for i, trial in enumerate(pivot_df.index)}
 
-    # Overlay individual trial lines in unique colors
-    for trial in pivot_df.index:
-        color = trial_colors[trial]
-        ax.plot(pivot_df.columns, pivot_df.loc[trial], linestyle='-', color=color, 
-                alpha=0.7, linewidth=3, marker='o', markerfacecolor='none', 
-                markeredgecolor=color, markeredgewidth=2, markersize=10)
+    # Individual subject lines with unique colors
+    for subject_id in pivot_df.index:
+        ax.plot(bar_positions, pivot_df.loc[subject_id], linestyle='-',
+                color=color_map[subject_id], linewidth=3, marker='o',
+                markerfacecolor='none', markeredgecolor=color_map[subject_id],
+                markeredgewidth=3, markersize=10, label=str(subject_id))
 
-    # Create legend handles for each trial/subject
-    import matplotlib.lines as mlines
-    legend_handles = [mlines.Line2D([], [], color=color, label=trial, 
-                                    marker='o', markerfacecolor='none', 
-                                    markeredgecolor=color, markeredgewidth=2, markersize=8, linewidth=2)
-                    for trial, color in trial_colors.items()]
+    # Add legend (one entry per subject)
+    ax.legend(title="Subjects", fontsize=14, title_fontsize=16, bbox_to_anchor=(1.05, 1), loc='upper left')
 
-    # Add legend on the side
-    ax.legend(handles=legend_handles, title="Subject ID", bbox_to_anchor=(1.05, 1), loc='upper left', 
-            fontsize=14, title_fontsize=16, frameon=True, facecolor='white', edgecolor='lightgray')
-
-
-    # Set labels and title
-    ax.set_ylabel(ylabel, fontsize=30, labelpad=12)
-    ax.set_xlabel(xlabel, fontsize=30, labelpad=12)
+    # Labels
+    ax.set_ylabel(ylabel, fontsize=35, labelpad=12)
+    ax.set_xlabel(xlabel, fontsize=35, labelpad=12)
     ax.set_title(title, fontsize=28)
 
-    # Set exactly 6 x-tick labels
-    xtick_labels=["Acq-ST", "Short Term", "Long Term", "Novel"]
-    xtick_colors=["teal", "blue", "purple", "orange"]
+    ax.set_xticks(bar_positions)
+    xtick_labels = custom_xtick_labels if custom_xtick_labels else overall_stats["Bout"].tolist()
+    ax.set_xticklabels(xtick_labels, fontsize=35)
+    if custom_xtick_colors:
+        for tick, color in zip(ax.get_xticklabels(), custom_xtick_colors):
+            tick.set_color(color)
 
-    ax.set_xticks(np.arange(4))
-    ax.set_xticklabels(xtick_labels, fontsize=28)
+    ax.tick_params(axis='y', labelsize=35)
+    ax.tick_params(axis='x', labelsize=35)
 
-    # Apply custom colors
-    for tick, color in zip(ax.get_xticklabels(), xtick_colors):
-        tick.set_color(color)
-
-    ax.tick_params(axis='y', labelsize=30)
-    ax.tick_params(axis='x', labelsize=30)
-    
-    # Set y-limits
-    if ylim is None:
-        all_values = np.concatenate([pivot_df.values.flatten(), overall_stats["mean"].values])
-        ax.set_ylim(0, np.nanmax(all_values) * 1.2)
-    else:
+    if ylim:
         ax.set_ylim(ylim)
+    else:
+        all_vals = np.concatenate([pivot_df.values.flatten(), overall_stats["mean"].values])
+        ax.set_ylim(0, np.nanmax(all_vals) * 1.2)
 
-    ax.axhline(y=0, color='black', linestyle='--', linewidth=2)
-
-    # Set y-ticks increment
-    if yticks_increment is not None:
+    if yticks_increment:
         y_min, y_max = ax.get_ylim()
         ax.set_yticks(np.arange(np.floor(y_min), np.ceil(y_max) + yticks_increment, yticks_increment))
 
-    # Remove spines
+    ax.axhline(y=0, color='black', linestyle='--', linewidth=2)
+
     ax.spines['right'].set_visible(False)
     ax.spines['top'].set_visible(False)
     ax.spines['left'].set_linewidth(5)
     ax.spines['bottom'].set_linewidth(5)
 
-    # ---- Plot significance markers ---- #
-    if t_test_results:
-        max_y = ax.get_ylim()[1]
-        sig_y_offset = max_y * 0.05  # Offset above bars
-
-        comparisons = {
-            "acq_st_vs_short_term": (0, 1),
-            "acq_st_vs_long_term": (0, 2),
-            "acq_st_vs_novel": (0, 3)
-        }
-
-        line_spacing = sig_y_offset * 2.5  # Adjust spacing between lines
-        current_y = np.nanmax(overall_stats["mean"]) + sig_y_offset  # Initial line position
-
-        for key, (x1, x2) in comparisons.items():
-            if key in t_test_results:
-                p_value = t_test_results[key]["p_value"]
-                if p_value < 0.05:
-                    significance = "**" if p_value < 0.01 else "*" 
-
-                    # Draw horizontal line
-                    ax.plot([x1, x2], [current_y, current_y], color='black', linewidth=5)
-
-                    # Add asterisks centered above the line
-                    ax.text((x1 + x2) / 2, current_y + sig_y_offset / 1.5, significance, 
-                            fontsize=40, ha='center', color='black')
-
-                    # Move the next line slightly higher to avoid overlap
-                    current_y += line_spacing
-
-    # 13) Adjust layout, and save the figure if requested
     plt.tight_layout()
     if save:
         if save_name is None:
             raise ValueError("save_name must be provided if save is True.")
         plt.savefig(save_name, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
-    
     plt.show()
 
+    # --- Print T-test Results ---
+    if t_test_results:
+        print("\nPaired t-test results (all pairwise comparisons):")
+        for comp, stats in t_test_results.items():
+            p = stats["p_value"]
+            stars = "ns"
+            if p < 0.001:
+                stars = "***"
+            elif p < 0.01:
+                stars = "**"
+            elif p < 0.05:
+                stars = "*"
+            print(f"{comp}: p = {p:.4f} ({stars})")
 
+def plot_peak_da_for_subsequent_investigations(
+    exp_da_dict,
+    selected_bouts=None,             # e.g. ["s1-1","s1-2"]
+    n_subsequent_investigations=3,   # e.g. keep first 3 investigations per (Subject, Bout)
+    peak_col="Max Peak",             # which column holds the per-event peak DA
+    metric_type='slope',             # choose 'slope' or 'decay'
+    figsize=(14, 8),
+    line_order=None,
+    custom_colors=None,
+    custom_legend_labels=None,
+    custom_xtick_labels=None,
+    ylim=None,
+    ytick_increment=None,
+    xlabel="Investigation Index",
+    ylabel="Avg " + "Max Peak",
+    plot_title="Average Peak per Investigation"
+):
+    """
+    1) Merges all DataFrames in exp_da_dict into one big DataFrame.
+    2) Filters for the specified bouts (e.g. ["s1-1", "s1-2"]).
+    3) Within each (Subject, Bout), sorts by Event_Start and assigns an 'InvestigationIndex'
+       (1 for the first event, 2 for the second, etc.).
+    4) Keeps only the first n_subsequent_investigations per (Subject, Bout).
+    5) Groups by (Bout, InvestigationIndex) across subjects and computes the average of peak_col.
+    6) For each Bout, fits either a linear regression (if metric_type='slope') or an exponential decay
+       (if metric_type='decay') to the AvgPeak vs. InvestigationIndex data.
+       The computed value (slope or decay constant) is shown in the legend.
+    7) Plots each Bout as a line using full custom visual styling.
+    
+    Returns the aggregated DataFrame used for plotting.
+    """
+    # 1) Merge all subject data
+    big_df = create_big_df_from_exp_da_dict(exp_da_dict)
+    
+    # 2) Filter for the chosen bouts if provided
+    if selected_bouts is not None:
+        big_df = big_df[big_df["Bout"].isin(selected_bouts)].copy()
+    
+    if big_df.empty:
+        print("No data left after filtering for bouts. Nothing to plot.")
+        return pd.DataFrame()
+    
+    # 3) Within each (Subject, Bout), sort by Event_Start and assign an InvestigationIndex
+    big_df.sort_values(["Subject", "Bout", "Event_Start"], inplace=True)
+    big_df["InvestigationIndex"] = big_df.groupby(["Subject", "Bout"]).cumcount() + 1
+    
+    # 4) Keep only the first n_subsequent_investigations per (Subject, Bout)
+    big_df = big_df[big_df["InvestigationIndex"] <= n_subsequent_investigations]
+    
+    # 5) Group by (Bout, InvestigationIndex) and compute average peak and subject count
+    agg_df = (
+        big_df.groupby(["Bout", "InvestigationIndex"], as_index=False)
+        .agg(
+            SubjectCount=("Subject", "nunique"),
+            AvgPeak=(peak_col, "mean")
+        )
+    )
+    
+    # 6) Create figure with custom styling
+    if custom_colors is None:
+        custom_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_linewidth(5)
+    ax.spines["bottom"].set_linewidth(5)
+    ax.tick_params(axis="both", which="major", labelsize=48)
+    
+    metrics_dict = {}  # to store computed metric for each Bout
+    
+    # Determine unique bouts to plot (order by line_order if provided)
+    if line_order is None:
+        unique_bouts = sorted(agg_df["Bout"].unique())
+    else:
+        unique_bouts = line_order
+    
+    # 7) For each Bout, fit the data and plot the line
+    for i, bout in enumerate(unique_bouts):
+        df_line = agg_df[agg_df["Bout"] == bout].copy()
+        df_line.sort_values("InvestigationIndex", inplace=True)
+        
+        x_vals = df_line["InvestigationIndex"].values
+        y_vals = df_line["AvgPeak"].values
+        
+        if len(x_vals) == 0 or len(y_vals) == 0:
+            print(f"Skipping bout '{bout}' due to no data.")
+            continue
+        
+        if metric_type.lower() == 'slope':
+            slope, intercept, r_val, p_val, std_err = linregress(x_vals, y_vals)
+            metrics_dict[bout] = slope
+            metric_label = f"slope: {slope:.3f}"
+        elif metric_type.lower() == 'decay':
+            p0 = (np.min(y_vals), np.max(y_vals)-np.min(y_vals), 1.0)  # initial guess: A, B, tau
+            try:
+                popt, _ = curve_fit(exponential_decay, x_vals, y_vals, p0=p0)
+                tau = popt[2]
+                metrics_dict[bout] = tau
+                metric_label = f"decay: {tau:.3f}"
+            except RuntimeError:
+                metrics_dict[bout] = np.nan
+                metric_label = "decay: N/A"
+                print(f"Warning: exponential fit failed for bout '{bout}'.")
+        else:
+            raise ValueError("metric_type must be 'slope' or 'decay'.")
+        
+        # Prepare legend text; incorporate custom legend labels if provided
+        if custom_legend_labels and i < len(custom_legend_labels):
+            legend_text = custom_legend_labels[i]
+        else:
+            legend_text = bout
+        # Append computed metric and subject count (n) to legend text
+        legend_text += f" ({metric_label}, n={df_line['SubjectCount'].max()})"
+        
+        color = custom_colors[i % len(custom_colors)]
+        ax.plot(
+            x_vals, y_vals,
+            marker='o', linestyle='-',
+            color=color,
+            linewidth=5, markersize=30,
+            label=legend_text
+        )
+    
+    # 8) Set axis labels and formatting
+    ax.set_xlabel(xlabel, fontsize=44, labelpad=12)
+    ax.set_ylabel(ylabel, fontsize=44, labelpad=12)
+    
+    if ylim is not None:
+        ax.set_ylim(ylim)
+        if ytick_increment is not None:
+            y_ticks = np.arange(ylim[0], ylim[1] + ytick_increment, ytick_increment)
+            ax.set_yticks(y_ticks)
+            y_tick_labels = [f"{int(yt)}" if float(yt).is_integer() else f"{yt:.1f}" for yt in y_ticks]
+            ax.set_yticklabels(y_tick_labels, fontsize=44)
+    
+    if custom_xtick_labels:
+        ax.set_xticks(np.arange(1, len(custom_xtick_labels) + 1))
+        ax.set_xticklabels(custom_xtick_labels, fontsize=44)
+    else:
+        unique_x = sorted(agg_df["InvestigationIndex"].unique())
+        ax.set_xticks(unique_x)
+        ax.set_xticklabels([str(x) for x in unique_x], fontsize=44)
+    
+    if plot_title:
+        ax.set_title(plot_title, fontsize=20)
+    
+    ax.legend(fontsize=26)
+    plt.tight_layout()
+    plt.savefig("my_plot.png", transparent=True, dpi=300)
+    plt.show()
+    
+    print(f"\n=== Computed Metric ({metric_type.upper()}): ===")
+    for bout, val in metrics_dict.items():
+        print(f"Bout: {bout}, {metric_type} = {val:.3f}")
+    
+    return agg_df
 
-
-
-
-
-
-
-
-
-
-
-
+# -------------------------------------------------------------------
+# Rank stuff. We'll be working on this more: not in documentation yet.
 # Plots DA vs. bout duration plots
 def plot_da_vs_duration_by_agent(experiment, 
                                  agents_of_interest, 
@@ -1009,212 +1129,6 @@ def plot_da_vs_duration_by_agent_colored(experiment,
 
     return points_df
 
-# 1st Investigation Plot Stuff
-def create_behavior_labeled_dataframe(experiment, behavior, n_start, n_end):
-    """
-    Collects all trial data from an experiment, then for each unique subject name
-    and each of the 4 bout types, labels the first n_start to n_end occurrences
-    of the specified behavior, without skipping partial sets.
-
-    Parameters
-    ----------
-    experiment : object
-        An object containing the 'trials' attribute, where each trial has a 'behaviors' DataFrame.
-    behavior : str
-        The behavior type to label (e.g., 'Investigation', 'Approach').
-    n_start : int
-        The starting index (1-based) for labeling occurrences.
-    n_end : int
-        The ending index (inclusive, 1-based) for labeling occurrences.
-
-    Returns
-    -------
-    pd.DataFrame
-        A DataFrame with a new 'behavior_label' column for the labeled occurrences.
-    """
-
-    # Define the bout types of interest
-    bout_types = ["Long_Term-1", "Short_Term-1", "Short_Term-2", "Novel-1"]
-
-    # 1) Gather all trial data into one list
-    all_data = []
-    for trial_id, trial in experiment.trials.items():
-        if hasattr(trial, 'behaviors') and isinstance(trial.behaviors, pd.DataFrame):
-            df_trial = trial.behaviors.copy()
-            df_trial['trial_id'] = trial_id
-            df_trial['subject_name'] = trial.subject_name
-            all_data.append(df_trial)
-
-    # 2) Combine into a single DataFrame
-    df_all = pd.concat(all_data, ignore_index=True)
-
-    # 3) Filter to only rows where 'Behavior' matches the user-specified behavior (case-insensitive)
-    df_all = df_all[df_all['Behavior'].str.lower() == behavior.lower()].copy()
-
-    # 4) We'll store our final labeled rows here
-    labeled_list = []
-
-    # 5) Loop over each subject and each desired bout type
-    for subject_name in df_all['subject_name'].unique():
-        df_subject = df_all[df_all['subject_name'] == subject_name]
-
-        for bout in bout_types:
-            df_bout = df_subject[df_subject['Bout'] == bout].copy()
-
-            # If you have a time column (e.g. 'Event_Start'), sort so you label in chronological order
-            if 'Event_Start' in df_bout.columns:
-                df_bout = df_bout.sort_values(by='Event_Start')
-
-            # Now slice from n_start-1 to n_end (because DataFrame is 0-based, but user might say "1..5")
-            # This will select the n_start-th occurrence up to the n_end-th occurrence
-            df_bout = df_bout.iloc[n_start-1:n_end].copy()
-
-            # If there's nothing to label, move on
-            if df_bout.empty:
-                continue
-
-            # Create a 'behavior_label' that goes from 1.. up to however many rows we selected
-            # (If you need 1..n_end exactly, that's fine; if fewer rows exist, they'll get 1..fewer)
-            df_bout['behavior_label'] = range(1, len(df_bout) + 1)
-
-            # Append these labeled rows to our master list
-            labeled_list.append(df_bout)
-
-    # 6) Combine all labeled chunks into the final DataFrame
-    df_labeled = pd.concat(labeled_list, ignore_index=True) if labeled_list else pd.DataFrame()
-
-    return df_labeled
-
-def compute_mean_by_bout_label(df_labeled, value_column="Mean Z-score"):
-    """
-    Groups the labeled DataFrame by Bout and behavior_label,
-    then computes the mean of the specified value_column.
-
-    Parameters
-    ----------
-    df_labeled : pd.DataFrame
-        Output from create_behavior_labeled_dataframe (must include 'Bout' and 'behavior_label').
-    value_column : str
-        The name of the numeric column to average.
-
-    Returns
-    -------
-    pd.DataFrame
-        A DataFrame with columns ['Bout', 'behavior_label', value_column],
-        where value_column is the groupwise mean.
-    """
-    # Group by Bout and behavior_label, compute mean
-    df_mean = (
-        df_labeled
-        .groupby(['Bout', 'behavior_label'])[value_column]
-        .mean()
-        .reset_index(name=f"{value_column}_mean")
-    )
-    return df_mean
-
-def plot_mean_across_bouts_custom_v2(
-    df_mean,
-    metric_col="Mean Z-score_mean",
-    metric_type='slope',
-    line_order=None,
-    custom_colors=None,
-    custom_legend_labels=None,
-    custom_xtick_labels=None,
-    ylim=None,
-    ytick_increment=None,  # <-- Changed from yticks_values to increment
-    xlabel="Investigation Bout Number",
-    ylabel="Global Z-scored ΔF/F",
-    plot_title=None
-):
-    """
-    Plots average metric (e.g., Mean Z-score) vs. behavior_label for each bout.
-    Allows full customization of line order, colors, legend, and automatic y-ticks by increment.
-    """
-
-    if not {"Bout", "behavior_label", metric_col}.issubset(df_mean.columns):
-        raise ValueError(f"df_mean must contain 'Bout', 'behavior_label', and '{metric_col}' columns.")
-
-    bouts = line_order if line_order else df_mean['Bout'].unique()
-
-    if custom_colors is None:
-        custom_colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
-
-    fig, ax = plt.subplots(figsize=(14, 8))
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_linewidth(5)
-    ax.spines['bottom'].set_linewidth(5)
-    ax.tick_params(axis='both', which='major', labelsize=48)
-
-    metrics_dict = {}
-
-    for i, bout in enumerate(bouts):
-        df_bout = df_mean[df_mean['Bout'] == bout].copy()
-        df_bout.sort_values(by='behavior_label', inplace=True)
-
-        x_vals = df_bout['behavior_label'].values
-        y_vals = df_bout[metric_col].values
-
-        if len(x_vals) == 0 or len(y_vals) == 0:
-            print(f"Skipping bout '{bout}' due to no data.")
-            continue
-
-        if metric_type.lower() == 'slope':
-            slope, intercept, r_val, p_val, std_err = linregress(x_vals, y_vals)
-            metrics_dict[bout] = slope
-        else:
-            raise ValueError("Currently, only 'slope' is supported.")
-
-        legend_text = custom_legend_labels[i] if custom_legend_labels and i < len(custom_legend_labels) else bout
-        legend_text += f" (slope: {metrics_dict[bout]:.3f})"
-
-        color = custom_colors[i % len(custom_colors)]
-        ax.plot(
-            x_vals, y_vals,
-            marker='o', linestyle='-',
-            color=color,
-            linewidth=5, markersize=30,
-            label=legend_text
-        )
-
-    ax.set_xlabel(xlabel, fontsize=44, labelpad=12)
-    ax.set_ylabel(ylabel, fontsize=44, labelpad=12)
-
-    # --- Y-limits and Y-tick formatting ---
-    if ylim is not None:
-        ax.set_ylim(ylim)
-        if ytick_increment is not None:
-            y_ticks = np.arange(ylim[0], ylim[1] + ytick_increment, ytick_increment)
-            ax.set_yticks(y_ticks)
-
-            # Format tick labels: integer if whole number, else 1 decimal
-            y_tick_labels = [f"{int(yt)}" if yt.is_integer() else f"{yt:.1f}" for yt in y_ticks]
-            ax.set_yticklabels(y_tick_labels, fontsize=44)
-
-
-    # --- X-ticks ---
-    if custom_xtick_labels:
-        ax.set_xticks(np.arange(1, len(custom_xtick_labels) + 1))
-        ax.set_xticklabels(custom_xtick_labels, fontsize=44)
-    else:
-        unique_x = sorted(df_mean['behavior_label'].unique())
-        ax.set_xticks(unique_x)
-        ax.set_xticklabels([str(x) for x in unique_x], fontsize=44)
-
-    if plot_title:
-        ax.set_title(plot_title, fontsize=20)
-
-    ax.legend(fontsize=26)
-    plt.tight_layout()
-    plt.savefig("my_plot.png", transparent=True, dpi=300)
-    plt.show()
-
-    print(f"\n=== Computed Metric ({metric_type.upper()}): ===")
-    for bout, val in metrics_dict.items():
-        print(f"Bout: {bout}, {metric_type} = {val:.3f}")
-
-
-# Ranks Stuff
 def assign_subject_ranks_to_experiment(experiment, rank_csv_path):
     """
     Loads subject ranks from CSV and assigns each trial’s .behaviors DataFrame a new 'Rank' column.
@@ -1253,7 +1167,6 @@ def generate_investigation_per_agent_df(experiment, rank_csv_path=None, behavior
     Returns:
         DataFrame where rows = subjects, columns = [Total_Acq-ST, Avg_Acq-ST, ...], NaNs filled with 0.
     """
-    import pandas as pd
 
     # Load rank CSV if provided
     rank_dict = {}
