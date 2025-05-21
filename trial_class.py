@@ -380,8 +380,6 @@ class Trial:
         # 6. Store the resulting DataFrame in the instance.
         self.behaviors = pd.DataFrame(bout_rows)
 
-
-
     def combine_consecutive_behaviors(self, behavior_name='all', bout_time_threshold=1):
         """
         Combines consecutive behavior events if they occur within a specified time threshold
@@ -539,6 +537,71 @@ class Trial:
             plt.show()
 
 
+    def plot_first_behavior_PETHs(self, behavior = "Investigation"):
+            """
+            Plot the first investigation of each bout as side-by-side subplots.
+            Each subplot shows:
+            - The investigation trace using the relative time axis.
+            - A dashed black line at x=0 (start).
+            - A dashed blue line at x=Duration (s) for the investigation end.
+            - A dashed red line at x=Time of Max Peak.
+            
+            All plots share the same y-axis limits.
+            RELATIVE DA STUFF MUST BE CALLED BEFORE YOU CAN PLOT
+            """ 
+            # 1. Filter to only 'Investigation' rows
+            df_invest = self.behaviors[self.behaviors["Behavior"] == behavior].copy()
+            
+            # 2. Identify the first investigation of each bout.
+            df_first_invest = df_invest.groupby("Bout", as_index=False).first()
+            
+            # Number of plots equals the number of first investigations
+            n_plots = len(df_first_invest)
+            
+            # Create side-by-side subplots
+            fig, axes = plt.subplots(1, n_plots, figsize=(5 * n_plots, 4), sharey=True)
+            
+            # If only one bout, ensure axes is iterable
+            if n_plots == 1:
+                axes = [axes]
+            
+            # Loop through each first investigation row and plot
+            for i, (_, row) in enumerate(df_first_invest.iterrows()):
+                ax = axes[i]
+                
+                # Extract arrays for plotting
+                x = row["Relative_Time_Axis"]  
+                y = row["Relative_Zscore"]  
+                
+                # Plot main investigation trace
+                ax.plot(x, y, label=f"Bout: {row['Bout']}")
+                
+                # Dashed black line at investigation start (x=0)
+                ax.axvline(x=0, color='black', linestyle='--', label="Investigation Start")
+                
+                # Dashed blue line at investigation end (x = duration)
+                end_time = row["Duration (s)"]
+                ax.axvline(x=end_time, color='blue', linestyle='--', label="Investigation End")
+                
+                # Dashed red line at time of max peak
+                max_peak_time = row["Time of Max Peak"]
+                ax.axvline(x=max_peak_time, color='red', linestyle='--', label="Time of Max Peak")
+                
+                # Set y-axis limits
+                ax.set_ylim([-2.5, 14])
+                
+                # Titles and labels for each subplot
+                ax.set_title(f"Bout {row['Bout']}")
+                ax.set_xlabel("Relative Time (s)")
+            
+            # Set a common y-axis label on the leftmost subplot
+            axes[0].set_ylabel("Z-score")
+            
+            # Display the legend on the first subplot (optional)
+            axes[0].legend()
+            
+            plt.tight_layout()
+            plt.show()
 
     '''********************************** MISC **********************************'''
     def find_baseline_period(self):
@@ -569,154 +632,155 @@ class Trial:
         
 
 
-    def compute_event_induced_DA(self, pre_time=4, post_time=15):
+    def compute_behavior_relative_DA(self, pre_time=4, post_time=15, mode='EI'):
         """
-        Computes the peri-event z-scored DA signal for each event in self.behaviors.
-        Each event's DA signal is baseline-corrected by subtracting the mean z-score
-        from the pre-event period. Two new columns are added to self.behaviors:
-        - 'Event_Time_Axis': A common time axis (relative to event onset).
-        - 'Event_Zscore': The baseline-corrected z-score signal, interpolated onto the common time axis.
+        Computes the peri-event DA signal for each event in self.behaviors.
         
-        This version uses np.interp without left/right arguments, so any time points outside the 
-        real data range are clamped to the first/last available value.
+        Depending on the mode, the signal is processed differently:
+        - mode='EI': The DA signal is baseline-corrected by subtracting the mean 
+            z-score from the pre-event period (i.e. event-induced).
+        - mode='standard': The raw DA signal is used without baseline correction.
+        
+        In both cases, the signal is interpolated onto a common time axis relative 
+        to event onset.
+        
+        Two new columns are added to self.behaviors:
+        - 'Relative_Time_Axis': A common time axis (relative to event onset).
+        - 'Relative_Zscore': The processed z-score signal, interpolated onto that axis.
         
         Parameters:
         - pre_time (float): Seconds to include before event onset.
         - post_time (float): Seconds to include after event onset.
+        - mode (str): Either 'EI' (baseline-corrected) or 'standard' (raw).
         """
         if self.behaviors is None or self.behaviors.empty:
-            print(f"Trial {self.subject_name}: No behavior events available to compute event-induced DA.")
+            print(f"Trial {self.subject_name}: No behavior events available to compute behavior-relative DA.")
             return
 
         # Calculate a common time axis based on the average sampling interval.
         dt = np.mean(np.diff(self.timestamps))
         common_time_axis = np.arange(-pre_time, post_time, dt)
 
-        # Lists to store the common time axis and the interpolated z-score signal for each event.
-        event_time_list = []
-        event_zscore_list = []
+        # Lists to hold the computed axes and processed signals for each event.
+        relative_time_list = []
+        relative_zscore_list = []
 
-        # Process each event in the behaviors DataFrame.
+        # Process each event.
         for idx, row in self.behaviors.iterrows():
             event_start = row['Event_Start']
             window_start = event_start - pre_time
             window_end = event_start + post_time
 
-            # Identify indices within the peri-event window.
+            # Select data within the peri-event window.
             mask = (self.timestamps >= window_start) & (self.timestamps <= window_end)
             if not np.any(mask):
-                # If no data is available, fill with NaNs.
-                event_time_list.append(np.full(common_time_axis.shape, np.nan))
-                event_zscore_list.append(np.full(common_time_axis.shape, np.nan))
+                relative_time_list.append(np.full(common_time_axis.shape, np.nan))
+                relative_zscore_list.append(np.full(common_time_axis.shape, np.nan))
                 continue
 
             # Create a time axis relative to the event onset.
             rel_time = self.timestamps[mask] - event_start
             signal = self.zscore[mask]
 
-            # Compute baseline using the pre-event portion.
-            pre_mask = rel_time < 0
-            baseline = np.nanmean(signal[pre_mask]) if np.any(pre_mask) else 0
+            if mode == 'EI':
+                # For event-induced mode, subtract the pre-event baseline.
+                pre_mask = rel_time < 0
+                baseline = np.nanmean(signal[pre_mask]) if np.any(pre_mask) else 0
+                processed_signal = signal - baseline
+            elif mode == 'standard':
+                # For standard mode, leave the raw signal intact.
+                processed_signal = signal
+            else:
+                raise ValueError("Mode must be either 'EI' or 'standard'")
 
-            # Baseline-correct the signal.
-            corrected_signal = signal - baseline
+            # Interpolate the processed signal onto the common time axis.
+            interp_signal = np.interp(common_time_axis, rel_time, processed_signal)
 
-            # Interpolate the corrected signal onto the common time axis.
-            # Removing left/right arguments clamps values to the boundaries.
-            interp_signal = np.interp(common_time_axis, rel_time, corrected_signal)
+            relative_time_list.append(common_time_axis)
+            relative_zscore_list.append(interp_signal)
 
-            event_time_list.append(common_time_axis)
-            event_zscore_list.append(interp_signal)
-
-        # Save the computed arrays as new columns in the behaviors DataFrame.
-        self.behaviors['Event_Time_Axis'] = event_time_list
-        self.behaviors['Event_Zscore'] = event_zscore_list
-
+        # Save the computed arrays as new columns.
+        self.behaviors['Relative_Time_Axis'] = relative_time_list
+        self.behaviors['Relative_Zscore'] = relative_zscore_list
 
 
     def compute_da_metrics(self, 
-                        use_fractional=False, 
+                        use_max_length=False, 
                         max_bout_duration=30, 
-                        use_adaptive=False, 
-                        allow_bout_extension=False,
-                        mode='standard'):
+                        mode='standard', 
+                        pre_time=4, 
+                        post_time=15):
         """
         Computes DA metrics for each behavior event (row) in self.behaviors.
-
-        Modes:
-        - mode='standard': Metrics are computed using self.timestamps and self.zscore,
-            with the window defined from Event_Start to Event_End (with optional fractional and adaptive adjustments).
-        - mode='EI': Metrics are computed using event-induced data stored in 
-            'Event_Time_Axis' and 'Event_Zscore' (precomputed via compute_event_induced_DA()). 
-            In this mode the initial window is 0 (event onset) to the event duration (from 'Duration (s)' column),
-            and then use_fractional and use_adaptive are applied to adjust that effective end.
-
+        
+        Two modes are available:
+        
+        - mode='standard': Metrics are computed from self.timestamps and self.zscore,
+        using the event’s absolute timing (window from Event_Start to Event_End, possibly truncated).
+        The "Time of Max Peak" is computed relative to the event onset.
+        
+        - mode='EI': Metrics are computed from behavior-relative data stored in 
+        'Relative_Time_Axis' and 'Relative_Zscore'. These are computed using 
+        compute_behavior_relative_DA (if not already computed) with the specified pre/post times.
+        In this branch the window is defined from 0 (event onset) to the event duration (from the 
+        'Duration (s)' column), with optional max length adjustments.
+        
+        Additionally, if the behavior lasts less than 1 second, the window is allowed to extend
+        past the bout end to search for the next peak.
+        
         Metrics computed:
         - AUC: Area under the z-score curve.
         - Max Peak: Maximum z-score in the window.
-        - Time of Max Peak: Time at which the maximum occurs (relative to event onset in EI mode, absolute in standard mode).
+        - Time of Max Peak: For standard mode, the time (relative to event onset) at which the maximum occurs;
+                            for EI mode, this is directly obtained from the relative time axis.
         - Mean Z-score: Mean z-score over the window.
+        - Adjusted End: The final effective window end after any adjustments.
         
-        In both modes, the original event end is stored in 'Original End' and the final adjusted window end is stored in 'Adjusted End'.
-
         Parameters:
-        - use_fractional (bool): If True, limit the window to max_bout_duration seconds.
-        - max_bout_duration (float): Maximum allowed window duration (in seconds) if fractional.
-        - use_adaptive (bool): If True, adjust the window based on identifying the first local minimum following the peak.
-        - allow_bout_extension (bool): If True, extend the window if no local minimum is found.
-        - mode (str): Either 'standard' (default) or 'EI' for event-induced mode.
+        - use_max_length (bool): If True, limit the window to max_bout_duration seconds.
+        - max_bout_duration (float): Maximum allowed window duration (in seconds).
+        - mode (str): Either 'standard' or 'EI'.
+        - pre_time (float): (For EI mode) Seconds before event onset used in computing the relative DA.
+        - post_time (float): (For EI mode) Seconds after event onset used in computing the relative DA.
         """
         if self.behaviors.empty:
             return
 
         # Ensure metric columns exist.
-        for col in ['AUC', 'Max Peak', 'Time of Max Peak', 'Mean Z-score', 'Original End', 'Adjusted End']:
+        for col in ['AUC', 'Max Peak', 'Time of Max Peak', 'Mean Z-score', 'Adjusted End']:
             if col not in self.behaviors.columns:
                 self.behaviors[col] = np.nan
 
         standard_end_time = self.timestamps[-1]
 
         if mode == 'standard':
-            # standard mode: using self.timestamps and self.zscore.
+            # Ensure behavior-relative DA is computed if needed.
+            if 'Relative_Time_Axis' not in self.behaviors.columns or 'Relative_Zscore' not in self.behaviors.columns:
+                self.compute_behavior_relative_DA(pre_time=pre_time, post_time=post_time, mode='standard')
+            # In standard mode, work with absolute timestamps and raw zscore.
             for i, row in self.behaviors.iterrows():
                 start_time = row['Event_Start']
                 orig_end_time = row['Event_End']
-                end_time = orig_end_time  # default window end
+                bout_duration = orig_end_time - start_time
+                # Default window end is orig_end_time.
+                end_time = orig_end_time
 
-                self.behaviors.loc[i, 'Original End'] = orig_end_time
+                # Limit window duration if required.
+                if use_max_length and bout_duration > max_bout_duration:
+                    end_time = start_time + max_bout_duration
 
-                # Apply fractional window truncation.
-                if use_fractional:
-                    bout_duration = orig_end_time - start_time
-                    if bout_duration > max_bout_duration:
-                        end_time = start_time + max_bout_duration
+                # If the behavior lasts less than 1 second, extend the window to look for the next peak.
+                if bout_duration < 1:
+                    extension_mask = (self.timestamps > orig_end_time)
+                    if np.any(extension_mask):
+                        extended_ts = self.timestamps[extension_mask]
+                        extended_z = self.zscore[extension_mask]
+                        # Find peaks in the extended portion.
+                        peaks, _ = find_peaks(extended_z)
+                        if peaks.size > 0:
+                            end_time = extended_ts[peaks[0]]
 
-                # Extract current window.
-                mask = (self.timestamps >= start_time) & (self.timestamps <= end_time)
-                window_ts = self.timestamps[mask]
-                window_z = self.zscore[mask]
-                if len(window_ts) < 2:
-                    continue
-
-                # Adaptive adjustment using local minimum detection.
-                if use_adaptive:
-                    peak_idx = np.argmax(window_z)
-                    max_val = window_z[peak_idx]
-                    # Find local minima in the segment after the peak.
-                    local_mins, _ = find_peaks(-window_z[peak_idx:])
-                    if local_mins.size > 0:
-                        # The first local minimum following the peak determines the new window end.
-                        end_time = window_ts[peak_idx + local_mins[0]]
-                    elif allow_bout_extension:
-                        # If no local minimum is found, extend to the end of available data.
-                        extended_mask = (self.timestamps >= start_time) & (self.timestamps <= standard_end_time)
-                        extended_ts = self.timestamps[extended_mask]
-                        if len(extended_ts) > 0:
-                            end_time = extended_ts[-1]
-                        else:
-                            end_time = end_time
-
-                # Re-extract final window.
+                # Extract final window.
                 final_mask = (self.timestamps >= start_time) & (self.timestamps <= end_time)
                 final_ts = self.timestamps[final_mask]
                 final_z = self.zscore[final_mask]
@@ -728,48 +792,49 @@ class Trial:
                 final_max_idx = np.argmax(final_z)
                 final_max_val = final_z[final_max_idx]
                 final_peak_time = final_ts[final_max_idx]
+                # Compute relative time of max peak (relative to event onset)
+                relative_peak_time = final_peak_time - start_time
 
                 self.behaviors.loc[i, 'AUC'] = auc
                 self.behaviors.loc[i, 'Max Peak'] = final_max_val
-                self.behaviors.loc[i, 'Time of Max Peak'] = final_peak_time
+                self.behaviors.loc[i, 'Time of Max Peak'] = relative_peak_time
                 self.behaviors.loc[i, 'Mean Z-score'] = mean_z
                 self.behaviors.loc[i, 'Adjusted End'] = end_time
 
         elif mode == 'EI':
-            # EI mode: use event-induced data.
-            if 'Event_Time_Axis' not in self.behaviors.columns or 'Event_Zscore' not in self.behaviors.columns:
-                print("Event-induced data not found in behaviors. Please run compute_event_induced_DA() first.")
-                return
-
+            # For EI mode, ensure that the behavior-relative DA data exist.
+            if 'Relative_Time_Axis' not in self.behaviors.columns or 'Relative_Zscore' not in self.behaviors.columns:
+                self.compute_behavior_relative_DA(pre_time=pre_time, post_time=post_time, mode='EI')
+            
+            # Compute metrics using the relative (event-aligned) data.
             for i, row in self.behaviors.iterrows():
-                time_axis = row['Event_Time_Axis']  # Relative to event onset.
-                event_zscore = row['Event_Zscore']    # Baseline-corrected signal.
-                # Initial effective end is the event duration.
+                time_axis = row['Relative_Time_Axis']  # relative to event onset
+                event_zscore = row['Relative_Zscore']    # processed data
+                # The initial effective end is taken from the event duration.
                 effective_end = row['Duration (s)']
-                if use_fractional and effective_end > max_bout_duration:
+                if use_max_length and effective_end > max_bout_duration:
                     effective_end = max_bout_duration
 
-                mask = (time_axis >= 0) & (time_axis <= effective_end)
+                # If the behavior lasts less than 1 second, extend the window to search for the next peak.
+                if effective_end < 1:
+                    time_axis_arr = np.array(time_axis)
+                    event_zscore_arr = np.array(event_zscore)
+                    extension_mask = time_axis_arr > effective_end
+                    if np.any(extension_mask):
+                        extended_time = time_axis_arr[extension_mask]
+                        extended_z = event_zscore_arr[extension_mask]
+                        peaks, _ = find_peaks(extended_z)
+                        if peaks.size > 0:
+                            effective_end = extended_time[peaks[0]]
+
+                # Create mask for time_axis within [0, effective_end].
+                time_axis_arr = np.array(time_axis)
+                event_zscore_arr = np.array(event_zscore)
+                mask = (time_axis_arr >= 0) & (time_axis_arr <= effective_end)
                 if not np.any(mask):
                     continue
-                final_time = time_axis[mask]
-                final_z = event_zscore[mask]
-
-                # Adaptive adjustment using local minimum detection.
-                if use_adaptive:
-                    peak_idx = np.argmax(final_z)
-                    max_val = final_z[peak_idx]
-                    local_mins, _ = find_peaks(-final_z[peak_idx:])
-                    if local_mins.size > 0:
-                        effective_end = final_time[peak_idx + local_mins[0]]
-                    elif allow_bout_extension:
-                        effective_end = np.max(time_axis[time_axis >= 0])
-                # Recompute final window with updated effective_end.
-                mask = (time_axis >= 0) & (time_axis <= effective_end)
-                final_time = time_axis[mask]
-                final_z = event_zscore[mask]
-                if len(final_time) < 2:
-                    continue
+                final_time = time_axis_arr[mask]
+                final_z = event_zscore_arr[mask]
 
                 auc = np.trapz(final_z, final_time)
                 mean_z = np.mean(final_z)
@@ -783,4 +848,65 @@ class Trial:
                 self.behaviors.loc[i, 'Mean Z-score'] = mean_z
                 self.behaviors.loc[i, 'Adjusted End'] = effective_end
 
+        else:
+            raise ValueError("Mode must be either 'standard' or 'EI'")
 
+
+    def compute_event_induced_DA(self, pre_time=4, post_time=10):
+        """
+        Computes the event-induced DA (EI DA) signal for each behavior event in self.behaviors.
+        
+        For each event, this method:
+        - Extracts DA data from (Event_Start - pre_time) to (Event_Start + post_time) using self.timestamps and self.zscore.
+        - Computes a baseline from the pre-event period and subtracts it from the signal.
+        - Interpolates the corrected signal onto a common time axis (relative to the event onset).
+        
+        The common time axis and the resulting baseline-corrected (event-induced) signal are stored
+        in new columns 'Relative_Time_Axis' and 'Relative_Zscore' in self.behaviors.
+        
+        Parameters:
+            pre_time (float): Seconds before event onset to include (default is 4 s).
+            post_time (float): Seconds after event onset to include (default is 10 s).
+        """
+        if self.behaviors is None or self.behaviors.empty:
+            print(f"Trial {self.subject_name}: No behavior events available for event-induced DA computation.")
+            return
+
+        # Determine the average sampling interval from the timestamps.
+        dt = np.mean(np.diff(self.timestamps))
+        # Create a common time axis from -pre_time to +post_time relative to event onset.
+        common_time_axis = np.arange(-pre_time, post_time, dt)
+        
+        relative_time_list = []
+        relative_zscore_list = []
+        
+        # Process each behavior event.
+        for idx, row in self.behaviors.iterrows():
+            event_start = row['Event_Start']
+            window_start = event_start - pre_time
+            window_end = event_start + post_time
+
+            # Select the DA data within the extraction window.
+            mask = (self.timestamps >= window_start) & (self.timestamps <= window_end)
+            if not np.any(mask):
+                relative_time_list.append(np.full(common_time_axis.shape, np.nan))
+                relative_zscore_list.append(np.full(common_time_axis.shape, np.nan))
+            else:
+                # Convert to relative time (with respect to the event onset).
+                rel_time = self.timestamps[mask] - event_start
+                signal = self.zscore[mask]
+                
+                # Compute baseline from the pre-event period.
+                pre_mask = rel_time < 0
+                baseline = np.nanmean(signal[pre_mask]) if np.any(pre_mask) else 0
+                corrected_signal = signal - baseline
+                
+                # Interpolate the corrected signal onto the common time axis.
+                interp_signal = np.interp(common_time_axis, rel_time, corrected_signal)
+                
+                relative_time_list.append(common_time_axis)
+                relative_zscore_list.append(interp_signal)
+        
+        # Store the computed arrays in new DataFrame columns.
+        self.behaviors["Relative_Time_Axis"] = relative_time_list
+        self.behaviors["Relative_Zscore"] = relative_zscore_list

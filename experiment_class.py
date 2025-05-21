@@ -7,14 +7,14 @@ import matplotlib.pyplot as plt
 from trial_class import Trial
 
 class Experiment:
-    def __init__(self, experiment_folder_path, behavior_folder_path, autoload=True):
+    def __init__(self, experiment_folder_path, behavior_folder_path):
         self.experiment_folder_path = experiment_folder_path
         self.behavior_folder_path = behavior_folder_path
         self.trials = {}
 
-        if autoload:
-            self.load_trials()
+        self.load_trials()
     
+
     '''********************************** GROUP PROCESSING **********************************'''
     def load_trials(self):
         """
@@ -25,9 +25,10 @@ class Experiment:
 
         for trial_folder in trial_folders:
             trial_path = os.path.join(self.experiment_folder_path, trial_folder)
-            trial_obj = Trial(trial_path, '_465A', '_405A')
+            trial_obj = Trial(trial_path)
 
             self.trials[trial_folder] = trial_obj
+
 
     def default_batch_process(self, time_segments_to_remove=None):
         """
@@ -46,8 +47,8 @@ class Experiment:
             trial.apply_ma_baseline_drift()
             trial.align_channels()
             trial.compute_dFF()
-            baseline_start, baseline_end = trial.find_baseline_period()  
-            # trial.compute_zscore(method = 'baseline', baseline_start = baseline_start, baseline_end = baseline_end)
+            #baseline_start, baseline_end = trial.find_baseline_period()  
+            #trial.compute_zscore(method = 'baseline', baseline_start = baseline_start, baseline_end = baseline_end)
             trial.compute_zscore(method = 'standard')
 
             trial.verify_signal()
@@ -81,9 +82,6 @@ class Experiment:
             else:
                 print(f"Warning: No CSV found for {trial_name} in {self.behavior_folder_path}. Skipping.")
 
-
-
-
     '''********************************** PLOTTING **********************************'''
     def plot_all_traces(experiment, behavior_name='all'): 
         """
@@ -112,29 +110,298 @@ class Experiment:
         plt.show()
 
 
-    def compute_all_da_metrics(self, use_fractional=False, max_bout_duration=10, 
-                            use_adaptive=False, allow_bout_extension=False, mode='standard'):
+    def plot_first_behavior_PETHs(self, selected_bouts=None, behavior="Investigation"):
+        """
+        Plots the first PETHs for the specified behavior for all trials in the experiment.
+        
+        For each trial, the method:
+        - Filters rows where 'Behavior' equals the specified behavior.
+        - (Optionally) Further filters the data to only include bouts listed in 'selected_bouts'.
+        - Groups the data by 'Bout' and selects the first event in each bout.
+        - Plots the behavior trace (Relative_Time_Axis vs. Relative_Zscore) with:
+            • a dashed black line at x = 0 (Behavior Start),
+            • a dashed blue line at x = Duration (s) (Behavior End),
+            • a dashed red line at x = Time of Max Peak.
+            
+        The y-axis limits are determined dynamically based on the global minimum and maximum values 
+        across all plotted bouts (with an extra margin of 1 added to each end). Each subplot displays 
+        its own y-axis tick numbers.
+        
+        Parameters:
+        selected_bouts (list, optional): A list of bout identifiers to include. If None, all bouts are plotted.
+        behavior (str, optional): The behavior to plot. Defaults to "Investigation".
+        """
+        trial_first_data = []  # list to store each trial's first behavior DataFrame
+        trial_names = []       # list to track trial names
+        max_bouts = 0          # maximum number of bouts across trials
+
+        # Loop over each trial and extract first-behavior events.
+        for trial_name, trial in self.trials.items():
+            if not hasattr(trial, 'behaviors'):
+                continue
+            # Filter for the specified behavior events.
+            df_behavior = trial.behaviors[trial.behaviors["Behavior"] == behavior].copy()
+            
+            # If a selection of bouts is provided, filter to include only those bouts.
+            if selected_bouts is not None:
+                df_behavior = df_behavior[df_behavior["Bout"].isin(selected_bouts)]
+            
+            # Group by 'Bout' and take the first event in each group.
+            df_first_behavior = df_behavior.groupby("Bout", as_index=False).first()
+            trial_first_data.append(df_first_behavior)
+            trial_names.append(trial_name)
+            if len(df_first_behavior) > max_bouts:
+                max_bouts = len(df_first_behavior)
+
+        if len(trial_first_data) == 0:
+            print("No trial data available for plotting first behavior PETHs.")
+            return
+
+        # Determine global y-axis limits from all Relative_Zscore data.
+        global_min = np.inf
+        global_max = -np.inf
+        for df_first in trial_first_data:
+            for _, row in df_first.iterrows():
+                y_data = row["Relative_Zscore"]
+                current_min = np.min(y_data)
+                current_max = np.max(y_data)
+                if current_min < global_min:
+                    global_min = current_min
+                if current_max > global_max:
+                    global_max = current_max
+
+        ymin = global_min - 1
+        ymax = global_max + 1
+
+        n_rows = len(trial_first_data)
+        n_cols = max_bouts
+
+        # Create a grid of subplots without sharing y axes so each shows its own y-axis numbers.
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
+        # Ensure axes is a 2D array for consistent indexing.
+        if n_rows == 1 and n_cols == 1:
+            axes = [[axes]]
+        elif n_rows == 1:
+            axes = [axes]
+        elif n_cols == 1:
+            axes = [[ax] for ax in axes]
+
+        # Loop over each trial (row) and each bout (column) to plot.
+        for row_idx, (df_first, trial_name) in enumerate(zip(trial_first_data, trial_names)):
+            for col_idx in range(n_cols):
+                ax = axes[row_idx][col_idx]
+                # Only plot if data for this bout exists.
+                if col_idx < len(df_first):
+                    data_row = df_first.iloc[col_idx]
+
+                    # Extract time and Z-score arrays.
+                    x = data_row["Relative_Time_Axis"]
+                    y = data_row["Relative_Zscore"]
+
+                    # Plot the behavior trace.
+                    ax.plot(x, y, label=f"Bout: {data_row['Bout']}")
+                    # Plot vertical dashed lines:
+                    # Start (x = 0)
+                    ax.axvline(x=0, color='black', linestyle='--', label="Start")
+                    # End (x = Duration (s))
+                    ax.axvline(x=data_row["Duration (s)"], color='blue', linestyle='--', label="End")
+                    # Time of Max Peak (x = Time of Max Peak)
+                    ax.axvline(x=data_row["Time of Max Peak"], color='red', linestyle='--', label="Max Peak")
+                    
+                    # Set y-axis limits based on computed global min and max.
+                    ax.set_ylim([ymin, ymax])
+                    ax.set_xlabel("Relative Time (s)")
+                    ax.set_title(f"Trial {trial_name} - Bout {data_row['Bout']}")
+
+                    # Ensure y-axis tick labels are visible on every subplot.
+                    ax.tick_params(axis='y', labelleft=True)
+                    # Add y-label and legend for the first column.
+                    if col_idx == 0:
+                        ax.set_ylabel("Z-score")
+                        ax.legend()
+                else:
+                    ax.axis('off')
+
+        plt.tight_layout()
+        plt.show()
+
+    def plot_average_investigation_PETHs(
+        self,
+        n_subsequent_investigations=3,   # Number of subsequent investigation events to include
+        behavior="Investigation",        # Behavior to filter for (e.g. "Investigation")
+        plot_error_bars=True             # If True, plot SEM error bars
+    ):
+        """
+        Computes and plots the average PETH trace for each subsequent investigation event
+        across all trials/mice.
+
+        Steps:
+        1. For each trial, filter for events with the specified behavior.
+        2. Sort events (e.g., by 'Event_Start' if available) and assign an InvestigationIndex.
+        3. For each investigation index (up to n_subsequent_investigations), collect the PETH trace 
+        (Relative_Zscore) and record the Relative_Time_Axis.
+        4. Across all trials, compute the element-wise average and standard error (SEM) of the PETH traces.
+        5. Plot the average trace for each investigation event with error bars if desired.
+
+        Parameters:
+        n_subsequent_investigations (int): Number of investigation events to include (e.g., first 3).
+        behavior (str): Behavior label to filter events (default "Investigation").
+        plot_error_bars (bool): Whether to overlay SEM error bars.
+        """
+        import numpy as np
+        import matplotlib.pyplot as plt
+
+        # Dictionary to hold lists of PETH traces for each investigation index.
+        peth_dict = {i: [] for i in range(1, n_subsequent_investigations + 1)}
+        time_axis = None  # We assume all events share the same time axis.
+        
+        # Loop over trials (or mice) stored in self.trials.
+        for trial_name, trial in self.trials.items():
+            if not hasattr(trial, 'behaviors'):
+                continue
+            # Filter for the specified behavior.
+            df_behavior = trial.behaviors[trial.behaviors["Behavior"] == behavior].copy()
+            if df_behavior.empty:
+                continue
+            
+            # Sort events by time; if "Event_Start" exists, use it.
+            if "Event_Start" in df_behavior.columns:
+                df_behavior.sort_values("Event_Start", inplace=True)
+            else:
+                df_behavior.sort_index(inplace=True)
+            
+            # Assign an InvestigationIndex (1 for the first event, 2 for the second, etc.)
+            df_behavior["InvestigationIndex"] = np.arange(1, len(df_behavior) + 1)
+            
+            # Only consider events up to the specified number.
+            df_behavior = df_behavior[df_behavior["InvestigationIndex"] <= n_subsequent_investigations]
+            
+            # Loop through each event and store its PETH trace.
+            for _, row in df_behavior.iterrows():
+                idx = int(row["InvestigationIndex"])
+                # Each row should have a PETH trace (Relative_Zscore) and a time axis.
+                # We assume these are numpy arrays (or lists) that are the same length for all events.
+                peth_trace = np.array(row["Relative_Zscore"])
+                peth_dict[idx].append(peth_trace)
+                
+                # Store the time axis (assumed common across events) from the first valid event.
+                if time_axis is None:
+                    time_axis = np.array(row["Relative_Time_Axis"])
+        
+        # Compute the average trace and SEM for each investigation index.
+        avg_traces = {}
+        sem_traces = {}
+        for idx in range(1, n_subsequent_investigations + 1):
+            traces = peth_dict[idx]
+            if len(traces) > 0:
+                stacked = np.vstack(traces)
+                avg_traces[idx] = np.mean(stacked, axis=0)
+                sem_traces[idx] = np.std(stacked, axis=0) / np.sqrt(stacked.shape[0])
+            else:
+                print(f"No data available for investigation {idx}.")
+        
+        # Plot the average traces.
+        plt.figure(figsize=(12, 8))
+        for idx in sorted(avg_traces.keys()):
+            if plot_error_bars:
+                plt.errorbar(
+                    time_axis, 
+                    avg_traces[idx], 
+                    yerr=sem_traces[idx],
+                    marker='o', linestyle='-',
+                    capsize=5, label=f"Investigation {idx}"
+                )
+            else:
+                plt.plot(time_axis, avg_traces[idx], marker='o', linestyle='-', label=f"Investigation {idx}")
+        
+        plt.xlabel("Relative Time (s)", fontsize=14)
+        plt.ylabel("Average Z-score", fontsize=14)
+        plt.title(f"Average PETH for First {n_subsequent_investigations} Investigations", fontsize=16)
+        plt.legend(fontsize=12)
+        plt.tight_layout()
+        plt.show()
+
+        
+    def plot_clean_single_PETH_for_poster(
+        self,
+        trial_name,
+        bout_name,
+        behavior="Investigation"
+    ):
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        trial = self.trials.get(trial_name, None)
+        if trial is None or not hasattr(trial, 'behaviors'):
+            print(f"Trial '{trial_name}' not found or missing behavior data.")
+            return
+
+        df = trial.behaviors.copy()
+        df = df[(df["Behavior"] == behavior) & (df["Bout"] == bout_name)]
+
+        if df.empty:
+            print(f"No matching behavior '{behavior}' found for bout '{bout_name}' in trial '{trial_name}'.")
+            return
+
+        row = df.iloc[0]
+        x = np.array(row["Relative_Time_Axis"])
+        y = np.array(row["Relative_Zscore"])
+
+        # Find index of peak
+        peak_idx = np.argmax(y)
+        peak_x = x[peak_idx]
+        peak_y = y[peak_idx]
+
+        # Plot
+        plt.figure(figsize=(6, 4))
+        plt.plot(x, y, color="#15616F", linewidth=2)
+        plt.axvline(x=0, color='black', linestyle='--', linewidth=1.5)  # Start
+        plt.axvline(x=row["Duration (s)"], color='black', linestyle='--', linewidth=1.5)  # End
+        plt.scatter(peak_x, peak_y, color='red', zorder=5, s=60)  # Peak dot
+
+        # Style adjustments
+        plt.xlabel("Relative Time (s)", fontsize=12)
+        plt.ylabel("Z-score", fontsize=12)
+        plt.xlim([-4, 10])
+        plt.xticks(fontsize=10)
+        plt.yticks(fontsize=10)
+
+        # Remove top and right spines
+        ax = plt.gca()
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        plt.tight_layout()
+        plt.show()
+
+
+
+    '''********************************** DOPAMINE SHIZ **********************************'''
+    def compute_all_da_metrics(self, use_max_length=False, max_bout_duration=10, mode='standard', post_time=15):
         """
         Iterates over all trials in the experiment and computes DA metrics with the specified windowing options.
         
+        For each trial, computes AUC, Max Peak, Time of Max Peak, Mean Z-score, and Adjusted End for each behavior.
+        If a behavior lasts less than 1 second, the window is extended beyond the bout end to search for the next peak.
+        
         Parameters:
-        - use_fractional (bool): Whether to limit the window to a maximum duration.
-        - max_bout_duration (int): Maximum allowed window duration (in seconds) if fractional analysis is applied.
-        - use_adaptive (bool): Whether to adjust the window using adaptive windowing (via local minimum detection).
-        - allow_bout_extension (bool): Whether to extend the window if no local minimum is found.
-        - mode (str): Either 'standard' to compute metrics using the full standard DA signal, or 'EI' to compute metrics
-                        using the event-induced data (i.e. the precomputed 'Event_Time_Axis' and 'Event_Zscore' columns).
+        - use_max_length (bool): Whether to limit the window to a maximum duration.
+        - max_bout_duration (int): Maximum allowed window duration (in seconds).
+        - mode (str): Either 'standard' to compute metrics using absolute timestamps and full z-score data,
+                    or 'EI' to compute metrics using event-aligned relative data.
         """
         for trial_name, trial in self.trials.items():
             if hasattr(trial, 'compute_da_metrics'):
                 print(f"Computing DA metrics for {trial_name} ...")
-                trial.compute_da_metrics(use_fractional=use_fractional,
-                                        max_bout_duration=max_bout_duration,
-                                        use_adaptive=use_adaptive,
-                                        allow_bout_extension=allow_bout_extension,
-                                        mode=mode)
+                trial.compute_da_metrics(
+                    use_max_length=use_max_length,
+                    max_bout_duration=max_bout_duration,
+                    mode=mode,
+                    post_time=post_time
+                )
             else:
                 print(f"Warning: Trial '{trial_name}' does not have compute_da_metrics method.")
+
 
 
 
@@ -151,4 +418,163 @@ class Experiment:
             print(f"Computing event-induced DA for trial {trial_name} ...")
             trial.compute_event_induced_DA(pre_time=pre_time, post_time=post_time)
 
+
+
+    '''********************************** MISC **********************************'''
+    def reset_all_behaviors(self):
+        """
+        Sets each trial's 'behaviors' DataFrame to empty, so you can re-run
+        group_extract_manual_annotations with different parameters.
+        """
+        for trial in self.trials.values():
+            trial.behaviors = pd.DataFrame()
+
+
+    def compute_all_event_induced_DA(self, pre_time=4, post_time=10):
+        """
+        Iterates over all trials in the experiment and computes the event-induced DA signal 
+        for each trial by calling each trial's compute_event_induced_DA() method.
+        
+        Parameters:
+            pre_time (float): Seconds before event onset to include (default is 4 s).
+            post_time (float): Seconds after event onset to include (default is 10 s).
+        """
+        for trial_name, trial in self.trials.items():
+            print(f"Computing event-induced DA for trial {trial_name} ...")
+            trial.compute_event_induced_DA(pre_time=pre_time, post_time=post_time)
+
+
+
+    def plot_average_defeat_bout_psth(self, nth_defeat=1, directory_path=None, bin_size=100,
+                                  y_min=-5, y_max=3, brain_region=None):
+        """
+        Averages the event-induced DA (EI DA) signal for the n-th defeat bout (chronologically)
+        across all trials in the experiment.
+
+        It assumes that each Trial's behaviors DataFrame contains:
+            - A "Behavior" column (with entries like "Defeat"),
+            - "Event_Start" (or similar) to sort chronologically,
+            - "Relative_Time_Axis" and "Relative_Zscore" (computed via compute_event_induced_DA).
+
+        Parameters:
+            nth_defeat (int): The 1-based index of the defeat bout to select (chronologically).
+            directory_path (str or None): Directory to save the plot; if None, the plot is not saved.
+            bin_size (int): Bin size for downsampling the averaged signal.
+            y_min (float): Lower y-axis bound.
+            y_max (float): Upper y-axis bound.
+            brain_region (str): A hex code to set the color of the trace (if not provided, default is '#FFAF00').
+
+        Returns:
+            dict or None: A dictionary containing the downsampled common time axis, mean trace, SEM,
+                        number of trials included, and subject IDs. Returns None if no valid data.
+        """
+        import numpy as np
+        import matplotlib.pyplot as plt
+        import os
+
+        # Set trace color: use brain_region if provided; otherwise default.
+        trace_color = brain_region if brain_region is not None else '#FFAF00'
+        
+        all_traces = []
+        subject_ids = []
+        missing_subjects = []
+
+        for trial in self.trials.values():
+            # If there's no behavior data, skip.
+            if trial.behaviors is None or trial.behaviors.empty:
+                missing_subjects.append(trial.subject_name)
+                continue
+
+            # 1) Filter to rows where Behavior == "Defeat".
+            df_defeat = trial.behaviors[trial.behaviors["Behavior"] == "Defeat"].copy()
+            if df_defeat.empty:
+                missing_subjects.append(trial.subject_name)
+                continue
+            
+            # 2) Sort by the event's start time so we know the chronological order.
+            if "Event_Start" in df_defeat.columns:
+                df_defeat.sort_values(by="Event_Start", inplace=True)
+            else:
+                df_defeat.sort_index(inplace=True)
+
+            # 3) Check if there is an nth row in the sorted subset.
+            if len(df_defeat) < nth_defeat:
+                missing_subjects.append(trial.subject_name)
+                continue
+            
+            # 4) Select the nth defeat bout in chronological order.
+            row = df_defeat.iloc[nth_defeat - 1]
+            
+            # Ensure the row has a valid Relative_Zscore.
+            if "Relative_Zscore" not in row or row["Relative_Zscore"] is None:
+                missing_subjects.append(trial.subject_name)
+                continue
+            
+            trace = np.array(row["Relative_Zscore"])
+            all_traces.append(trace)
+            subject_ids.append(trial.subject_name)
+
+        if missing_subjects:
+            print(f"The following subjects did not have the {nth_defeat}-th defeat bout: {', '.join(missing_subjects)}")
+
+        if len(all_traces) == 0:
+            print(f"No valid data found for the {nth_defeat}-th defeat bout across trials.")
+            return None
+
+        # Use the common time axis from the first valid row we found.
+        common_time_axis = np.array(row["Relative_Time_Axis"])
+
+        # Stack the traces to compute mean and SEM.
+        traces_stacked = np.vstack(all_traces)
+        mean_trace = np.mean(traces_stacked, axis=0)
+        sem_trace = np.std(traces_stacked, axis=0) / np.sqrt(traces_stacked.shape[0])
+
+        # Optional downsampling if the experiment has a downsample_data method.
+        if hasattr(self, 'downsample_data'):
+            mean_trace, downsampled_time_axis = self.downsample_data(mean_trace, common_time_axis, bin_size)
+            sem_trace, _ = self.downsample_data(sem_trace, common_time_axis, bin_size)
+        else:
+            downsampled_time_axis = common_time_axis
+
+        # Plot
+        plt.figure(figsize=(14, 7))
+        plt.plot(downsampled_time_axis, mean_trace, color=trace_color, lw=3, label='Mean Defeat DA')
+        plt.fill_between(downsampled_time_axis, mean_trace - sem_trace, mean_trace + sem_trace,
+                        color=trace_color, alpha=0.4, label='SEM')
+        plt.axvline(0, color='black', linestyle='--', lw=2)  # event onset line
+        
+        plt.xlabel('Time from Defeat Onset (s)', fontsize=36)
+        plt.ylabel('Event-Induced z-scored ΔF/F', fontsize=32, labelpad=20)
+        plt.ylim(y_min, y_max)
+        plt.xlim(-4, 10)
+
+        ax = plt.gca()
+        ax.tick_params(axis='both', labelsize=40, width=3)
+        plt.xticks(fontsize=44)
+        plt.yticks(fontsize=44)
+        
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_linewidth(3)
+        ax.spines['left'].set_linewidth(3)
+
+        plt.tight_layout()
+        # Increase left margin to ensure y-axis label is not cut out.
+        plt.subplots_adjust(left=0.35)
+
+        if directory_path is not None:
+            os.makedirs(directory_path, exist_ok=True)
+            # Create a unique file name using nth_defeat.
+            save_path = os.path.join(directory_path, f"DefeatBout{nth_defeat}_PSTH_Average.png")
+            plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight", pad_inches=0.5)
+        plt.show()
+
+        aggregated_data = {
+            "common_time_axis": downsampled_time_axis,
+            "mean_trace": mean_trace,
+            "sem_trace": sem_trace,
+            "n_trials": len(all_traces),
+            "subject_ids": subject_ids
+        }
+        return aggregated_data
 
