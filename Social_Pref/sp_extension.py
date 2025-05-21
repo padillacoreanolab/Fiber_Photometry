@@ -189,7 +189,7 @@ def plot_custom_sniff_cup_assignments(experiment,
     # --- Classification ---
     mean_time = data_df["Total Investigation Time"].mean()
     sem_time = data_df["Total Investigation Time"].sem()
-    threshold = mean_time + sem_time
+    threshold = mean_time + sem_time + 10
 
     data_df["Preference"] = data_df["Total Investigation Time"].apply(
         lambda t: "Pref" if t > threshold else "No_Pref"
@@ -486,6 +486,7 @@ def plot_investigation_by_agent(df,
     Styled to match `plot_y_across_bouts_ranks` exactly but keeps region legend and colored markers.
     """
     df = df.copy()
+    from matplotlib.lines import Line2D
 
     # --- Normalize Subject index ---
     if 'Subject' in df.columns:
