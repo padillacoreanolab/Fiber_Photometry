@@ -7,12 +7,13 @@ import matplotlib.pyplot as plt
 from trial_class import Trial
 
 class Experiment:
-    def __init__(self, experiment_folder_path, behavior_folder_path):
+    def __init__(self, experiment_folder_path, behavior_folder_path, autoload=True):
         self.experiment_folder_path = experiment_folder_path
         self.behavior_folder_path = behavior_folder_path
         self.trials = {}
 
-        self.load_trials()
+        if autoload:
+            self.load_trials()
     
 
     '''********************************** GROUP PROCESSING **********************************'''
@@ -25,7 +26,7 @@ class Experiment:
 
         for trial_folder in trial_folders:
             trial_path = os.path.join(self.experiment_folder_path, trial_folder)
-            trial_obj = Trial(trial_path)
+            trial_obj = Trial(trial_path, '_465A', '_405A')
 
             self.trials[trial_folder] = trial_obj
 
@@ -81,6 +82,7 @@ class Experiment:
                 # trial.remove_short_behaviors(behavior_name='all', min_duration=0.3)
             else:
                 print(f"Warning: No CSV found for {trial_name} in {self.behavior_folder_path}. Skipping.")
+
 
     '''********************************** PLOTTING **********************************'''
     def plot_all_traces(experiment, behavior_name='all'): 
@@ -385,21 +387,20 @@ class Experiment:
         If a behavior lasts less than 1 second, the window is extended beyond the bout end to search for the next peak.
         
         Parameters:
-        - use_fractional (bool): Whether to limit the window to a maximum duration.
-        - max_bout_duration (int): Maximum allowed window duration (in seconds) if fractional analysis is applied.
-        - use_adaptive (bool): Whether to adjust the window using adaptive windowing (via local minimum detection).
-        - allow_bout_extension (bool): Whether to extend the window if no local minimum is found.
-        - mode (str): Either 'standard' to compute metrics using the full standard DA signal, or 'EI' to compute metrics
-                        using the event-induced data (i.e. the precomputed 'Event_Time_Axis' and 'Event_Zscore' columns).
+        - use_max_length (bool): Whether to limit the window to a maximum duration.
+        - max_bout_duration (int): Maximum allowed window duration (in seconds).
+        - mode (str): Either 'standard' to compute metrics using absolute timestamps and full z-score data,
+                    or 'EI' to compute metrics using event-aligned relative data.
         """
         for trial_name, trial in self.trials.items():
             if hasattr(trial, 'compute_da_metrics'):
                 print(f"Computing DA metrics for {trial_name} ...")
-                trial.compute_da_metrics(use_fractional=use_fractional,
-                                        max_bout_duration=max_bout_duration,
-                                        use_adaptive=use_adaptive,
-                                        allow_bout_extension=allow_bout_extension,
-                                        mode=mode)
+                trial.compute_da_metrics(
+                    use_max_length=use_max_length,
+                    max_bout_duration=max_bout_duration,
+                    mode=mode,
+                    post_time=post_time
+                )
             else:
                 print(f"Warning: Trial '{trial_name}' does not have compute_da_metrics method.")
 

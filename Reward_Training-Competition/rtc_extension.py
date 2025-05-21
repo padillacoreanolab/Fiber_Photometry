@@ -1,3 +1,4 @@
+# This file creates a child class of Experiment that is specific to RTC recordings. RTC recordings can either have one mouse or two mice in the same folder.
 import sys
 import os
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -16,7 +17,7 @@ from matplotlib.colors import LinearSegmentedColormap
 
 class RTC(Experiment):
     def __init__(self, experiment_folder_path, behavior_folder_path):
-        super().__init__(experiment_folder_path, behavior_folder_path, autoload=False)
+        super().__init__(experiment_folder_path, behavior_folder_path)
         self.port_bnc = {} 
         self.df = pd.DataFrame()
         self.load_rtc_trials() 

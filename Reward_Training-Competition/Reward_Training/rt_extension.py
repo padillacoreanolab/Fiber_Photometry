@@ -1,7 +1,10 @@
+# This file creates a child class of Experiment that is specific to RT recordings. RTrecordings can either have one mouse or two mice in the same folder.
 import sys
 import os
-parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.append(parent_dir)
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.append(PROJECT_ROOT)
+
 
 from experiment_class import Experiment 
 from trial_class import Trial
@@ -10,7 +13,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from scipy.interpolate import interp1d
 from scipy.stats import linregress
-from rtc_extension_albert import RTC 
+from rtc_extension import RTC 
 
 class Reward_Training(RTC):
     def __init__(self, experiment_folder_path, behavior_folder_path):
@@ -531,9 +534,6 @@ class Reward_Training(RTC):
             df (DataFrame, optional): DataFrame to use (defaults to self.df).
             bin_size (int, optional): Bin size for downsampling.
         """
-        import numpy as np
-        import matplotlib.pyplot as plt
-        import os
 
         if df is None:
             df = self.df
@@ -634,9 +634,6 @@ class Reward_Training(RTC):
             df (DataFrame, optional): DataFrame to use (defaults to self.df).
             bin_size (int, optional): Bin size for downsampling.
         """
-        import numpy as np
-        import matplotlib.pyplot as plt
-        import os
 
         if df is None:
             df = self.df
@@ -743,138 +740,3 @@ class Reward_Training(RTC):
 
 
 
-
-
-
-
-    def downsample_data(self, data, time_axis, bin_size):
-        """
-        Downsamples a 1D data array and its corresponding time axis by averaging in bins.
-
-        Parameters:
-            data (1D numpy array): The data to be downsampled.
-            time_axis (1D numpy array): The corresponding time axis.
-            bin_size (int): The number of samples per bin.
-        
-        Returns:
-            downsampled_data (1D numpy array): The downsampled data.
-            downsampled_time_axis (1D numpy array): The downsampled time axis.
-        """
-        import numpy as np
-
-        n = len(data)
-        num_bins = n // bin_size  # Number of complete bins.
-        if num_bins == 0:
-            # If bin_size is larger than the data length, return original.
-            return data, time_axis
-
-        # Trim data to fit an integer number of bins.
-        trimmed_length = num_bins * bin_size
-        data_trimmed = data[:trimmed_length]
-        time_trimmed = time_axis[:trimmed_length]
-
-        # Reshape and compute the mean in each bin.
-        downsampled_data = data_trimmed.reshape(num_bins, bin_size).mean(axis=1)
-        downsampled_time_axis = time_trimmed.reshape(num_bins, bin_size).mean(axis=1)
-
-        return downsampled_data, downsampled_time_axis
-
-
-    def get_psth_mean_trace(self, event_type, event_index, df=None, bin_size=100):
-        """
-        Mimics the averaging logic from plot_specific_event_psth:
-        For the given event_index (1-indexed), this function returns the mean
-        trace across trials (downsampled if available).
-        """
-        import numpy as np
-
-        if df is None:
-            df = self.df
-
-        idx = event_index - 1  # convert 1-indexed to 0-indexed
-        selected_traces = []
-        for i, row in df.iterrows():
-            event_z_list = row.get(f'{event_type} Event_Zscore', [])
-            if isinstance(event_z_list, list) and len(event_z_list) > idx:
-                selected_traces.append(np.array(event_z_list[idx]))
-        if len(selected_traces) == 0:
-            print(f"No trials have an event at index {event_index} for {event_type}.")
-            return None
-
-        mean_trace = np.mean(np.array(selected_traces), axis=0)
-        common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][idx]
-        if hasattr(self, 'downsample_data'):
-            mean_trace, _ = self.downsample_data(mean_trace, common_time_axis, bin_size)
-        return mean_trace
-
-    def get_heatmap_mean_trace(self, event_type, event_index, df=None, bin_size=125):
-        """
-        Mimics the averaging logic from plot_event_index_heatmap:
-        For the given event_index (1-indexed), this function returns the mean trace
-        (averaged across all trials) for that event. (Assumes all events share the same time axis.)
-        """
-        import numpy as np
-
-        if df is None:
-            df = self.df
-
-        idx = event_index - 1  # convert 1-indexed to 0-indexed
-        selected_traces = []
-        for i, row in df.iterrows():
-            event_z_list = row.get(f'{event_type} Event_Zscore', [])
-            if isinstance(event_z_list, list) and len(event_z_list) > idx:
-                selected_traces.append(np.array(event_z_list[idx]))
-        if len(selected_traces) == 0:
-            print(f"No trials have an event at index {event_index} for {event_type}.")
-            return None
-
-        avg_trace = np.mean(np.vstack(selected_traces), axis=0)
-        # Note: In the heatmap function, the common time axis is taken from index 0.
-        common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
-        if hasattr(self, 'downsample_data'):
-            avg_trace, _ = self.downsample_data(avg_trace, common_time_axis, bin_size)
-        return avg_trace
-
-    def compare_arrays(self, arr1, arr2, tol=1e-6):
-        """
-        Compares two numpy arrays elementwise and prints out the maximum difference.
-        Returns True if they are equal within tolerance, False otherwise.
-        """
-        import numpy as np
-        if arr1 is None or arr2 is None:
-            print("One of the arrays is None.")
-            return False
-        if arr1.shape != arr2.shape:
-            print(f"Arrays have different shapes: {arr1.shape} vs {arr2.shape}")
-            return False
-        if np.allclose(arr1, arr2, atol=tol):
-            print("Arrays are the same within the tolerance.")
-            return True
-        else:
-            diff = np.abs(arr1 - arr2)
-            max_diff = np.max(diff)
-            print(f"Arrays differ. Maximum absolute difference: {max_diff:.6f}")
-            print("First 10 differences:", diff.flatten()[:10])
-            return False
-
-    def debug_compare_event_14(self, event_type='Tone', event_index=14, df=None, bin_size=100):
-        """
-        Retrieves the mean event trace for a given event index (e.g., Tone 14)
-        using both the PSTH and heatmap averaging logic, and then compares them.
-        """
-        if df is None:
-            df = self.df
-
-        print(f"Comparing {event_type} event {event_index} mean traces using PSTH and Heatmap logic:")
-
-        psth_mean = self.get_psth_mean_trace(event_type, event_index, df, bin_size)
-        heatmap_mean = self.get_heatmap_mean_trace(event_type, event_index, df, bin_size)
-
-        print("[DEBUG] PSTH mean trace (first 10 values):", psth_mean[:10] if psth_mean is not None else "None")
-        print("[DEBUG] Heatmap mean trace (first 10 values):", heatmap_mean[:10] if heatmap_mean is not None else "None")
-
-        same = self.compare_arrays(psth_mean, heatmap_mean)
-        if same:
-            print("The arrays for event", event_index, "are the same.")
-        else:
-            print("The arrays for event", event_index, "differ.")

@@ -10,30 +10,6 @@ from sklearn.linear_model import LinearRegression
 
 class Trial:
     def __init__(self, trial_path, stream_DA, stream_ISOS):
-        """tdtdata = tdt.read_block(trial_path)
-        
-        # Extract the subject name from the folder or file name
-        self.subject_name = os.path.basename(trial_path).split('-')[0]
-        
-        # Assume all streams have the same sampling frequency and length
-        self.fs = tdtdata.streams["_465A"].fs
-        self.timestamps = np.arange(len(tdtdata.streams['_465A'].data)) / self.fs
-
-        self.streams = {}
-        self.streams['DA'] = tdtdata.streams['_465A'].data
-        self.streams['ISOS'] = tdtdata.streams['_405A'].data
-
-        self.behaviors = None
-        
-        # To ensure that the most updated DA does not require specific preprocessing steps, each of the preprocessing functions will update these. Make sure your ordering is correct
-        self.updated_DA = self.streams['DA']
-        self.updated_ISOS = self.streams['ISOS']
-
-        self.isosbestic_fitted = np.empty(1)
-
-        self.dFF = np.empty(1)
-        self.zscore = np.empty(1)
-        """
         tdtdata = tdt.read_block(trial_path)
 
         self.subject_name = os.path.basename(trial_path).split('-')[0]
