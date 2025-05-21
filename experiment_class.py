@@ -47,8 +47,8 @@ class Experiment:
             trial.apply_ma_baseline_drift()
             trial.align_channels()
             trial.compute_dFF()
-            #baseline_start, baseline_end = trial.find_baseline_period()  
-            #trial.compute_zscore(method = 'baseline', baseline_start = baseline_start, baseline_end = baseline_end)
+            baseline_start, baseline_end = trial.find_baseline_period()  
+            # trial.compute_zscore(method = 'baseline', baseline_start = baseline_start, baseline_end = baseline_end)
             trial.compute_zscore(method = 'standard')
 
             trial.verify_signal()
@@ -385,20 +385,21 @@ class Experiment:
         If a behavior lasts less than 1 second, the window is extended beyond the bout end to search for the next peak.
         
         Parameters:
-        - use_max_length (bool): Whether to limit the window to a maximum duration.
-        - max_bout_duration (int): Maximum allowed window duration (in seconds).
-        - mode (str): Either 'standard' to compute metrics using absolute timestamps and full z-score data,
-                    or 'EI' to compute metrics using event-aligned relative data.
+        - use_fractional (bool): Whether to limit the window to a maximum duration.
+        - max_bout_duration (int): Maximum allowed window duration (in seconds) if fractional analysis is applied.
+        - use_adaptive (bool): Whether to adjust the window using adaptive windowing (via local minimum detection).
+        - allow_bout_extension (bool): Whether to extend the window if no local minimum is found.
+        - mode (str): Either 'standard' to compute metrics using the full standard DA signal, or 'EI' to compute metrics
+                        using the event-induced data (i.e. the precomputed 'Event_Time_Axis' and 'Event_Zscore' columns).
         """
         for trial_name, trial in self.trials.items():
             if hasattr(trial, 'compute_da_metrics'):
                 print(f"Computing DA metrics for {trial_name} ...")
-                trial.compute_da_metrics(
-                    use_max_length=use_max_length,
-                    max_bout_duration=max_bout_duration,
-                    mode=mode,
-                    post_time=post_time
-                )
+                trial.compute_da_metrics(use_fractional=use_fractional,
+                                        max_bout_duration=max_bout_duration,
+                                        use_adaptive=use_adaptive,
+                                        allow_bout_extension=allow_bout_extension,
+                                        mode=mode)
             else:
                 print(f"Warning: Trial '{trial_name}' does not have compute_da_metrics method.")
 
