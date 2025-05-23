@@ -160,7 +160,6 @@ class Reward_Training(RTC):
             timestamps = np.array(trial_obj.timestamps)
             zscore = np.array(trial_obj.zscore)
 
-            # Sound and lick onsets
             sound_cues = row['sound cues onset']
             lick_cues  = row['first_lick_after_sound_cue']
 
@@ -169,35 +168,27 @@ class Reward_Training(RTC):
             tone_times_this_trial   = []
 
             if len(sound_cues) == 0:
-                # No sound cues => store NaNs
                 tone_zscores_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
                 tone_times_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
             else:
                 for sound_event in sound_cues:
-                    # Window for the tone
                     window_start = sound_event - pre_time
                     window_end   = sound_event + post_time
-
                     mask = (timestamps >= window_start) & (timestamps <= window_end)
+
                     if not np.any(mask):
                         tone_zscores_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
                         tone_times_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
                         continue
 
-                    # Time relative to the sound cue
                     rel_time = timestamps[mask] - sound_event
                     signal   = zscore[mask]
 
-                    # Baseline: from (sound_event - pre_time) up to the sound_event
                     baseline_mask = (rel_time < 0)
                     baseline = np.nanmean(signal[baseline_mask]) if np.any(baseline_mask) else 0
-
-                    # Baseline-correct
                     corrected_signal = signal - baseline
 
-                    # Interpolate onto [-pre_time, post_time]
                     interp_signal = np.interp(common_tone_time_axis, rel_time, corrected_signal)
-
                     tone_zscores_this_trial.append(interp_signal)
                     tone_times_this_trial.append(common_tone_time_axis.copy())
 
@@ -205,35 +196,32 @@ class Reward_Training(RTC):
             lick_zscores_this_trial = []
             lick_times_this_trial   = []
 
-            if len(lick_cues) == 0:
-                # No licks => store NaNs
+            if lick_cues is None or len(lick_cues) == 0:
                 lick_zscores_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
                 lick_times_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
             else:
                 for i, lick_event in enumerate(lick_cues):
-                    # Attempt to pair with the i-th sound cue for baseline
-                    if i < len(sound_cues):
-                        sound_event_for_baseline = sound_cues[i]
-                    else:
-                        sound_event_for_baseline = None  # fallback
+                    # Skip if lick_event is None or NaN
+                    if lick_event is None or (isinstance(lick_event, float) and np.isnan(lick_event)):
+                        lick_zscores_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
+                        lick_times_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
+                        continue
 
-                    # 1) Compute baseline from the sound cue window
+                    # Use i-th sound cue for baseline if available
+                    sound_event_for_baseline = sound_cues[i] if i < len(sound_cues) else None
+
                     if sound_event_for_baseline is not None:
-                        # Baseline window: from (sound_event - pre_time) to sound_event
                         baseline_start = sound_event_for_baseline - pre_time
                         baseline_end   = sound_event_for_baseline
                         baseline_mask = (timestamps >= baseline_start) & (timestamps <= baseline_end)
-                        if np.any(baseline_mask):
-                            baseline_val = np.nanmean(zscore[baseline_mask])
-                        else:
-                            baseline_val = 0
+                        baseline_val = np.nanmean(zscore[baseline_mask]) if np.any(baseline_mask) else 0
                     else:
                         baseline_val = 0
 
-                    # 2) Extract the lick window from lick_event (0 to +post_time)
                     window_start = lick_event
                     window_end   = lick_event + post_time
                     mask = (timestamps >= window_start) & (timestamps <= window_end)
+
                     if not np.any(mask):
                         lick_zscores_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
                         lick_times_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
@@ -241,27 +229,23 @@ class Reward_Training(RTC):
 
                     rel_time = timestamps[mask] - lick_event
                     signal   = zscore[mask]
-
-                    # Subtract the tone-based baseline
                     corrected_signal = signal - baseline_val
 
-                    # Interpolate onto [0, post_time]
                     interp_signal = np.interp(common_lick_time_axis, rel_time, corrected_signal)
-
                     lick_zscores_this_trial.append(interp_signal)
                     lick_times_this_trial.append(common_lick_time_axis.copy())
 
-            # Store in the main lists
             tone_zscores_all.append(tone_zscores_this_trial)
             tone_times_all.append(tone_times_this_trial)
             lick_zscores_all.append(lick_zscores_this_trial)
             lick_times_all.append(lick_times_this_trial)
 
-        # Save columns
+        # Save to DataFrame
         df['Tone Event_Time_Axis'] = tone_times_all
         df['Tone Event_Zscore']    = tone_zscores_all
         df['Lick Event_Time_Axis'] = lick_times_all
         df['Lick Event_Zscore']    = lick_zscores_all
+
 
     def compute_standard_DA(self, df=None, pre_time=4, post_time=10):
         """
@@ -416,15 +400,9 @@ class Reward_Training(RTC):
             timestamps = np.array(trial_obj.timestamps)
             zscore = np.array(trial_obj.zscore)
 
-            # Tone onsets
+            # Tone and Lick onsets (with fallback)
             tone_onsets = row.get('sound cues onset', [])
-            if tone_onsets is None:
-                tone_onsets = []
-
-            # Lick onsets
             lick_onsets = row.get('first_lick_after_sound_cue', [])
-            if lick_onsets is None:
-                lick_onsets = []
 
             # ============== Tone Metrics ==============
             tone_auc = []
@@ -433,12 +411,18 @@ class Reward_Training(RTC):
             tone_mean_z = []
 
             for onset in tone_onsets:
+                if onset is None or np.isnan(onset):
+                    tone_auc.append(np.nan)
+                    tone_max_peak.append(np.nan)
+                    tone_peak_time.append(np.nan)
+                    tone_mean_z.append(np.nan)
+                    continue
+
                 window_start = onset
                 window_end = onset + bout_duration
 
                 mask = (timestamps >= window_start) & (timestamps <= window_end)
                 if not np.any(mask):
-                    # If no data in the window, store NaNs
                     tone_auc.append(np.nan)
                     tone_max_peak.append(np.nan)
                     tone_peak_time.append(np.nan)
@@ -448,17 +432,12 @@ class Reward_Training(RTC):
                 window_ts = timestamps[mask]
                 window_z = zscore[mask]
 
-                # Compute metrics
                 auc_val = np.trapz(window_z, window_ts)
                 max_idx = np.argmax(window_z)
-                max_val = window_z[max_idx]
-                max_time = window_ts[max_idx]
-                mean_val = np.mean(window_z)
-
                 tone_auc.append(auc_val)
-                tone_max_peak.append(max_val)
-                tone_peak_time.append(max_time)
-                tone_mean_z.append(mean_val)
+                tone_max_peak.append(window_z[max_idx])
+                tone_peak_time.append(window_ts[max_idx])
+                tone_mean_z.append(np.mean(window_z))
 
             # ============== Lick Metrics ==============
             lick_auc = []
@@ -467,6 +446,13 @@ class Reward_Training(RTC):
             lick_mean_z = []
 
             for onset in lick_onsets:
+                if onset is None or np.isnan(onset):
+                    lick_auc.append(np.nan)
+                    lick_max_peak.append(np.nan)
+                    lick_peak_time.append(np.nan)
+                    lick_mean_z.append(np.nan)
+                    continue
+
                 window_start = onset
                 window_end = onset + bout_duration
 
@@ -481,17 +467,12 @@ class Reward_Training(RTC):
                 window_ts = timestamps[mask]
                 window_z = zscore[mask]
 
-                # Compute metrics
                 auc_val = np.trapz(window_z, window_ts)
                 max_idx = np.argmax(window_z)
-                max_val = window_z[max_idx]
-                max_time = window_ts[max_idx]
-                mean_val = np.mean(window_z)
-
                 lick_auc.append(auc_val)
-                lick_max_peak.append(max_val)
-                lick_peak_time.append(max_time)
-                lick_mean_z.append(mean_val)
+                lick_max_peak.append(window_z[max_idx])
+                lick_peak_time.append(window_ts[max_idx])
+                lick_mean_z.append(np.mean(window_z))
 
             # Append results for this row
             tone_auc_all.append(tone_auc)
@@ -516,6 +497,7 @@ class Reward_Training(RTC):
         df['Lick Mean Z-score'] = lick_mean_z_all
 
         return df
+
 
 
     '''********************************** PSTH CODE  **********************************'''
@@ -738,5 +720,111 @@ class Reward_Training(RTC):
 
         plt.show()
 
+    def compute_closest_port_offset(self, lick_column, offset_column, df=None):
+        """
+        Computes the closest port entry offsets after each lick time and adds them as a new column in the dataframe.
+        
+        Parameters:
+            lick_column (str): The column name for the lick times.
+            offset_column (str): The column name for the port entry offset times.
+            df (pd.DataFrame): Optional. If None, self.df is used.
+        
+        Returns:
+            pd.DataFrame: Updated with a new column 'closest_lick_offset'.
+        """
+        if df is None:
+            df = self.df
 
+        def find_closest_port_entries(licks, port_entry_offsets):
+            closest_offsets = []
+            for lick in licks:
+                if lick is None or not isinstance(lick, (int, float)):
+                    closest_offsets.append(np.nan)
+                    continue
 
+                # Ensure comparison works
+                try:
+                    valid_indices = np.where(port_entry_offsets > lick)[0]
+                    if len(valid_indices) == 0:
+                        closest_offsets.append(np.nan)
+                    else:
+                        closest_offsets.append(port_entry_offsets[valid_indices[0]])
+                except TypeError:
+                    closest_offsets.append(np.nan)
+            return closest_offsets
+
+        def compute_lick_metrics(row):
+            # Pull row values
+            first_licks = row.get(lick_column, [])
+            port_entry_offsets = row.get(offset_column, [])
+
+            # Ensure lists, else return NaN
+            if not isinstance(first_licks, (list, np.ndarray)) or not isinstance(port_entry_offsets, (list, np.ndarray)):
+                return np.nan
+
+            # Clean both lists to remove non-numeric types
+            first_licks = [lick for lick in first_licks if isinstance(lick, (int, float))]
+            port_entry_offsets = [offset for offset in port_entry_offsets if isinstance(offset, (int, float))]
+
+            if not first_licks or not port_entry_offsets:
+                return np.nan
+
+            # Convert to numpy arrays of type float
+            first_licks = np.array(first_licks, dtype=float)
+            port_entry_offsets = np.array(port_entry_offsets, dtype=float)
+
+            return find_closest_port_entries(first_licks, port_entry_offsets)
+
+        # Apply to DataFrame
+        df['closest_lick_offset'] = df.apply(compute_lick_metrics, axis=1)
+
+    def remove_specified_subjects(self):
+        """
+        Removes specified subjects not used in data analysis
+        """
+        # List of subject names to remove
+        subjects_to_remove = ["n4", "n3", "n2", "n1", 'p4']
+
+        # Remove rows where 'subject_names' are in the list
+        df_combined = self.df[~self.df['subject_name'].isin(subjects_to_remove)]
+
+        # Display the result
+        print(df_combined)
+        
+        self.df = df_combined
+
+    def find_overall_mean(self, df):
+        """
+        Finds the overall mean of specified DA metrics per-subject.
+        """
+        if df is None:
+            df = self.df
+        
+        # Function to compute mean for numerical values, preserving first for categorical ones
+        def mean_arrays(group):
+            result = {}
+            result['Tone Event_Time_Axis'] = group['Tone Event_Time_Axis'].iloc[0]  # Time axis should be the same
+
+            # Compute mean for scalar numerical values
+            numerical_cols = [
+                'Lick AUC', 'Lick Max Peak', 'Lick Mean Z-score',
+                'Tone AUC', 'Tone Max Peak', 'Tone Mean Z-score'
+            ]
+            for col in numerical_cols:
+                group[col] = group[col].apply(lambda x: np.mean(x) if isinstance(x, list) else x)
+                group[col] = pd.to_numeric(group[col], errors='coerce')
+
+            for col in numerical_cols:
+                result[col] = group[col].mean()
+
+            # Compute element-wise mean for array columns
+            array_cols = ["Tone Event_Zscore", "Lick Event_Zscore"]
+            for col in array_cols:
+                stacked_arrays = np.vstack(group[col].values)  # Stack into 2D array
+                result[col] = np.mean(stacked_arrays, axis=0)  # Element-wise mean
+
+            return pd.Series(result)
+
+        df_mean = df.groupby('subject_name').apply(mean_arrays).reset_index()
+        
+        return df_mean

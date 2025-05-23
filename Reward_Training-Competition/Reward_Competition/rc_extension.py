@@ -3,6 +3,7 @@ import os
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(parent_dir)
 
+from rtc_extension import RTC
 from experiment_class import Experiment
 from scipy.stats import pearsonr
 from trial_class import Trial
@@ -15,146 +16,10 @@ from scipy.stats import ttest_ind
 import itertools
 from matplotlib.colors import LinearSegmentedColormap
 
-class Reward_Competition(Experiment):
+class Reward_Competition(RTC):
     def __init__(self, experiment_folder_path, behavior_folder_path):
         super().__init__(experiment_folder_path, behavior_folder_path)
-        self.port_bnc = {}  # Reset trials to avoid loading from parent class
         self.df = pd.DataFrame()
-        if "Cohort_1_2" in experiment_folder_path:
-            self.load_rtc1_trials()  # Load 1 RTC trial
-        else:
-            self.load_rtc2_trials() # load 2 trials for cohort 3
-
-    def load_rtc1_trials(self):
-        # Loads each trial folder (block) as a TDTData object and extracts manual annotation behaviors.
-        
-        trial_folders = [folder for folder in os.listdir(self.experiment_folder_path)
-                        if os.path.isdir(os.path.join(self.experiment_folder_path, folder))]
-
-        for trial_folder in trial_folders:
-            trial_path = os.path.join(self.experiment_folder_path, trial_folder)
-            trial_obj = Trial(trial_path, '_465A', '_405A')
-
-            self.trials[trial_folder] = trial_obj
-
-    def load_rtc2_trials(self):
-        """
-        Load two streams of data and splits them into two trials.
-        """
-        trial_folders = [folder for folder in os.listdir(self.experiment_folder_path)
-                if os.path.isdir(os.path.join(self.experiment_folder_path, folder))]
-
-        for trial_folder in trial_folders:
-            trial_path = os.path.join(self.experiment_folder_path, trial_folder)
-            trial_obj1 = Trial(trial_path, '_465A', '_405A')
-            trial_obj2 = Trial(trial_path, '_465C', '_405C')
-            trial_name1 = trial_folder.split('_')[0]                # First mouse of rtc
-            trial_name2 = trial_folder.split('_')[1].split('-')[0]  # Second mouse of rtc
-            trial_folder1 = trial_name1 + '-' + '-'.join(trial_folder.split('_')[1].split('-')[1:])
-            trial_folder2 = trial_name2 + '-' + '-'.join(trial_folder.split('_')[1].split('-')[1:])
-            self.trials[trial_folder1] = trial_obj1
-            self.trials[trial_folder2] = trial_obj2
-            del self.trials[trial_folder]
-            self.port_bnc[trial_folder1] = 3
-            self.port_bnc[trial_folder2] = 2
-
-    def rc_processing1(self, time_segments_to_remove=None):
-        """
-        Batch processes rc with 1 box
-        """
-        print(self.trials.items())
-        for trial_folder, trial in self.trials.items():
-            # Check if the subject name is in the time_segments_to_remove dictionary
-            if time_segments_to_remove and trial.subject_name in time_segments_to_remove:
-                self.remove_time_segments_from_block(trial_folder, time_segments_to_remove[trial.subject_name])
-
-            print(f"Reward Training Processing {trial_folder}...")
-            trial.remove_initial_LED_artifact(t=30)
-            # trial.remove_final_data_segment(t = 10)
-            
-            trial.highpass_baseline_drift()
-            trial.align_channels()
-            trial.compute_dFF()
-            baseline_start, baseline_end = trial.find_baseline_period()  
-            # trial.compute_zscore(method = 'baseline', baseline_start = baseline_start, baseline_end = baseline_end)
-            trial.compute_zscore(method = 'standard')
-            # trial.compute_zscore(method = 'modified')
-            trial.verify_signal()
-
-            # PC0 = Tones
-            """
-            Using RIG DATA
-            """
-            trial.rtc_events['sound cues'] = trial.rtc_events.pop('PC0_')
-            trial.rtc_events['port entries'] = trial.rtc_events.pop('PC2_', trial.rtc_events.pop('PC3_'))
-
-            # Remove the first entry because it doesn't count
-            trial.rtc_events['sound cues'].onset_times = trial.rtc_events['sound cues'].onset[1:]
-            trial.rtc_events['sound cues'].offset_times = trial.rtc_events['sound cues'].offset[1:]
-            trial.rtc_events['port entries'].onset_times = trial.rtc_events['port entries'].onset[1:]
-            trial.rtc_events['port entries'].offset_times = trial.rtc_events['port entries'].offset[1:]
-
-            valid_sound_cues = [t for t in trial.rtc_events['sound cues'].onset_times if t >= 200]
-            trial.rtc_events['sound cues'].onset_times = valid_sound_cues
-
-            # Finding instances after first tone is played
-            port_entries_onset = np.array(trial.rtc_events['port entries'].onset_times)
-            port_entries_offset = np.array(trial.rtc_events['port entries'].offset_times)
-            first_sound_cue_onset = trial.rtc_events['sound cues'].onset_times[0]
-            indices = np.where(port_entries_onset >= first_sound_cue_onset)[0]
-            trial.rtc_events['port entries'].onset_times = port_entries_onset[indices].tolist()
-            trial.rtc_events['port entries'].offset_times = port_entries_offset[indices].tolist()
-
-            # self.combine_consecutive_rtc_events(behavior_name='all', bout_time_threshold=0.5)
-
-    def rc_processing2(self, time_segments_to_remove=None):
-        """
-        Batch processes rc with 2 box
-        """
-        print(self.trials.items())
-        for (trial_folder, trial), (trial_folder1, trial1) in zip(self.trials.items(), self.port_bnc.items()):
-            # Check if the subject name is in the time_segments_to_remove dictionary
-            if time_segments_to_remove and trial.subject_name in time_segments_to_remove:
-                self.remove_time_segments_from_block(trial_folder, time_segments_to_remove[trial.subject_name])
-
-            print(f"Reward Training Processing {trial_folder}...")
-
-            trial.remove_initial_LED_artifact(t=30)
-            trial.highpass_baseline_drift()
-            trial.align_channels()
-            trial.compute_dFF()
-            baseline_start, baseline_end = trial.find_baseline_period()
-            trial.compute_zscore(method='standard')
-            trial.verify_signal()
-
-            # Using RIG DATA
-            print(f"Available behaviors in trial: {trial.rtc_events.keys()}")
-            trial.rtc_events['sound cues'] = trial.rtc_events.pop('PC0_')
-            
-            # Correct the way 'port entries' is assigned for trial1 based on self.port_bnc
-            trial_type1 = self.port_bnc.get(trial_folder1, None)  # Fetch trial type from self.port_bnc
-            if trial_type1 == 3:
-                trial.rtc_events['port entries'] = trial.rtc_events.pop('PC3_')
-            elif trial_type1 == 2:
-                trial.rtc_events['port entries'] = trial.rtc_events.pop('PC2_')
-
-            # Remove the first entry because it doesn't count
-            trial.rtc_events['sound cues'].onset_times = trial.rtc_events['sound cues'].onset[1:]
-            trial.rtc_events['sound cues'].offset_times = trial.rtc_events['sound cues'].offset[1:]
-            trial.rtc_events['port entries'].onset_times = trial.rtc_events['port entries'].onset[1:]
-            trial.rtc_events['port entries'].offset_times = trial.rtc_events['port entries'].offset[1:]
-
-            valid_sound_cues = [t for t in trial.rtc_events['sound cues'].onset_times if t >= 200]
-            trial.rtc_events['sound cues'].onset_times = valid_sound_cues
-            # Finding instances after the first tone is played
-            port_entries_onset = np.array(trial.rtc_events['port entries'].onset_times)
-            port_entries_offset = np.array(trial.rtc_events['port entries'].offset_times)
-            first_sound_cue_onset = trial.rtc_events['sound cues'].onset_times[0]
-            indices = np.where(port_entries_onset >= first_sound_cue_onset)[0]
-            trial.rtc_events['port entries'].onset_times = port_entries_onset[indices].tolist()
-            trial.rtc_events['port entries'].offset_times = port_entries_offset[indices].tolist()
-
-            # self.combine_consecutive_rtc_events(behavior_name='all', bout_time_threshold=0.5)
 
     """*********************************COMBINE CONSECUTIVE BEHAVIORS***********************************"""
     """def combine_consecutive_rtc_events(self, behavior_name='all', bout_time_threshold=0.5, min_occurrences=1):
@@ -222,22 +87,9 @@ class Reward_Competition(Experiment):
                 trial_obj.bout_dict = {}  # Reset bout dictionary after processing"""
 
     """*************************READING CSV AND STORING AS DF**************************"""
-    def read_manual_scoring1(self, csv_file_path):
+    def read_manual_scoring(self, csv_file_path):
         """
         Reads in and creates a dataframe to store wins and loses and tangles
-        """
-        df = pd.read_excel(csv_file_path)
-        df.columns = df.columns.str.strip().str.lower()
-        filtered_columns = df.filter(like='winner').dropna(axis=1, how='all').columns.tolist()
-        col_to_keep = ['file name'] + filtered_columns + ['tangles']
-        df = df[col_to_keep]
-        self.df = df
-
-    def read_manual_scoring2(self, csv_file_path):
-        """
-        Reads in and creates a df for trials that recorded 2 mice simultaneously
-        
-        First change file names so that there is only one mouse before the date, using the subject column.
         """
         df = pd.read_excel(csv_file_path)
         df.columns = df.columns.str.strip().str.lower()
@@ -249,56 +101,12 @@ class Reward_Competition(Experiment):
     def find_matching_trial(self, file_name):
         return self.trials.get(file_name, None)  # Return the trial if exact match, else None
 
-    def merge_data1(self):
+    def merge_data(self):
         """
         Merges all data into a dataframe for analysis.
         """
-        self.df['trial'] = self.df.apply(lambda row: self.find_matching_trial(row['file name']), axis=1)
-
-        # Debugging: Check how many trials fail to match
-        print("Total rows:", len(self.df))
-        print("Rows with missing trials:", self.df['trial'].isna().sum())
-        missing_trials = self.df[self.df['trial'].isna()]
-        print("Rows with missing trials:")
-        print(missing_trials)
-
-        # Replace None values temporarily instead of dropping them
-        self.df['trial'] = self.df['trial'].fillna("No Match Found")
-
-        # Handle behaviors safely
-        self.df['sound cues'] = self.df['trial'].apply(
-            lambda x: x.rtc_events.get('sound cues', None) 
-            if isinstance(x, object) and hasattr(x, 'rtc_events') else None
-        )
-        self.df['port entries'] = self.df['trial'].apply(
-            lambda x: x.rtc_events.get('port entries', None) 
-            if isinstance(x, object) and hasattr(x, 'rtc_events') else None
-        )
-        self.df['sound cues onset'] = self.df['sound cues'].apply(lambda x: x.onset_times if x else None)
-        self.df['port entries onset'] = self.df['port entries'].apply(lambda x: x.onset_times if x else None)
-        self.df['port entries offset'] = self.df['port entries'].apply(lambda x: x.offset_times if x else None)
-
-        # Creates a column for subject name
-        self.df['subject_name'] = self.df['file name'].str.split('-').str[0]
-
-        # Create a new column that stores an array of winners for each row
-        winner_columns = [col for col in self.df.columns if 'winner' in col.lower()]
-        self.df['winner_array'] = self.df[winner_columns].apply(lambda row: row.values.tolist(), axis=1)
-
-        # Drops all other winner columns leaving only winner_array.
-        self.df.drop(columns=winner_columns, inplace=True)
-
-        # Drop rows without dopamine data only at the end
-        self.df = self.df[self.df['trial'] != "No Match Found"]
-        self.df.reset_index(drop=True, inplace=True)
-
-
-    def merge_data2(self):
-        """
-        Merges data from cohort 3 into a dataframe for analysis
-        """
-        # Changes file name to match the change in load_rtc2
         self.df['file name'] = self.df.apply(lambda row: row['subject'] + '-' + '-'.join(row['file name'].split('-')[-2:]), axis=1)
+
         self.df['trial'] = self.df.apply(lambda row: self.find_matching_trial(row['file name']), axis=1)
         
         # Debugging: Check how many trials fail to match
@@ -324,6 +132,7 @@ class Reward_Competition(Experiment):
         # drops all rows without dopamine data.
         self.df.dropna(subset=['trial'], inplace=True)
         self.df.reset_index(drop=True, inplace=True)
+
 
     """***********************FINDING RANKS******************************"""
     def find_ranks_using_ds(self, file_path):
@@ -596,14 +405,12 @@ class Reward_Competition(Experiment):
         return df_filtered
 
     """*************************COMBINING COHORTS*************************"""
-    def combining_cohorts(self, df1):
-        df_combined = pd.concat([self.df, df1], ignore_index=True)
-        # Filter rows where 'subject_name' is either 'n4', 'n7', or other specified 'n' values
+    def remove_specified_subjects(self):
         # List of subject names to remove
         subjects_to_remove = ["n4", "n3", "n2", "n1", 'p4']
 
         # Remove rows where 'subject_names' are in the list
-        df_combined = df_combined[~df_combined['subject_name'].isin(subjects_to_remove)]
+        df_combined = self.df[~self.df['subject_name'].isin(subjects_to_remove)]
 
         # Display the result
         print(df_combined)
@@ -634,23 +441,25 @@ class Reward_Competition(Experiment):
             for sc_onset in sound_cues_onsets:
                 threshold_time = sc_onset + 4
 
-                future_licks_indices = np.where(port_entries_onsets >= threshold_time)[0]
+                # First, check for an ongoing lick:
+                ongoing_licks_indices = np.where(
+                    (port_entries_onsets < threshold_time) & (port_entries_offsets > threshold_time)
+                )[0]
 
-                if len(future_licks_indices) > 0:
-                    first_licks_per_row.append(port_entries_onsets[future_licks_indices[0]])
+                if len(ongoing_licks_indices) > 0:
+                    first_licks_per_row.append(threshold_time)
                 else:
-                    ongoing_licks_indices = np.where((port_entries_onsets < threshold_time) & (port_entries_offsets > threshold_time))[0]
-
-                    if len(ongoing_licks_indices) > 0:
-                        first_licks_per_row.append(threshold_time)
+                    # Otherwise, find the first port entry that starts after the threshold
+                    future_licks_indices = np.where(port_entries_onsets >= threshold_time)[0]
+                    if len(future_licks_indices) > 0:
+                        first_licks_per_row.append(port_entries_onsets[future_licks_indices[0]])
                     else:
                         first_licks_per_row.append(None)
 
             first_licks.append(first_licks_per_row)
 
-        df["first_lick_after_sound_cue"] = first_licks  # Add to the given DataFrame
-
-        return df  # Return the modified DataFrame
+        df["first_lick_after_sound_cue"] = first_licks
+        return df
 
     def compute_closest_port_offset(self, lick_column, offset_column, df=None):
         """
@@ -935,10 +744,10 @@ class Reward_Competition(Experiment):
                 max_peaks_all.append(max_peak)
                 peak_times_all.append(peak_time)
 
-            df['Mean Z-score EI'] = mean_zscores_all
-            df['AUC EI'] = auc_values_all
-            df['Max Peak EI'] = max_peaks_all
-            df['Time of Max Peak EI'] = peak_times_all
+            df['Tone Mean Z-score EI'] = mean_zscores_all
+            df['Tone AUC EI'] = auc_values_all
+            df['Tone Max Peak EI'] = max_peaks_all
+            df['Tone Time of Max Peak EI'] = peak_times_all
             return df
 
         if mode == 'standard':
@@ -1110,23 +919,11 @@ class Reward_Competition(Experiment):
         else:
             df = compute_ei(df)
 
-    def find_means(self, df):
-        if df is None:
-            df = self.df
-        df["Lick AUC Mean"] = df["Lick AUC"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Lick Max Peak Mean"] = df["Lick Max Peak"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Lick Mean Z-score Mean"] = df["Lick Mean Z-score"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Tone AUC Mean"] = df["Tone AUC"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Tone Max Peak Mean"] = df["Tone Max Peak"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Tone Mean Z-score Mean"] = df["Tone Mean Z-score"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Lick AUC Mean EI"] = df["Lick AUC EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Lick Max Peak Mean EI"] = df["Lick Max Peak EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Lick Mean Z-score Mean EI"] = df["Lick Mean Z-score EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Tone AUC Mean EI"] = df["AUC EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Tone Max Peak Mean EI"] = df["Max Peak EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
-        df["Tone Mean Z-score Mean EI"] = df["Mean Z-score EI"].apply(lambda x: np.mean(x) if isinstance(x, list) else np.nan)
 
     def find_overall_mean(self, df):
+        """
+        Finds the overall mean of specified DA metrics per-subject.
+        """
         if df is None:
             df = self.df
         
@@ -1146,7 +943,7 @@ class Reward_Competition(Experiment):
                 'Tone AUC First', 'Tone AUC Last', 'Tone Max Peak First', 'Tone Max Peak Last',
                 'Tone Mean Z-score First', 'Tone Mean Z-score Last',
                 "Lick AUC EI", "Lick Max Peak EI", "Lick Mean Z-score EI",
-                "AUC EI", "Max Peak EI", "Mean Z-score EI",
+                "Tone AUC EI", "Tone Max Peak EI", "Tone Mean Z-score EI",
                 "Lick AUC EI First", "Lick Max Peak EI First", "Tone AUC EI First",
                 "Tone Max Peak EI First", "Tone Mean Z-score EI First",
                 "Lick AUC EI Last", "Lick Max Peak EI Last", "Tone AUC EI Last",
@@ -1170,15 +967,6 @@ class Reward_Competition(Experiment):
         df_mean = df.groupby('subject_name').apply(mean_arrays).reset_index()
         
         return df_mean
-    
-    def finding_peth_means(self, event_type, df=None):
-        if df is None:
-            df = self.df
-        stacked_arrays = np.vstack(df[f'{event_type} Event_Zscore'].values)  # Stack all arrays
-        mean_array = np.mean(stacked_arrays, axis=0)  # Compute mean across trials
-        sem_array = np.std(stacked_arrays, axis=0, ddof=1) / np.sqrt(stacked_arrays.shape[0])  # Compute SEM correctly
-
-        return mean_array, sem_array
     
     def find_mean_event_zscore(self, df = None, behavior = 'Tone'):
         if df is None:
@@ -2041,14 +1829,14 @@ class Reward_Competition(Experiment):
         df['Tone Mean Z-score First'] = df['Tone Mean Z-score'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
         df['Tone Mean Z-score Last'] = df['Tone Mean Z-score'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
 
-        df['Tone AUC EI First'] = df['AUC EI'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
-        df['Tone AUC EI Last'] = df['AUC EI'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+        df['Tone AUC EI First'] = df['Tone AUC EI'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        df['Tone AUC EI Last'] = df['Tone AUC EI'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
 
-        df['Tone Max Peak EI First'] = df['Max Peak EI'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
-        df['Tone Max Peak EI Last'] = df['Max Peak EI'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
+        df['Tone Max Peak EI First'] = df['Tone Max Peak EI'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        df['Tone Max Peak EI Last'] = df['Tone Max Peak EI'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
         
-        df['Tone Mean Z-score EI First'] = df['Mean Z-score EI'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
-        df['Tone Mean Z-score EI Last'] = df['Mean Z-score EI'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)  
+        df['Tone Mean Z-score EI First'] = df['Tone Mean Z-score EI'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+        df['Tone Mean Z-score EI Last'] = df['Tone Mean Z-score EI'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)  
 
         df['Lick AUC EI First'] = df['Lick AUC EI'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
         df['Lick AUC EI Last'] = df['Lick AUC EI'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else None)
@@ -2160,7 +1948,7 @@ class Reward_Competition(Experiment):
         final_df = df
         return final_df
     
-    def plot_single_psth(self, df, condition, event_type, directory_path, brain_region, y_min, y_max, plot_first=True, plot_win=False):
+    def plot_single_psth(self, df, condition, event_type, directory_path, brain_region, y_min, y_max, plot_first=True):
         """
         Plots the PETH of either the first or last bout of either win or loss.
         If plot_first=True, it will plot the first bout. If plot_first=False, it will plot the last bout.
@@ -2188,38 +1976,35 @@ class Reward_Competition(Experiment):
         common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
         first_events = []
         last_events = []
-        if plot_win:
-            mean_peth, sem_peth = self.finding_peth_means(event_type=event_type, df=df)
-            title = f'{condition} bout Z-Score'
+
+        for _, row in df.iterrows():
+            z_scores = np.array(row[f'{event_type} Event_Zscore'])  # Shape: (num_1D_arrays, num_time_bins)
+            
+            # Ensure there is at least one 1D array in the row
+            if len(z_scores) > 0:
+                first_events.append(z_scores[0])   # First 1D array
+                last_events.append(z_scores[-1])   # Last 1D array
+
+        # Convert lists to numpy arrays (num_trials, num_time_bins)
+        first_events = np.array(first_events)
+        last_events = np.array(last_events)
+
+        # Compute mean and SEM
+        mean_first = np.mean(first_events, axis=0)
+        sem_first = np.std(first_events, axis=0) / np.sqrt(first_events.shape[0])
+
+        mean_last = np.mean(last_events, axis=0)
+        sem_last = np.std(last_events, axis=0) / np.sqrt(last_events.shape[0])
+
+        # Choose the event to plot (first or last bout)
+        if plot_first:
+            mean_peth = mean_first
+            sem_peth = sem_first
+            title = f'First {condition} bout Z-Score'
         else:
-            for _, row in df.iterrows():
-                z_scores = np.array(row[f'{event_type} Event_Zscore'])  # Shape: (num_1D_arrays, num_time_bins)
-                
-                # Ensure there is at least one 1D array in the row
-                if len(z_scores) > 0:
-                    first_events.append(z_scores[0])   # First 1D array
-                    last_events.append(z_scores[-1])   # Last 1D array
-
-            # Convert lists to numpy arrays (num_trials, num_time_bins)
-            first_events = np.array(first_events)
-            last_events = np.array(last_events)
-
-            # Compute mean and SEM
-            mean_first = np.mean(first_events, axis=0)
-            sem_first = np.std(first_events, axis=0) / np.sqrt(first_events.shape[0])
-
-            mean_last = np.mean(last_events, axis=0)
-            sem_last = np.std(last_events, axis=0) / np.sqrt(last_events.shape[0])
-
-            # Choose the event to plot (first or last bout)
-            if plot_first:
-                mean_peth = mean_first
-                sem_peth = sem_first
-                title = f'First {condition} bout Z-Score'
-            else:
-                mean_peth = mean_last
-                sem_peth = sem_last
-                title = f'Last {condition} bout Z-Score'
+            mean_peth = mean_last
+            sem_peth = sem_last
+            title = f'Last {condition} bout Z-Score'
 
         # Create figure with a single subplot
         fig, ax = plt.subplots(figsize=(8, 5))
@@ -2395,54 +2180,67 @@ class Reward_Competition(Experiment):
         plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         plt.show()
 
-    def reward_comp_vs_alone(self, df_alone, df_comp, metric_name, behavior, directory_path,
-                    custom_xtick_labels=None, 
-                    custom_xtick_colors=None, 
-                    ylim=None, 
-                    nac_color='#15616F',   # Color for NAc
-                    mpfc_color='#FFAF00',  # Color for mPFC
-                    yticks_increment=1, 
-                    figsize=(5,7),  
-                    pad_inches=0.1):
+    def reward_comp_vs_alone(self, df_alone, df_comp, metric_name, behavior, brain_region, directory_path,
+                         custom_xtick_labels=None, 
+                         custom_xtick_colors=None, 
+                         ylim=None, 
+                         nac_color='#15616F',   # Color for NAc
+                         mpfc_color='#FFAF00',  # Color for mPFC
+                         yticks_increment=1, 
+                         figsize=(5, 7),  
+                         pad_inches=0.1):
+    
         if behavior == 'Lick':
             behavior = 'Lick '
         else:
-            behavior = ''
+            behavior = 'Tone '
         
         title = f'NAc {behavior}{metric_name} alone vs competition'
         title1 = f'mPFC {behavior}{metric_name} alone vs competition'
-        def split_by_subject(df1):            
-            df_n = df1[df1['subject_name'].str.startswith('n')]
-            df_p = df1[df1['subject_name'].str.startswith('p')]
-            print(df_n.columns)
-            print(df_p.columns)
-            return df_n, df_p
 
-        df_n, df_p = split_by_subject(df_alone)
-        df1_n, df1_p = split_by_subject(df_comp)
-        
-        mean_values = df_n[f'{behavior}{metric_name} EI'].mean()
-        sem_values = df_n[f'{behavior}{metric_name} EI'].sem()
+        def split_by_subject(df1, brain_region):            
+            df_n = df1[df1['subject_name'].str.startswith('n')].copy()
+            df_p = df1[df1['subject_name'].str.startswith('p')].copy()
+            if brain_region == "NAc":
+                return df_n
+            else:
+                return df_p
 
-        mean_values1 = df1_n[f'{behavior}{metric_name} EI'].mean()
-        sem_values1 = df1_n[f'{behavior}{metric_name} EI'].sem()
+        def clean_column(df, col):
+            if col not in df.columns:
+                print(f"Warning: Column {col} not found in dataframe.")
+                return df
+            def try_flatten(x):
+                if isinstance(x, list) and len(x) == 1:
+                    return x[0]
+                elif isinstance(x, list):
+                    return None  # Drop if list with more than one element
+                else:
+                    return x
+            df[col] = df[col].apply(try_flatten)
+            df = df[pd.to_numeric(df[col], errors='coerce').notnull()].copy()
+            df[col] = df[col].astype(float)
+            return df
 
-        mean_values2 = df_p[f'{behavior}{metric_name} EI'].mean()
-        sem_values2 = df_p[f'{behavior}{metric_name} EI'].sem()
+        df_competition = split_by_subject(df_comp, brain_region)
 
-        mean_values3 = df1_p[f'{behavior}{metric_name} EI'].mean()
-        sem_values3 = df1_p[f'{behavior}{metric_name} EI'].sem()
+        col_1 = f'{behavior}{metric_name}'
+        col_2 = f'{behavior}{metric_name} EI'
 
-        df = df_n[[f'{behavior}{metric_name} EI']]
-        df1 = df1_n[[f'{behavior}{metric_name} EI']]
-        df2 = df_p[[f'{behavior}{metric_name} EI']]
-        df3 = df1_p[[f'{behavior}{metric_name} EI']]
+        alone_df = clean_column(df_alone, col_1)
+        competition_df = clean_column(df_competition, col_2)
+
+        # Compute stats
+        mean_values = alone_df[col_1].mean()
+        sem_values = alone_df[col_1].sem()
+
+        mean_values1 = competition_df[col_2].mean()
+        sem_values1 = competition_df[col_2].sem()
+
+        df = alone_df[[col_1]]
+        df1 = competition_df[[col_2]]
 
         self.ploting_side_by_side(df, df1, mean_values, sem_values, mean_values1, sem_values1,
                                 nac_color, figsize, metric_name, ylim, 
                                 yticks_increment, title, directory_path, pad_inches,
-                                'Alone', 'Competition')
-        self.ploting_side_by_side(df2, df3, mean_values2, sem_values2, mean_values3, sem_values3,
-                                mpfc_color, figsize, metric_name, ylim, 
-                                yticks_increment, title1, directory_path, pad_inches,
                                 'Alone', 'Competition')
