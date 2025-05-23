@@ -450,19 +450,22 @@ class Trial:
     def plot_behavior_event(self, behavior_name='all', ax=None):
         """
         Plot z-score signal with behavior event spans using the updated behaviors DataFrame.
-        Adjusts x-limits to remove unnecessary blank space at the beginning and end.
+        Starts at 30 seconds and ensures every subplot shows x-axis ticks.
         """
+        if self.behaviors is None or self.behaviors.empty:
+            print(f"Warning: No behavior data for {self.subject_name}.")
+            return
+
         y_data = self.zscore
         y_label = 'z-score'
         y_title = 'z-score Signal'
 
-        # Create a new figure if no axis is provided
         if ax is None:
             fig, ax = plt.subplots(figsize=(18, 6))
 
         ax.plot(self.timestamps, np.array(y_data), linewidth=2, color='black')
 
-        # Define colors for behaviors
+        # Behavior coloring
         behavior_colors = {
             'Investigation': 'dodgerblue', 
             'Approach': 'green', 
@@ -472,45 +475,38 @@ class Trial:
 
         behavior_labels_plotted = set()
 
-        # Determine x-axis limits based on behavior events
+        # Fixed start at 30 seconds
+        min_time = 30
         if behavior_name == 'all':
-            min_time = self.behaviors['Event_Start'].min() - 30
             max_time = self.behaviors['Event_End'].max() + 30
         else:
             behavior_df = self.behaviors[self.behaviors['Behavior'] == behavior_name]
             if behavior_df.empty:
                 raise ValueError(f"Behavior event '{behavior_name}' not found in behaviors.")
-            min_time = behavior_df['Event_Start'].min() - 30
             max_time = behavior_df['Event_End'].max() + 30
 
-        # Iterate through the behaviors DataFrame
-        if behavior_name == 'all':
-            for _, row in self.behaviors.iterrows():
-                event_name = row['Behavior']
-                if event_name in behavior_colors:
-                    color = behavior_colors[event_name]
-                    on, off = row['Event_Start'], row['Event_End']
-                    if event_name not in behavior_labels_plotted:
-                        ax.axvspan(on, off, alpha=0.25, label=event_name, color=color)
-                        behavior_labels_plotted.add(event_name)
-                    else:
-                        ax.axvspan(on, off, alpha=0.25, color=color)
-        else:
-            color = behavior_colors.get(behavior_name, 'dodgerblue')
-            for _, row in behavior_df.iterrows():
-                ax.axvspan(row['Event_Start'], row['Event_End'], alpha=0.25, color=color)
+        for _, row in self.behaviors.iterrows():
+            if behavior_name != 'all' and row['Behavior'] != behavior_name:
+                continue
+            event_name = row['Behavior']
+            color = behavior_colors.get(event_name, 'dodgerblue')
+            on, off = row['Event_Start'], row['Event_End']
+            if event_name not in behavior_labels_plotted:
+                ax.axvspan(on, off, alpha=0.25, label=event_name, color=color)
+                behavior_labels_plotted.add(event_name)
+            else:
+                ax.axvspan(on, off, alpha=0.25, color=color)
 
-        ax.set_xlim(min_time, max_time)  # Adjust x-axis limits to remove blank space
+        ax.set_xlim(min_time, max_time)
         ax.set_ylabel(y_label)
-        ax.set_xlabel('Seconds')
         ax.set_title(f'{self.subject_name}: {y_title} with {behavior_name.capitalize()} Bouts' if behavior_name != 'all' else f'{self.subject_name}: {y_title} with All Behavior Events')
 
         if behavior_labels_plotted:
             ax.legend()
 
-        if ax is None:
-            plt.tight_layout()
-            plt.show()
+        # Explicitly enable x-axis tick labels
+        ax.tick_params(axis='x', labelbottom=True)
+
 
 
     def plot_first_behavior_PETHs(self, behavior = "Investigation"):
@@ -578,6 +574,24 @@ class Trial:
             
             plt.tight_layout()
             plt.show()
+
+    def get_introductions_and_removals(self):
+        """
+        Returns two lists of times:
+          - intros: all Event_Start times where Behavior endswith 'Introduced'
+          - rems : all Event_End   times where Behavior endswith 'Removed'
+        """
+        if self.behaviors is None or self.behaviors.empty:
+            return [], []
+
+        # any Behavior name that ends with 'Introduced'
+        intro_mask = self.behaviors["Behavior"].str.endswith("Introduced")
+        # any Behavior name that ends with 'Removed'
+        remove_mask = self.behaviors["Behavior"].str.endswith("Removed")
+
+        intros = list(self.behaviors.loc[intro_mask, "Event_Start"])
+        rems   = list(self.behaviors.loc[remove_mask, "Event_End"  ])
+        return intros, rems
 
     '''********************************** MISC **********************************'''
     def find_baseline_period(self):

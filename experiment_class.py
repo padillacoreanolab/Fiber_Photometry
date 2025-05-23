@@ -44,7 +44,7 @@ class Experiment:
             trial.remove_initial_LED_artifact(t=30)
             trial.remove_final_data_segment(t = 10)
             
-            trial.smooth_and_apply(window_len=int(trial.fs)*2)
+            trial.smooth_and_apply(window_len=int(trial.fs)*4)
             trial.apply_ma_baseline_drift()
             trial.align_channels()
             trial.compute_dFF()
@@ -85,31 +85,32 @@ class Experiment:
 
 
     '''********************************** PLOTTING **********************************'''
-    def plot_all_traces(experiment, behavior_name='all'): 
+    def plot_all_traces(experiment, behavior_name='all'):
         """
-        Plots behavior events for all trials in separate subplots within the same figure.
+        Plots behavior events for all trials with all subplots showing x-tick labels.
         """
         num_trials = len(experiment.trials)
-
         if num_trials == 0:
             print("No trials found in the experiment.")
             return
-        
-        fig, axes = plt.subplots(nrows=num_trials, figsize=(12, 3 * num_trials), sharex=True)
 
-        # Ensure axes is iterable (in case of a single subplot)
+        fig, axes = plt.subplots(nrows=num_trials, figsize=(12, 3 * num_trials), sharex=False)
+
         if num_trials == 1:
             axes = [axes]
 
-        # Loop through trials and plot behavior events in each subplot
         for ax, (trial_name, trial) in zip(axes, experiment.trials.items()):
-            trial.plot_behavior_event(behavior_name, ax=ax) 
+            if trial.behaviors is None or trial.behaviors.empty:
+                ax.set_title(f"{trial_name} (no behavior data)")
+                ax.axis("off")
+                continue
+            trial.plot_behavior_event(behavior_name, ax=ax)
             ax.set_title(trial_name)
-
-        axes[-1].set_xlabel("Time (s)")
+            ax.tick_params(axis='x', labelbottom=True)  # Ensure x-tick labels are shown
 
         plt.tight_layout()
         plt.show()
+
 
 
     def plot_first_behavior_PETHs(self, selected_bouts=None, behavior="Investigation"):
@@ -376,6 +377,103 @@ class Experiment:
         plt.tight_layout()
         plt.show()
 
+    def plot_behavior_and_bouts(
+        self,
+        bout_bounds_df,
+        behavior_name="all",
+        start_time=30.0
+    ):
+        """
+        Plots each trial's z-score trace overlaid with:
+        - gray spans for each behavior in trial.behaviors (or only `behavior_name`)
+        - dashed red lines at each Bout_Start_s and Bout_End_s from `bout_bounds_df`
+
+        Parameters:
+        - bout_bounds_df (pd.DataFrame): Output from get_bout_boundaries_df()
+        - behavior_name (str): Name of behavior to span; "all" plots all behaviors
+        - start_time (float): Minimum x-axis value for each subplot
+        """
+        n = len(self.trials)
+        if n == 0:
+            print("No trials to plot.")
+            return
+
+        fig, axes = plt.subplots(nrows=n, figsize=(12, 3*n), sharex=False)
+        if n == 1:
+            axes = [axes]
+
+        for ax, (trial_name, trial) in zip(axes, self.trials.items()):
+            ax.set_title(trial_name)
+            ts = trial.timestamps
+            ax.plot(ts, trial.zscore, color="black", lw=1)
+
+            # 1) Plot behavior spans
+            dfb = trial.behaviors
+            if dfb is not None and not dfb.empty:
+                if behavior_name != "all":
+                    dfb = dfb[dfb["Behavior"] == behavior_name]
+                for _, row in dfb.iterrows():
+                    ax.axvspan(row["Event_Start"], row["Event_End"], color="gray", alpha=0.3)
+
+            # 2) Plot dashed red lines from bout_bounds_df
+            trial_subject = trial.subject_name
+            trial_bounds = bout_bounds_df[bout_bounds_df["Subject"] == trial_subject]
+            for _, row in trial_bounds.iterrows():
+                ax.axvline(row["Bout_Start_s"], color="red", linestyle="--", lw=1.5)
+                ax.axvline(row["Bout_End_s"], color="red", linestyle="--", lw=1.5)
+
+            ax.set_xlim(start_time, ts[-1])
+            ax.tick_params(axis="x", labelbottom=True)
+
+        plt.tight_layout()
+        plt.show()
+
+
+
+
+    def get_bout_boundaries_df(self, bout_definitions):
+        """
+        Extracts bout start and end times from raw CSVs using bout_definitions and returns
+        a unified DataFrame with columns: ['Subject', 'Bout', 'Bout_Start_s', 'Bout_End_s'].
+
+        Parameters:
+        - bout_definitions (list of dict): Each dict must have keys: 'prefix', 'introduced', 'removed'
+
+        Returns:
+        - pd.DataFrame containing bout timing information across all trials
+        """
+        all_rows = []
+
+        for trial_name, trial in self.trials.items():
+            csv_path = os.path.join(self.behavior_folder_path, f"{trial_name}.csv")
+            if not os.path.exists(csv_path):
+                print(f"Warning: No CSV found for {trial_name}. Skipping.")
+                continue
+
+            raw_df = pd.read_csv(csv_path)
+            subject = trial.subject_name
+
+            for bd in bout_definitions:
+                prefix = bd['prefix']
+                intro_df = raw_df[raw_df['Behavior'] == bd['introduced']]
+                remove_df = raw_df[raw_df['Behavior'] == bd['removed']]
+
+                # Sort and zip to pair up
+                intro_df = intro_df.sort_values('Start (s)').reset_index(drop=True)
+                remove_df = remove_df.sort_values('Start (s)').reset_index(drop=True)
+                num_bouts = min(len(intro_df), len(remove_df))
+
+                for idx in range(num_bouts):
+                    irow = intro_df.iloc[idx]
+                    rrow = remove_df.iloc[idx]
+                    all_rows.append({
+                        'Subject': subject,
+                        'Bout': f"{prefix}-{idx+1}",
+                        'Bout_Start_s': irow['Start (s)'],
+                        'Bout_End_s': rrow['Start (s)']
+                    })
+
+        return pd.DataFrame(all_rows)
 
 
     '''********************************** DOPAMINE SHIZ **********************************'''
@@ -445,3 +543,7 @@ class Experiment:
             print(f"Computing event-induced DA for trial {trial_name} ...")
             trial.compute_event_induced_DA(pre_time=pre_time, post_time=post_time)
 
+
+
+    '''********************************** mPFC Peak Detection **********************************'''
+    
