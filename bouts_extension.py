@@ -161,6 +161,70 @@ def create_da_metrics_dataframe(trial_data, behavior="Investigation", desired_bo
     return final_df
 
 
+def create_da_metrics_first_instance(
+    trial_data,
+    behavior="Investigation",
+    desired_bouts=None,
+    time_col="Event_Start"
+):
+    """
+    Like create_da_metrics_dataframe, but for each (Subject, Bout) we only
+    pull the **first** row where Behavior==behavior (sorted by time_col).
+
+    Parameters
+    ----------
+    trial_data : dict
+        { subject_id : behaviors-DataFrame }
+    behavior : str
+        Which behavior to select (default "Investigation")
+    desired_bouts : list or None
+        If provided, only these bout labels are processed; else all in df.
+    time_col : str
+        Which column to sort by to determine "first" (default "Event_Start")
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: [Subject, Bout, Behavior, AUC, Max Peak, Mean Z-score]
+    """
+    rows = []
+
+    for subj, df in trial_data.items():
+        # pick which bouts to iterate
+        if desired_bouts is not None:
+            bouts = desired_bouts
+        else:
+            bouts = df["Bout"].unique()
+
+        for bout in bouts:
+            df_b = df[df["Bout"] == bout]
+            # of those, take only rows matching the behavior
+            df_beh = df_b[df_b["Behavior"] == behavior].copy()
+
+            if df_beh.empty:
+                # no instance → zeros
+                auc_val = 0.0
+                peak_val = 0.0
+                z_val   = 0.0
+            else:
+                # sort by the time_col and grab the first row
+                first = df_beh.sort_values(time_col, ascending=True).iloc[0]
+                auc_val  = first["AUC"]
+                peak_val = first["Max Peak"]
+                z_val    = first["Mean Z-score"]
+
+            rows.append({
+                "Subject": subj,
+                "Bout": bout,
+                "Behavior": behavior,
+                "AUC": auc_val,
+                "Max Peak": peak_val,
+                "Mean Z-score": z_val
+            })
+
+    return pd.DataFrame(rows)
+
+
 
 def plot_behavior_across_bouts_no_identities(metadata_df,
                                           y_col="Total Investigation Time",
