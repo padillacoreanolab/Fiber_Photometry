@@ -1685,6 +1685,88 @@ class Reward_Competition(RTC):
         plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         plt.show()
 
+    def plot_single_psth(self, df, condition, event_type, directory_path, brain_region, y_min, y_max, plot_first=True):
+        """
+        Plots the PETH of either the first or last bout of either win or loss.
+        If plot_first=True, it will plot the first bout. If plot_first=False, it will plot the last bout.
+        """
+        # Splitting either mPFC or NAc subjects
+        if df is None:
+            df = self.df
+        def split_by_subject(df1, region):            
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            # Return filtered dataframes and subject_name column
+            if region == 'mPFC':
+                return df_p
+            else:
+                return df_n
+
+        df = split_by_subject(df, brain_region)
+        bin_size = 100
+        if brain_region == 'mPFC':
+            color = '#FFAF00'
+        else:
+            color = '#15616F'
+        
+        # Initialize data structures
+        common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
+        first_events = []
+        last_events = []
+        for _, row in df.iterrows():
+            z_scores = np.array(row[f'{event_type} Event_Zscore'])  # Shape: (num_1D_arrays, num_time_bins)
+            
+            # Ensure there is at least one 1D array in the row
+            if len(z_scores) > 0:
+                first_events.append(z_scores[0])   # First 1D array
+                last_events.append(z_scores[-1])   # Last 1D array
+
+        # Convert lists to numpy arrays (num_trials, num_time_bins)
+        first_events = np.array(first_events)
+        last_events = np.array(last_events)
+
+        # Compute mean and SEM
+        mean_first = np.mean(first_events, axis=0)
+        sem_first = np.std(first_events, axis=0) / np.sqrt(first_events.shape[0])
+
+        mean_last = np.mean(last_events, axis=0)
+        sem_last = np.std(last_events, axis=0) / np.sqrt(last_events.shape[0])
+
+        # Choose the event to plot (first or last bout)
+        if plot_first:
+            mean_peth = mean_first
+            sem_peth = sem_first
+            title = f'First {condition} bout Z-Score'
+        else:
+            mean_peth = mean_last
+            sem_peth = sem_last
+            title = f'Last {condition} bout Z-Score'
+        # Create figure with a single subplot
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        ax.set_ylabel('Event Induced Z-scored ΔF/F', fontsize=20)
+        ax.tick_params(axis='y', labelleft=True)
+        mean_peth, downsampled_time_axis = self.downsample_data(mean_peth, common_time_axis, bin_size)
+        sem_peth, _ = self.downsample_data(sem_peth, common_time_axis, bin_size)
+
+        # Plot the selected event
+        ax.plot(downsampled_time_axis, mean_peth, color=color, label='Mean DA')
+        ax.fill_between(downsampled_time_axis, mean_peth - sem_peth, mean_peth + sem_peth, color=color, alpha=0.4)
+        ax.axvline(0, color='black', linestyle='--')  # Mark event onset
+        ax.axvline(4, color='pink', linestyle='-')
+
+        ax.set_title(title, fontsize=18)
+        ax.set_xlabel('Time (s)', fontsize=20)
+        ax.set_xticks([common_time_axis[0], 0, 4, common_time_axis[-1]])
+        ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=20)
+        # Add a margin to make sure the mean trace doesn't go out of bounds
+        ax.set_ylim(y_max, y_min)
+
+        # Save the figure
+        save_path = os.path.join(str(directory_path) + '\\' + f'{brain_region}_{condition}_PETH.png')
+        plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        plt.show()
+
     def scatter_dominance(self, directory_path, df, metric_name, method, condition, pad_inches=0.1):
         """
         Scatter plot of dominance rank in a cage.
@@ -1862,68 +1944,6 @@ class Reward_Competition(RTC):
         df['last_tone'] = df['sound cues onset'].apply(lambda x: x[-1] if len(x) > 0 else None).apply(lambda x: np.array([x]))
         df['last_bout'] = df.apply(lambda row: 'win' if row['first_value'] == row['subject_name'] else 'lose', axis=1)
 
-    def first_winning(self, df=None):
-        if df is None:
-            df = self.df
-        df_win = df.loc[df['first_bout'] == 'win'].copy()
-        return df_win
-
-    def first_losing(self, df=None):
-        if df is None:
-            df = self.df
-        df_lose = df.loc[df['first_bout'] == 'lose'].copy()
-        return df_lose
-
-    def last_winning(self, df=None):
-        if df is None:
-            df = self.df
-        df_win = df.loc[df['last_bout'] == 'win'].copy()
-        return df_win
-    
-    def last_losing(self, df=None):
-        if df is None:
-            df = self.df
-        df_lose = df.loc[df['last_bout'] == 'lose'].copy()
-        return df_lose
-
-    """def find_first_lick_after_first_cue(self, df=None):
-        
-        Finds the first port entry occurring after 4 seconds following each sound cue.
-        If a port entry starts before 4 seconds but extends past it, 
-        the function selects the timestamp at 4 seconds after the sound cue.
-
-        Works for the first tone of the trial regardless of outcome.
-        
-        if df is None:
-            df = self.df  # Default to self.df only if no DataFrame is provided
-
-        first_licks = []  # List to store results
-
-        for index, row in df.iterrows():  # Use df, not self.df
-            sound_cue_onset = row['first_tone']
-            port_entries_onsets = row['port entries']
-            port_entries_offsets = row['port entries offset']
-
-            first_licks_per_row = []
-
-            for sc_onset in sound_cue_onset:
-                threshold_time = sc_onset + 4
-
-                future_licks_indices = np.where(port_entries_onsets >= threshold_time)[0]
-
-                if len(future_licks_indices) > 0:
-                    first_lick = port_entries_onsets[future_licks_indices[0]]
-                    break  # Stop after the first valid lick
-
-                ongoing_licks_indices = np.where((port_entries_onsets < threshold_time) & (port_entries_offsets > threshold_time))[0]
-
-                if len(ongoing_licks_indices) > 0:
-                    first_lick = threshold_time
-                    break  # Stop after the first valid lick
-
-        df["first_lick_after_sound_cue"] = first_licks  # Add to the given DataFrame
-        df["filtered_sound_cues"] = df["first_tone"]
-        return df  # Return the modified DataFrame"""
 
     def finding_first_tone_means(self, df=None):
         """
@@ -1948,88 +1968,98 @@ class Reward_Competition(RTC):
         final_df = df
         return final_df
     
-    def plot_single_psth(self, df, condition, event_type, directory_path, brain_region, y_min, y_max, plot_first=True):
+    
+    def plot_specific_event_psth(self, event_type, event_index, directory_path, brain_region, y_min, y_max, df=None, condition='Win', bin_size=100):
         """
-        Plots the PETH of either the first or last bout of either win or loss.
-        If plot_first=True, it will plot the first bout. If plot_first=False, it will plot the last bout.
+        Plots the PSTH (mean and SEM) for a specific event bout (0→4 s after event onset)
+        across trials, using the same averaging logic as for a bout response.
+
+        Parameters:
+            event_type (str): The event type (e.g. 'Tone' or 'Lick').
+            event_index (int): 1-indexed event number to plot.
+            directory_path (str or None): Directory to save the plot (if None, the plot is not saved).
+            brain_region (str): Brain region ('mPFC' or other) to filter subjects.
+            y_min (float): Lower bound of the y-axis.
+            y_max (float): Upper bound of the y-axis.
+            df (DataFrame, optional): DataFrame to use (defaults to self.df).
+            bin_size (int, optional): Bin size for downsampling.
         """
-        # Splitting either mPFC or NAc subjects
         if df is None:
             df = self.df
-        def split_by_subject(df1, region):            
+
+        # Filter subjects by brain region.
+        def split_by_subject(df1, region):
             df_n = df1[df1['subject_name'].str.startswith('n')]
             df_p = df1[df1['subject_name'].str.startswith('p')]
-            # Return filtered dataframes and subject_name column
-            if region == 'mPFC':
-                return df_p
-            else:
-                return df_n
+            return df_p if region == 'mPFC' else df_n
 
         df = split_by_subject(df, brain_region)
-        bin_size = 100
-        if brain_region == 'mPFC':
-            color = '#FFAF00'
-        else:
-            color = '#15616F'
+        idx = event_index - 1
+        print(f"[DEBUG] PSTH: Plotting {event_type} event index {event_index} (0-indexed {idx}) for brain region {brain_region}")
+
+        selected_traces = []
+        for i, row in df.iterrows():
+            event_z_list = row.get(f'{event_type} Event_Zscore', [])
+            if isinstance(event_z_list, list) and len(event_z_list) > idx:
+                trace = np.array(event_z_list[idx])
+                print(f"[DEBUG] Row {i}, subject {row['subject_name']}: trace shape {trace.shape}, first 5 values: {trace[:5]}")
+                selected_traces.append(trace)
+        if len(selected_traces) == 0:
+            print(f"No trials have an event at index {event_index} for {event_type}.")
+            return
+
+        # Use the common time axis from the first trial's bout.
+        common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][idx]
+        selected_traces = np.array(selected_traces)
+
+        mean_trace = np.mean(selected_traces, axis=0)
+        sem_trace = np.std(selected_traces, axis=0) / np.sqrt(selected_traces.shape[0])
         
-        # Initialize data structures
-        common_time_axis = df.iloc[0][f'{event_type} Event_Time_Axis'][0]
-        first_events = []
-        last_events = []
-
-        for _, row in df.iterrows():
-            z_scores = np.array(row[f'{event_type} Event_Zscore'])  # Shape: (num_1D_arrays, num_time_bins)
-            
-            # Ensure there is at least one 1D array in the row
-            if len(z_scores) > 0:
-                first_events.append(z_scores[0])   # First 1D array
-                last_events.append(z_scores[-1])   # Last 1D array
-
-        # Convert lists to numpy arrays (num_trials, num_time_bins)
-        first_events = np.array(first_events)
-        last_events = np.array(last_events)
-
-        # Compute mean and SEM
-        mean_first = np.mean(first_events, axis=0)
-        sem_first = np.std(first_events, axis=0) / np.sqrt(first_events.shape[0])
-
-        mean_last = np.mean(last_events, axis=0)
-        sem_last = np.std(last_events, axis=0) / np.sqrt(last_events.shape[0])
-
-        # Choose the event to plot (first or last bout)
-        if plot_first:
-            mean_peth = mean_first
-            sem_peth = sem_first
-            title = f'First {condition} bout Z-Score'
+        if hasattr(self, 'downsample_data'):
+            mean_trace, downsampled_time_axis = self.downsample_data(mean_trace, common_time_axis, bin_size)
+            sem_trace, _ = self.downsample_data(sem_trace, common_time_axis, bin_size)
         else:
-            mean_peth = mean_last
-            sem_peth = sem_last
-            title = f'Last {condition} bout Z-Score'
+            downsampled_time_axis = common_time_axis
 
-        # Create figure with a single subplot
-        fig, ax = plt.subplots(figsize=(8, 5))
+        # --- Debug: Check values in the 4–10 s window ---
+        post_window = (downsampled_time_axis >= 4) & (downsampled_time_axis <= 10)
+        post_vals = mean_trace[post_window]
+        print("[DEBUG] PSTH: Final mean trace shape:", mean_trace.shape)
+        print("[DEBUG] PSTH: Final mean trace first 10 values:", mean_trace[:10])
+        print("[DEBUG] PSTH: 4–10 s window values, first 10:", post_vals[:10])
+        print("[DEBUG] PSTH: Max in 4–10 s window:", np.max(post_vals))
+        # --- End Debug ---
 
-        ax.set_ylabel('Event Induced Z-scored ΔF/F', fontsize=20)
-        ax.tick_params(axis='y', labelleft=True)
-        mean_peth, downsampled_time_axis = self.downsample_data(mean_peth, common_time_axis, bin_size)
-        sem_peth, _ = self.downsample_data(sem_peth, common_time_axis, bin_size)
+        # Choose trace color based on brain region.
+        trace_color = '#FFAF00' if brain_region == 'mPFC' else '#15616F'
 
-        # Plot the selected event
-        ax.plot(downsampled_time_axis, mean_peth, color=color, label='Mean DA')
-        ax.fill_between(downsampled_time_axis, mean_peth - sem_peth, mean_peth + sem_peth, color=color, alpha=0.4)
-        ax.axvline(0, color='black', linestyle='--')  # Mark event onset
-        ax.axvline(4, color='pink', linestyle='-')
+        plt.figure(figsize=(10, 6))
+        plt.plot(downsampled_time_axis, mean_trace, color=trace_color, lw=3, label='Mean DA')
+        plt.fill_between(downsampled_time_axis, mean_trace - sem_trace, mean_trace + sem_trace,
+                        color=trace_color, alpha=0.4, label='SEM')
+        plt.axvline(0, color='black', linestyle='--', lw=2)
+        plt.axvline(4, color='#FF69B4', linestyle='-', lw=2)
 
-        ax.set_title(title, fontsize=18)
-        ax.set_xlabel('Time (s)', fontsize=20)
-        ax.set_xticks([common_time_axis[0], 0, 4, common_time_axis[-1]])
-        ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=20)
-        # Add a margin to make sure the mean trace doesn't go out of bounds
-        ax.set_ylim(y_max, y_min)
+        # Force the x-axis to be from -4 to 10 seconds.
+        plt.xlabel('Time from Tone Onset (s)', fontsize=30)
+        plt.ylabel('Event-Induced z-scored ΔF/F', fontsize=30)
+        plt.title(f'{event_type} Event {event_index} {condition} PSTH', fontsize=30, pad=30)
+        plt.ylim(y_min, y_max)
+        plt.xticks([-4, 0, 4, 10], fontsize=30)
+        plt.yticks(fontsize=30)
+        plt.xlim(-4, 10)  # Force x-axis limits
 
-        # Save the figure
-        save_path = os.path.join(str(directory_path) + '\\' + f'{brain_region}_{condition}_PETH.png')
-        plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        ax = plt.gca()
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_linewidth(3)
+        ax.spines['left'].set_linewidth(3)
+
+        if directory_path is not None:
+            # Ensure the directory exists.
+            os.makedirs(directory_path, exist_ok=True)
+            save_path = os.path.join(directory_path, f'{brain_region}_{event_type}_Event{event_index}_PSTH.png')
+            plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         plt.show()
 
     def plot_mean_psth(self, df, condition, event_type, directory_path, brain_region, y_min, y_max):
@@ -2195,8 +2225,12 @@ class Reward_Competition(RTC):
         else:
             behavior = 'Tone '
         
-        title = f'NAc {behavior}{metric_name} alone vs competition'
-        title1 = f'mPFC {behavior}{metric_name} alone vs competition'
+        if brain_region == 'NAc':
+            title = f'NAc {behavior}{metric_name} alone vs competition'
+            color = nac_color
+        else:
+            title = f'mPFC {behavior}{metric_name} alone vs competition'
+            color = mpfc_color
 
         def split_by_subject(df1, brain_region):            
             df_n = df1[df1['subject_name'].str.startswith('n')].copy()
@@ -2241,6 +2275,6 @@ class Reward_Competition(RTC):
         df1 = competition_df[[col_2]]
 
         self.ploting_side_by_side(df, df1, mean_values, sem_values, mean_values1, sem_values1,
-                                nac_color, figsize, metric_name, ylim, 
+                                color, figsize, metric_name, ylim, 
                                 yticks_increment, title, directory_path, pad_inches,
                                 'Alone', 'Competition')
