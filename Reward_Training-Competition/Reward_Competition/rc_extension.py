@@ -21,71 +21,6 @@ class Reward_Competition(RTC):
         super().__init__(experiment_folder_path, behavior_folder_path)
         self.df = pd.DataFrame()
 
-    """*********************************COMBINE CONSECUTIVE BEHAVIORS***********************************"""
-    """def combine_consecutive_rtc_events(self, behavior_name='all', bout_time_threshold=0.5, min_occurrences=1):
-        
-        Applies the behavior combination logic to all trials within the experiment.
-        
-
-        for trial_name, trial_obj in self.trials.items():
-            # Ensure the trial has rtc_events attribute
-            if not hasattr(trial_obj, 'rtc_events'):
-                continue  # Skip if rtc_events is not available
-
-            # Determine which behaviors to process
-            if behavior_name == 'all':
-                behaviors_to_process = trial_obj.rtc_events.keys()  # Process all behaviors
-            else:
-                behaviors_to_process = [behavior_name]  # Process a single behavior
-
-            for behavior_event in behaviors_to_process:
-                behavior_onsets = np.array(trial_obj.rtc_events[behavior_event].onset)
-                behavior_offsets = np.array(trial_obj.rtc_events[behavior_event].offset)
-
-                combined_onsets = []
-                combined_offsets = []
-                combined_durations = []
-
-                if len(behavior_onsets) == 0:
-                    continue  # Skip this behavior if there are no onsets
-
-                start_idx = 0
-
-                while start_idx < len(behavior_onsets):
-                    # Initialize the combination window with the first behavior onset and offset
-                    current_onset = behavior_onsets[start_idx]
-                    current_offset = behavior_offsets[start_idx]
-
-                    next_idx = start_idx + 1
-
-                    # Check consecutive events and combine them if they fall within the threshold
-                    while next_idx < len(behavior_onsets) and (behavior_onsets[next_idx] - current_offset) <= bout_time_threshold:
-                        # Update the end of the combined bout
-                        current_offset = behavior_offsets[next_idx]
-                        next_idx += 1
-
-                    # Add the combined onset, offset, and total duration to the list
-                    combined_onsets.append(current_onset)
-                    combined_offsets.append(current_offset)
-                    combined_durations.append(current_offset - current_onset)
-
-                    # Move to the next set of events
-                    start_idx = next_idx
-
-                # Filter out bouts with fewer than the minimum occurrences
-                valid_indices = []
-                for i in range(len(combined_onsets)):
-                    num_occurrences = len([onset for onset in behavior_onsets if combined_onsets[i] <= onset <= combined_offsets[i]])
-                    if num_occurrences >= min_occurrences:
-                        valid_indices.append(i)
-
-                # Update the behavior with the combined onsets, offsets, and durations
-                trial_obj.rtc_events[behavior_event].onset = [combined_onsets[i] for i in valid_indices]
-                trial_obj.rtc_events[behavior_event].offset = [combined_offsets[i] for i in valid_indices]
-                trial_obj.rtc_events[behavior_event].Total_Duration = [combined_durations[i] for i in valid_indices]  # Update Total Duration
-
-                trial_obj.bout_dict = {}  # Reset bout dictionary after processing"""
-
     """*************************READING CSV AND STORING AS DF**************************"""
     def read_manual_scoring(self, csv_file_path):
         """
@@ -2273,7 +2208,7 @@ class Reward_Competition(RTC):
 
         df = alone_df[[col_1]]
         df1 = competition_df[[col_2]]
-
+        
         self.ploting_side_by_side(df, df1, mean_values, sem_values, mean_values1, sem_values1,
                                 color, figsize, metric_name, ylim, 
                                 yticks_increment, title, directory_path, pad_inches,

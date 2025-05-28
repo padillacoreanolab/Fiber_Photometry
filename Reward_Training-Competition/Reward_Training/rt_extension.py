@@ -595,11 +595,6 @@ class Reward_Training(RTC):
             plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         plt.show()
 
-
-
-
-
-
     def plot_event_index_heatmap(self, event_type, max_events, directory_path, brain_region, 
                              vmin, vmax, df=None, bin_size=125):
         """
@@ -807,8 +802,8 @@ class Reward_Training(RTC):
 
             # Compute mean for scalar numerical values
             numerical_cols = [
-                'Lick AUC', 'Lick Max Peak', 'Lick Mean Z-score',
-                'Tone AUC', 'Tone Max Peak', 'Tone Mean Z-score'
+                'Lick AUC EI', 'Lick Max Peak EI', 'Lick Mean Z-score EI',
+                'Tone AUC EI', 'Tone Max Peak EI', 'Tone Mean Z-score EI'
             ]
             for col in numerical_cols:
                 group[col] = group[col].apply(lambda x: np.mean(x) if isinstance(x, list) else x)
