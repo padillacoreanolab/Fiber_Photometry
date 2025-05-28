@@ -91,7 +91,7 @@ class RTC(Experiment):
             - For unisubject, try PC2_ first, then PC3_.
         7. Remove the first behavior entry (if it is not counting).
         8. Filter port entries so that only those after the first sound cue remain.
-        9. Combine consecutive behaviors.
+        9. Combine consecutive behaviors. - not happening anymore
         """
         for trial_folder, trial in self.trials.items():
             # (Optional) Remove time segments if provided.
@@ -117,9 +117,9 @@ class RTC(Experiment):
             if trial_folder in self.port_bnc:
                 # Multisubject: use port info to select the proper channel.
                 port_val = self.port_bnc[trial_folder]
-                if port_val == 3:
+                if port_val == 2:
                     trial.rtc_events['port entries'] = trial.rtc_events.pop('PC3_')
-                elif port_val == 2:
+                elif port_val == 3: ################*********************
                     trial.rtc_events['port entries'] = trial.rtc_events.pop('PC2_')
                 else:
                     print(f"Warning: Unexpected port value ({port_val}) for trial {trial_folder}")

@@ -1527,8 +1527,9 @@ class Reward_Competition(RTC):
         cbar = fig.colorbar(cax, ax=axes, orientation='vertical', shrink=0.7, label='Z-score')
 
         # Save and show
-        save_path = os.path.join(directory_path, f'{brain_region}_{condition}_Single_Trials_Heatmap.png')
-        plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        if directory_path is not None:
+            save_path = os.path.join(directory_path, f'{brain_region}_{condition}_Single_Trials_Heatmap.png')
+            plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         plt.show()
 
     def plot_first_tone_heatmaps(self, df, condition, event_type, directory_path, brain_region, plot_first=True):
@@ -1616,8 +1617,9 @@ class Reward_Competition(RTC):
         cbar.ax.yaxis.set_label_position('left') 
 
         # Save and show the plot
-        save_path = os.path.join(directory_path, f'{brain_region}_{condition}_Single_Trial_Heatmap.png')
-        plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        if directory_path is not None:    
+            save_path = os.path.join(directory_path, f'{brain_region}_{condition}_Single_Trial_Heatmap.png')
+            plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         plt.show()
 
     def plot_single_psth(self, df, condition, event_type, directory_path, brain_region, y_min, y_max, plot_first=True):
@@ -1698,8 +1700,9 @@ class Reward_Competition(RTC):
         ax.set_ylim(y_max, y_min)
 
         # Save the figure
-        save_path = os.path.join(str(directory_path) + '\\' + f'{brain_region}_{condition}_PETH.png')
-        plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        if directory_path is not None:
+            save_path = os.path.join(str(directory_path) + '\\' + f'{brain_region}_{condition}_PETH.png')
+            plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         plt.show()
 
     def scatter_dominance(self, directory_path, df, metric_name, method, condition, pad_inches=0.1):
@@ -2141,8 +2144,10 @@ class Reward_Competition(RTC):
         cbar.set_label("Z-score", fontsize=20)
 
         # Save and show
-        save_path = os.path.join(directory_path, f'{brain_region}_{condition}_Row_Mean_Heatmap.png')
-        plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        if directory_path is not None:
+            save_path = os.path.join(directory_path, f'{brain_region}_{condition}_Row_Mean_Heatmap.png')
+            plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        
         plt.show()
 
     def reward_comp_vs_alone(self, df_alone, df_comp, metric_name, behavior, brain_region, directory_path,
@@ -2213,3 +2218,266 @@ class Reward_Competition(RTC):
                                 color, figsize, metric_name, ylim, 
                                 yticks_increment, title, directory_path, pad_inches,
                                 'Alone', 'Competition')
+
+    def plot_event_index_grid(self,
+                              df: pd.DataFrame,
+                              event_type: str,
+                              event_index: int,
+                              brain_region: str,
+                              bin_size: int = 100,
+                              ncols: int = 4,
+                              figsize_per_plot: tuple = (3, 2),
+                              directory_path: str = None):
+        """
+        Plot each subject's PSTH for a specific event_index in its own subplot,
+        mark the first lick and the computed max peak, and return a DataFrame of times.
+        """
+        import math, os, numpy as np, matplotlib.pyplot as plt
+
+        # Helper to filter by region
+        def split_by_subject(df1, region):
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            return df_p if region=='mPFC' else df_n
+
+        df_reg = split_by_subject(df, brain_region)
+        idx = event_index - 1
+
+        traces      = []
+        labels      = []
+        onset_times = []
+        peak_rows   = []
+
+        # Collect traces, labels and the underlying metadata
+        for _, row in df_reg.iterrows():
+            tz = row.get(f'{event_type} Event_Zscore', [])
+            ta = row.get(f'{event_type} Event_Time_Axis', [])
+            if isinstance(tz, (list, np.ndarray)) and len(tz) > idx:
+                trace       = np.array(tz[idx])
+                time_axis   = np.array(ta[idx])
+                onset       = row['filtered_sound_cues'][idx] \
+                              if event_type=='Tone' else row['first_lick_after_sound_cue'][idx]
+                peak_abs    = row[f'{event_type} Time of Max Peak'][idx]
+                first_lick  = row['first_lick_after_sound_cue'][idx]
+
+                # convert to relative
+                peak_rel    = peak_abs - onset
+                lick_rel    = first_lick - onset
+
+                traces.append(trace)
+                labels.append(row['subject_name'])
+                onset_times.append(onset)
+
+                peak_rows.append({
+                    'subject_name':  row['subject_name'],
+                    'event_type':    event_type,
+                    'event_index':   event_index,
+                    'brain_region':  brain_region,
+                    'first_lick_s':  lick_rel,
+                    'peak_time_s':   peak_rel
+                })
+
+        if not traces:
+            print(f"No data for {event_type} event #{event_index} in {brain_region}")
+            return pd.DataFrame()
+
+        # grid layout
+        N     = len(traces)
+        nrows = math.ceil(N / ncols)
+        fig, axes = plt.subplots(nrows, ncols,
+                                 figsize=(figsize_per_plot[0]*ncols,
+                                          figsize_per_plot[1]*nrows),
+                                 sharex=True, sharey=True)
+        axes = axes.flatten()
+
+        color = '#FFAF00' if brain_region=='mPFC' else '#15616F'
+        for i, (trace, lbl, onset, peak_info) in enumerate(zip(traces, labels, onset_times, peak_rows)):
+            ds_trace, ds_time = self.downsample_data(trace, time_axis, bin_size)
+
+            # find nearest indices for our relative times
+            def _closest(t):
+                return ds_time[np.abs(ds_time - t).argmin()]
+
+            lick_t = _closest(peak_info['first_lick_s'])
+            peak_t = _closest(peak_info['peak_time_s'])
+
+            ax = axes[i]
+            ax.plot(ds_time, ds_trace, color=color, lw=1.5)
+            ax.axvline(0,                  color='k',      ls='--', lw=1)
+            ax.axvline(4,                  color='#FF69B4',ls='-',  lw=1)
+            ax.axvline(lick_t,             color='cyan',   ls='-.', lw=1, label='1st lick')
+            ax.axvline(peak_t,             color='gray',   ls=':',  lw=1, label='max peak')
+
+            ax.set_title(lbl, fontsize=8)
+            ax.set_xlim(ds_time[0], ds_time[-1])
+            ax.tick_params(labelsize=6)
+            if i % ncols == 0:
+                ax.set_ylabel('z ΔF/F', fontsize=6)
+            if i // ncols == nrows - 1:
+                ax.set_xlabel('Time (s)', fontsize=6)
+
+        # turn off any extra subplots
+        for j in range(N, len(axes)):
+            axes[j].axis('off')
+
+        plt.suptitle(f"{event_type} event #{event_index} PSTH ({brain_region})", fontsize=10)
+        plt.tight_layout(rect=[0,0,1,0.96])
+
+        if directory_path:
+            os.makedirs(directory_path, exist_ok=True)
+            out = os.path.join(directory_path,
+                               f'{brain_region}_{event_type}_evt{event_index}_grid.png')
+            plt.savefig(out, dpi=300, bbox_inches='tight')
+
+        plt.show()
+
+        # return DataFrame of all the peak & lick times
+        return pd.DataFrame(peak_rows)
+
+    def plot_tone_and_lick_peaks_with_first_lick(self,
+                                                df: pd.DataFrame,
+                                                event_index: int,
+                                                brain_region: str,
+                                                bin_size: int = 100,
+                                                ncols: int = 4,
+                                                figsize_per_plot: tuple = (3, 2),
+                                                directory_path: str = None) -> pd.DataFrame:
+        """
+        Plots each subject's PSTH for a specific tone event (event_index), and marks:
+        • the tone-peak in the 0–4 s window
+        • the lick-peak in the 4–10 s window
+        • the first lick occurrence after 4 s (relative to cue)
+        Returns a DataFrame with columns:
+        ['video_name','subject_name','event_index','brain_region',
+        'tone_abs_time_s','tone_peak_time_s','tone_peak_amp',
+        'lick_peak_time_s','lick_peak_amp',
+        'first_lick_time_s']
+        """
+        import math, os, numpy as np, matplotlib.pyplot as plt
+
+        # 1) Filter by brain region
+        def _split(df1, region):
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            return df_p if region == 'mPFC' else df_n
+
+        df_reg = _split(df, brain_region)
+        idx    = event_index - 1
+        rows   = []
+        traces = []
+
+        # 2) Collect trace, time, subject, first-lick, video, and absolute cue time
+        for _, row in df_reg.iterrows():
+            tone_z     = row.get('Tone Event_Zscore', [])
+            tone_t     = row.get('Tone Event_Time_Axis', [])
+            first_lick = row.get('first_lick_after_sound_cue', [])
+            cues       = row.get('filtered_sound_cues', [])
+            video      = row.get('file name', None)
+            subj       = row.get('subject_name', None)
+            
+            # must have this event index everywhere
+            if (not isinstance(tone_z, (list, np.ndarray)) or len(tone_z) <= idx
+                or len(first_lick) <= idx or len(cues) <= idx):
+                continue
+
+            trace    = np.array(tone_z[idx])
+            t_axis   = np.array(tone_t[idx])
+            cue_abs  = cues[idx]
+            lick_abs = first_lick[idx]
+            first_rel= lick_abs - cue_abs   # relative time for first lick
+
+            traces.append((trace, t_axis, subj, cue_abs, first_rel, video))
+
+        # 3) Plot grid
+        N     = len(traces)
+        nrows = math.ceil(N / ncols)
+        fig, axes = plt.subplots(
+            nrows, ncols,
+            figsize=(figsize_per_plot[0] * ncols, figsize_per_plot[1] * nrows),
+            sharex=True, sharey=True
+        )
+        axes = axes.flatten()
+        color = '#FFAF00' if brain_region == 'mPFC' else '#15616F'
+
+        for i, (trace, t_axis, subj, cue_abs, fl_rel, video) in enumerate(traces):
+            # Downsample
+            ds, dt = self.downsample_data(trace, t_axis, bin_size)
+
+            # Tone peak (0–4s)
+            tone_mask = (dt >= 0) & (dt <= 4)
+            if tone_mask.any():
+                seg = ds[tone_mask]; times = dt[tone_mask]
+                t_idx = np.nanargmax(seg)
+                t_time, t_amp = times[t_idx], seg[t_idx]
+            else:
+                t_time = t_amp = np.nan
+
+            # Lick peak (4–10s)
+            lick_mask = (dt >= 4) & (dt <= 10)
+            if lick_mask.any():
+                seg = ds[lick_mask]; times = dt[lick_mask]
+                l_idx = np.nanargmax(seg)
+                l_time, l_amp = times[l_idx], seg[l_idx]
+            else:
+                l_time = l_amp = np.nan
+
+            # Record row
+            rows.append({
+                'video_name':        video,
+                'subject_name':      subj,
+                'event_index':       event_index,
+                'brain_region':      brain_region,
+                'tone_abs_time_s':   cue_abs,
+                'tone_peak_time_s':  t_time,
+                'tone_peak_amp':     t_amp,
+                'lick_peak_time_s':  l_time,
+                'lick_peak_amp':     l_amp,
+                'first_lick_time_s': fl_rel
+            })
+
+            # Plot
+            ax = axes[i]
+            ax.plot(dt, ds, color=color, lw=1.5)
+
+            # Event onset and 4 s marks
+            ax.axvline(0, color='k',    ls='--', lw=1)
+            ax.axvline(4, color='#F06', ls='-',  lw=1)
+
+            # Tone peak (purple)
+            if not np.isnan(t_time):
+                ax.axvline(t_time, color='purple', ls=':',  lw=1)
+
+            # Lick peak (purple)
+            if not np.isnan(l_time):
+                ax.axvline(l_time, color='purple', ls='-.', lw=1)
+
+            # First lick (green dashed)
+            ax.axvline(fl_rel, color='green', ls='--', lw=1)
+
+            ax.set_title(subj, fontsize=8)
+            ax.set_xlim(dt[0], dt[-1])
+            ax.tick_params(labelsize=6)
+            if i % ncols == 0:
+                ax.set_ylabel('z ΔF/F', fontsize=6)
+            if i // ncols == nrows - 1:
+                ax.set_xlabel('Time (s)', fontsize=6)
+
+        # Hide any unused axes
+        for j in range(N, len(axes)):
+            axes[j].axis('off')
+
+        plt.suptitle(f"Tone event #{event_index} PSTH ({brain_region})", fontsize=10)
+        plt.tight_layout(rect=[0,0,1,0.96])
+
+        # Save
+        if directory_path:
+            os.makedirs(directory_path, exist_ok=True)
+            fig.savefig(
+                os.path.join(directory_path,
+                            f'{brain_region}_Tone_evt{event_index}_grid.png'),
+                dpi=300, bbox_inches='tight'
+            )
+        plt.show()
+
+        # Return peaks DataFrame
+        return pd.DataFrame(rows)
