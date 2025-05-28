@@ -117,9 +117,9 @@ class RTC(Experiment):
             if trial_folder in self.port_bnc:
                 # Multisubject: use port info to select the proper channel.
                 port_val = self.port_bnc[trial_folder]
-                if port_val == 3:
+                if port_val == 2:
                     trial.rtc_events['port entries'] = trial.rtc_events.pop('PC3_')
-                elif port_val == 2:
+                elif port_val == 3: ################*********************
                     trial.rtc_events['port entries'] = trial.rtc_events.pop('PC2_')
                 else:
                     print(f"Warning: Unexpected port value ({port_val}) for trial {trial_folder}")
