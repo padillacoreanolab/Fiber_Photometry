@@ -91,7 +91,7 @@ class RTC(Experiment):
             - For unisubject, try PC2_ first, then PC3_.
         7. Remove the first behavior entry (if it is not counting).
         8. Filter port entries so that only those after the first sound cue remain.
-        9. Combine consecutive behaviors.
+        9. Combine consecutive behaviors. - not happening anymore
         """
         for trial_folder, trial in self.trials.items():
             # (Optional) Remove time segments if provided.
