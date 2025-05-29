@@ -142,11 +142,11 @@ class RTC(Experiment):
             valid_sound_cues = [t for t in trial.rtc_events['sound cues'].onset_times if t >= 200]
             trial.rtc_events['sound cues'].onset_times = valid_sound_cues
             # Keep only port entries that occur after the first sound cue.
-            port_onset = np.array(trial.rtc_events['port entries'].onset_times)
-            port_offset = np.array(trial.rtc_events['port entries'].offset_times)
-            first_tone = trial.rtc_events['sound cues'].onset_times[0]
-            indices = np.where(port_onset >= first_tone)[0]
-            trial.rtc_events['port entries'].onset_times = port_onset[indices].tolist()
-            trial.rtc_events['port entries'].offset_times = port_offset[indices].tolist()
+            # port_onset = np.array(trial.rtc_events['port entries'].onset_times)
+            # port_offset = np.array(trial.rtc_events['port entries'].offset_times)
+            # first_tone = trial.rtc_events['sound cues'].onset_times[0]
+            # indices = np.where(port_onset >= first_tone)[0]
+            # trial.rtc_events['port entries'].onset_times = port_onset[indices].tolist()
+            # trial.rtc_events['port entries'].offset_times = port_offset[indices].tolist()
 
 

@@ -443,7 +443,7 @@ class Reward_Competition(RTC):
 
                 # First, check for an ongoing lick:
                 ongoing_licks_indices = np.where(
-                    (port_entries_onsets < threshold_time) & (port_entries_offsets > threshold_time)
+                    (port_entries_onsets < threshold_time) & (port_entries_offsets >= threshold_time)
                 )[0]
 
                 if len(ongoing_licks_indices) > 0:
