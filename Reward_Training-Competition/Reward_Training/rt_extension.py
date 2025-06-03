@@ -802,8 +802,8 @@ class Reward_Training(RTC):
 
             # Compute mean for scalar numerical values
             numerical_cols = [
-                'Lick AUC EI', 'Lick Max Peak EI', 'Lick Mean Z-score EI',
-                'Tone AUC EI', 'Tone Max Peak EI', 'Tone Mean Z-score EI'
+                'Lick AUC', 'Lick Max Peak', 'Lick Mean Z-score',
+                'Tone AUC', 'Tone Max Peak', 'Tone Mean Z-score'
             ]
             for col in numerical_cols:
                 group[col] = group[col].apply(lambda x: np.mean(x) if isinstance(x, list) else x)
