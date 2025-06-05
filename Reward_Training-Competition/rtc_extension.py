@@ -9,7 +9,7 @@ from scipy.stats import pearsonr
 from trial_class import Trial
 import math
 import numpy as np
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as pltS
 import seaborn as sns
 import pandas as pd
 from scipy.stats import ttest_ind
@@ -68,8 +68,8 @@ class RTC(Experiment):
                 self.trials[trial_key2] = trial_obj2
                 
                 # Record port information for multisubject.
-                self.port_bnc[trial_key1] = 3
-                self.port_bnc[trial_key2] = 2
+                self.port_bnc[trial_key1] = 2
+                self.port_bnc[trial_key2] = 3
             else:
                 # Unisubject recording: Create one Trial object.
                 trial_obj = Trial(trial_path, '_465A', '_405A')
@@ -117,9 +117,9 @@ class RTC(Experiment):
             if trial_folder in self.port_bnc:
                 # Multisubject: use port info to select the proper channel.
                 port_val = self.port_bnc[trial_folder]
-                if port_val == 2:
+                if port_val == 3:
                     trial.rtc_events['port entries'] = trial.rtc_events.pop('PC3_')
-                elif port_val == 3: 
+                elif port_val == 2: 
                     trial.rtc_events['port entries'] = trial.rtc_events.pop('PC2_')
                 else:
                     print(f"Warning: Unexpected port value ({port_val}) for trial {trial_folder}")
