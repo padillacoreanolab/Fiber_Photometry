@@ -286,75 +286,114 @@ class Trial:
                 - 'prefix': A string used to label bouts (e.g., "s1", "s2", "x").
                 - 'introduced': The name of the introduced event (e.g., "s1_Introduced", "X_Introduced", etc.).
                 - 'removed': The name of the removed event (e.g., "s1_Removed", "X_Removed", etc.).
-            first_only (bool): If True, only the first event (by event start) in each bout is kept.
-                            If False (default), all events within each bout are retained.
+            first_only (bool): If True, only the first occurrence of **each distinct Behavior type**
+                            within each bout is kept. If False (default), all events within each bout
+                            are retained.
 
         The resulting DataFrame will have one row per behavior event (that is not a boundary event)
-        unless first_only is True, in which case there will be one row per bout.
+        unless first_only is True, in which case there will be one row per (bout × behavior‐type).
         """
+        import pandas as pd
+
         # 1. Read CSV and ensure numeric columns
         data = pd.read_csv(csv_path)
         data['Start (s)'] = pd.to_numeric(data['Start (s)'], errors='coerce')
-        data['Stop (s)'] = pd.to_numeric(data['Stop (s)'], errors='coerce')
+        data['Stop (s)']  = pd.to_numeric(data['Stop (s)'],  errors='coerce')
 
         # 2. Filter for the subject's data only
         data = data[data['Subject'] == 'Subject']
 
-        # 3. Build a unique set of boundary behaviors from bout definitions
-        boundary_behaviors = {bout_def['introduced'] for bout_def in bout_definitions} | {
+        # 3. Build a set of all boundary‐marker behaviors (introduced/removed) so we can exclude them later
+        boundary_behaviors = {
+            bout_def['introduced'] for bout_def in bout_definitions
+        } | {
             bout_def['removed'] for bout_def in bout_definitions
         }
 
-        # 4. Helper function to extract events within each bout
-        def extract_bout_events(df, introduced_behavior, removed_behavior, bout_prefix, first_only):
-            introduced_df = df[df['Behavior'] == introduced_behavior].sort_values('Start (s)').reset_index(drop=True)
-            removed_df = df[df['Behavior'] == removed_behavior].sort_values('Start (s)').reset_index(drop=True)
+        # 4. Helper function: extract events inside a single bout (introduced→removed)
+        def extract_bout_events(df, introduced_behavior, removed_behavior, bout_prefix, first_only_flag):
+            """
+            Looks at all rows where Behavior==introduced_behavior (sorted by Start),
+            pairs them up with rows where Behavior==removed_behavior (also sorted),
+            and for each matched pair [i], finds all non‐boundary events whose Start/Stop
+            lie within that interval. Returns one row per event (or, if first_only_flag=True,
+            one row per distinct Behavior type).
+            """
+            # Gather all introduction times (sorted) and removal times (sorted)
+            introduced_df = (
+                df[df['Behavior'] == introduced_behavior]
+                .sort_values('Start (s)')
+                .reset_index(drop=True)
+            )
+            removed_df = (
+                df[df['Behavior'] == removed_behavior]
+                .sort_values('Start (s)')
+                .reset_index(drop=True)
+            )
+
+            # We only pair up as many bouts as we have both introduced & removed
             num_bouts = min(len(introduced_df), len(removed_df))
             rows = []
 
             for i in range(num_bouts):
                 bout_label = f"{bout_prefix}-{i+1}"
                 bout_start = introduced_df.loc[i, 'Start (s)']
-                bout_end = removed_df.loc[i, 'Start (s)']
+                bout_end   = removed_df.loc[i, 'Start (s)']
 
-                # Select only behaviors within this bout, excluding boundary behaviors.
+                # Subset to all behaviors that:
+                #   • are NOT one of the boundary names, and
+                #   • start ≥ bout_start AND stop ≤ bout_end
                 subset = df[
                     (~df['Behavior'].isin(boundary_behaviors)) &
-                    (df['Start (s)'] >= bout_start) & 
-                    (df['Stop (s)'] <= bout_end)
+                    (df['Start (s)'] >= bout_start) &
+                    (df['Stop (s)']  <= bout_end)
                 ].sort_values('Start (s)')
 
-                if first_only:
-                    if not subset.empty:
-                        first_row = subset.iloc[0]
+                if first_only_flag:
+                    # Instead of grabbing only subset.iloc[0], we group by Behavior
+                    # and take the first occurrence of each distinct Behavior type.
+                    for behavior_type, group in subset.groupby('Behavior'):
+                        first_row = group.iloc[0]
                         rows.append({
-                            'Bout': bout_label,
-                            'Behavior': first_row['Behavior'],
-                            'Event_Start': first_row['Start (s)'],
-                            'Event_End': first_row['Stop (s)'],
+                            'Bout'        : bout_label,
+                            'Behavior'    : behavior_type,
+                            'Event_Start' : first_row['Start (s)'],
+                            'Event_End'   : first_row['Stop (s)'],
                             'Duration (s)': first_row['Stop (s)'] - first_row['Start (s)']
                         })
                 else:
+                    # Keep all events (one row per event) inside this bout
                     for _, row in subset.iterrows():
                         rows.append({
-                            'Bout': bout_label,
-                            'Behavior': row['Behavior'],
-                            'Event_Start': row['Start (s)'],
-                            'Event_End': row['Stop (s)'],
+                            'Bout'        : bout_label,
+                            'Behavior'    : row['Behavior'],
+                            'Event_Start' : row['Start (s)'],
+                            'Event_End'   : row['Stop (s)'],
                             'Duration (s)': row['Stop (s)'] - row['Start (s)']
                         })
+
             return rows
 
-        # 5. Extract behavior events for all bout definitions.
+        # 5. Loop over every bout_definition, extract events, and accumulate
         bout_rows = []
         for bout_def in bout_definitions:
-            prefix = bout_def['prefix']
+            prefix             = bout_def['prefix']
             introduced_behavior = bout_def['introduced']
-            removed_behavior = bout_def['removed']
-            bout_rows.extend(extract_bout_events(data, introduced_behavior, removed_behavior, prefix, first_only))
+            removed_behavior    = bout_def['removed']
 
-        # 6. Store the resulting DataFrame in the instance.
+            bout_rows.extend(
+                extract_bout_events(
+                    data,
+                    introduced_behavior,
+                    removed_behavior,
+                    prefix,
+                    first_only_flag=first_only
+                )
+            )
+
+        # 6. Convert to DataFrame and assign to self.behaviors
         self.behaviors = pd.DataFrame(bout_rows)
+
 
     def combine_consecutive_behaviors(self, behavior_name='all', bout_time_threshold=1):
         """
