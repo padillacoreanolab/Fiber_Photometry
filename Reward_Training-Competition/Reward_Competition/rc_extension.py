@@ -1064,9 +1064,9 @@ class Reward_Competition(RTC):
                 ax.text((x1 + x2) / 2, y_top + 0.02, p_text, ha='center', fontsize=40, fontweight='bold')
         # Add title
         plt.title(title, fontsize=40, fontweight='bold', pad=24)
-
-        save_path = os.path.join(str(directory_path) + '\\' + f'{title}.png')
-        plt.savefig(save_path, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
+        if directory_path:
+            save_path = os.path.join(str(directory_path) + '\\' + f'{title}.png')
+            plt.savefig(save_path, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
         plt.show()
         
     # Response is tone or lick, metric_name is for AUC, Max Peak, or Mean Z-score
@@ -2334,28 +2334,28 @@ class Reward_Competition(RTC):
         # return DataFrame of all the peak & lick times
         return pd.DataFrame(peak_rows)
 
+
     def plot_tone_and_lick_peaks_with_first_lick(self,
                                                 df: pd.DataFrame,
                                                 event_index: int,
                                                 brain_region: str,
+                                                use_ei: bool = True,
                                                 bin_size: int = 100,
                                                 ncols: int = 4,
                                                 figsize_per_plot: tuple = (3, 2),
                                                 directory_path: str = None) -> pd.DataFrame:
         """
         Plots each subject's PSTH for a specific tone event (event_index), and marks:
-        • the tone-peak in the 0–4 s window
-        • the lick-peak in the 4–10 s window
-        • the first lick occurrence after 4 s (relative to cue)
-        Returns a DataFrame with columns:
-        ['video_name','subject_name','event_index','brain_region',
-        'tone_abs_time_s','tone_peak_time_s','tone_peak_amp',
-        'lick_peak_time_s','lick_peak_amp',
-        'first_lick_time_s']
+         • the tone-peak in the 0–4 s window
+         • the lick-peak in the 4–10 s window
+         • the first lick occurrence after 4 s (relative to cue)
+
+        use_ei=True (default) uses your event-induced, baseline-corrected traces
+        use_ei=False extracts the raw trial.zscore around each cue (0→10 s window)
         """
         import math, os, numpy as np, matplotlib.pyplot as plt
 
-        # 1) Filter by brain region
+        # Helper to split subjects by prefix
         def _split(df1, region):
             df_n = df1[df1['subject_name'].str.startswith('n')]
             df_p = df1[df1['subject_name'].str.startswith('p')]
@@ -2366,44 +2366,52 @@ class Reward_Competition(RTC):
         rows   = []
         traces = []
 
-        # 2) Collect trace, time, subject, first-lick, video, and absolute cue time
         for _, row in df_reg.iterrows():
-            tone_z     = row.get('Tone Event_Zscore', [])
-            tone_t     = row.get('Tone Event_Time_Axis', [])
-            first_lick = row.get('first_lick_after_sound_cue', [])
-            cues       = row.get('filtered_sound_cues', [])
-            video      = row.get('file name', None)
-            subj       = row.get('subject_name', None)
-            
-            # must have this event index everywhere
-            if (not isinstance(tone_z, (list, np.ndarray)) or len(tone_z) <= idx
-                or len(first_lick) <= idx or len(cues) <= idx):
-                continue
+            # —— choose source of trace & time-axis ——
+            if use_ei:
+                all_z   = row.get('Tone Event_Zscore', [])
+                all_t   = row.get('Tone Event_Time_Axis', [])
+                if not (isinstance(all_z, (list, np.ndarray)) and len(all_z) > idx):
+                    continue
+                trace   = np.array(all_z[idx])
+                t_axis  = np.array(all_t[idx])
+                cue_abs = row['filtered_sound_cues'][idx]
+            else:
+                trial   = row['trial']
+                cue_abs = row['filtered_sound_cues'][idx]
+                zs      = np.array(trial.zscore)
+                ts      = np.array(trial.timestamps)
+                mask = (ts >= cue_abs - 4) & (ts <= cue_abs + 10)
+                t_axis = ts[mask] - cue_abs  # Now -4 to +10 relative to cue
+                trace  = zs[mask]
 
-            trace    = np.array(tone_z[idx])
-            t_axis   = np.array(tone_t[idx])
-            cue_abs  = cues[idx]
-            lick_abs = first_lick[idx]
-            first_rel= lick_abs - cue_abs   # relative time for first lick
 
-            traces.append((trace, t_axis, subj, cue_abs, first_rel, video))
+            # first-lick time relative to cue
+            fl_abs = row['first_lick_after_sound_cue'][idx]
+            fl_rel = fl_abs - cue_abs
 
-        # 3) Plot grid
+            video = row.get('file name', None)
+            subj  = row.get('subject_name', None)
+
+            traces.append((trace, t_axis, subj, cue_abs, fl_rel, video))
+
+        # set up grid
         N     = len(traces)
         nrows = math.ceil(N / ncols)
         fig, axes = plt.subplots(
             nrows, ncols,
-            figsize=(figsize_per_plot[0] * ncols, figsize_per_plot[1] * nrows),
+            figsize=(figsize_per_plot[0] * ncols,
+                     figsize_per_plot[1] * nrows),
             sharex=True, sharey=True
         )
         axes = axes.flatten()
         color = '#FFAF00' if brain_region == 'mPFC' else '#15616F'
 
         for i, (trace, t_axis, subj, cue_abs, fl_rel, video) in enumerate(traces):
-            # Downsample
+            # downsample
             ds, dt = self.downsample_data(trace, t_axis, bin_size)
 
-            # Tone peak (0–4s)
+            # tone-peak in 0–4 s
             tone_mask = (dt >= 0) & (dt <= 4)
             if tone_mask.any():
                 seg = ds[tone_mask]; times = dt[tone_mask]
@@ -2412,7 +2420,7 @@ class Reward_Competition(RTC):
             else:
                 t_time = t_amp = np.nan
 
-            # Lick peak (4–10s)
+            # lick-peak in 4–10 s
             lick_mask = (dt >= 4) & (dt <= 10)
             if lick_mask.any():
                 seg = ds[lick_mask]; times = dt[lick_mask]
@@ -2421,7 +2429,7 @@ class Reward_Competition(RTC):
             else:
                 l_time = l_amp = np.nan
 
-            # Record row
+            # record output row
             rows.append({
                 'video_name':        video,
                 'subject_name':      subj,
@@ -2435,24 +2443,16 @@ class Reward_Competition(RTC):
                 'first_lick_time_s': fl_rel
             })
 
-            # Plot
+            # plotting
             ax = axes[i]
             ax.plot(dt, ds, color=color, lw=1.5)
-
-            # Event onset and 4 s marks
-            ax.axvline(0, color='k',    ls='--', lw=1)
-            ax.axvline(4, color='#F06', ls='-',  lw=1)
-
-            # Tone peak (purple)
+            ax.axvline(0,                  color='k',      ls='--', lw=1)
+            ax.axvline(4,                  color='#FF69B4',ls='-',  lw=1)
             if not np.isnan(t_time):
                 ax.axvline(t_time, color='purple', ls=':',  lw=1)
-
-            # Lick peak (purple)
             if not np.isnan(l_time):
                 ax.axvline(l_time, color='purple', ls='-.', lw=1)
-
-            # First lick (green dashed)
-            ax.axvline(fl_rel, color='green', ls='--', lw=1)
+            ax.axvline(fl_rel,             color='green',  ls='--', lw=1)
 
             ax.set_title(subj, fontsize=8)
             ax.set_xlim(dt[0], dt[-1])
@@ -2462,22 +2462,21 @@ class Reward_Competition(RTC):
             if i // ncols == nrows - 1:
                 ax.set_xlabel('Time (s)', fontsize=6)
 
-        # Hide any unused axes
+        # hide extras
         for j in range(N, len(axes)):
             axes[j].axis('off')
 
         plt.suptitle(f"Tone event #{event_index} PSTH ({brain_region})", fontsize=10)
         plt.tight_layout(rect=[0,0,1,0.96])
 
-        # Save
+        # optional save
         if directory_path:
             os.makedirs(directory_path, exist_ok=True)
-            fig.savefig(
-                os.path.join(directory_path,
-                            f'{brain_region}_Tone_evt{event_index}_grid.png'),
-                dpi=300, bbox_inches='tight'
-            )
+            fname = f'{brain_region}_Tone_evt{event_index}_grid'
+            fig.savefig(os.path.join(directory_path, fname + '.png'),
+                        dpi=300, bbox_inches='tight')
+
         plt.show()
 
-        # Return peaks DataFrame
+        # return a DataFrame of all peaks & first-lick times
         return pd.DataFrame(rows)
