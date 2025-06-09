@@ -99,6 +99,7 @@ def fix_behavior_data_for_experiment(experiment, csv_base_path):
     print(f"Fixed trials: {fixed_trials}")
     print(f"Skipped trials: {skipped_trials}")
  
+# Long Term Bar Graph
 def plot_custom_sniff_cup_assignments(experiment, 
                                       assignment_csv_path,
                                       bar_color='#cccccc', 
@@ -189,7 +190,7 @@ def plot_custom_sniff_cup_assignments(experiment,
     # --- Classification ---
     mean_time = data_df["Total Investigation Time"].mean()
     sem_time = data_df["Total Investigation Time"].sem()
-    threshold = mean_time + sem_time + 10
+    threshold = mean_time + sem_time
 
     data_df["Preference"] = data_df["Total Investigation Time"].apply(
         lambda t: "Pref" if t > threshold else "No_Pref"
@@ -236,7 +237,7 @@ def plot_custom_sniff_cup_assignments(experiment,
 
     return data_df, pref_subjects, no_pref_subjects
 
-# With Colors
+# Long Term Bar Graph with Colors
 def plot_grouped_sniff_cup_assignments(experiment, 
                                        assignment_csv_path,
                                        bar_color='#cccccc', 
@@ -376,12 +377,79 @@ def plot_grouped_sniff_cup_assignments(experiment,
 
     plt.show()
 
+# Dopamine
+def create_da_metrics_dataframe(trial_data, behavior="Investigation", desired_bouts=None):
+    """
+    Extracts DA metrics per bout per subject for a specified behavior.
+
+    Parameters
+    ----------
+    trial_data : dict
+        Dictionary {subject_id: DataFrame} of behavior data.
+    behavior : str
+        Behavior to filter (e.g., 'Investigation').
+    desired_bouts : list or None
+        Bouts to keep (e.g., ['sniff cup 1', ...]); if None, keep all.
+
+    Returns
+    -------
+    pd.DataFrame
+        Summary metrics per subject × bout.
+    """
+    metric_rows = []
+
+    behavior = behavior.strip().lower()
+    desired_bouts = [b.strip().lower() for b in desired_bouts] if desired_bouts else None
+
+    for subject_id, df in trial_data.items():
+        df = df.copy()
+
+        # Normalize string columns
+        df["Bout"] = df["Bout"].astype(str).str.strip().str.lower()
+        df["Behavior"] = df["Behavior"].astype(str).str.strip().str.lower()
+
+        bouts_to_check = desired_bouts if desired_bouts else df["Bout"].unique()
+
+        for bout in bouts_to_check:
+            df_bout = df[df["Bout"].str.contains(bout, na=False)]
+            df_behavior = df_bout[df_bout["Behavior"].str.contains(behavior, na=False)]
+
+            if df_behavior.empty:
+                auc_val = 0
+                max_peak_val = 0
+                mean_z_val = 0
+            else:
+                df_behavior["AUC"] = pd.to_numeric(df_behavior["AUC"], errors='coerce')
+                df_behavior["Max Peak"] = pd.to_numeric(df_behavior["Max Peak"], errors='coerce')
+                df_behavior["Mean Z-score"] = pd.to_numeric(df_behavior["Mean Z-score"], errors='coerce')
+
+                auc_val = df_behavior["AUC"].mean(skipna=True)
+                max_peak_val = df_behavior["Max Peak"].mean(skipna=True)
+                mean_z_val = df_behavior["Mean Z-score"].mean(skipna=True)
+
+                auc_val = 0 if pd.isna(auc_val) else auc_val
+                max_peak_val = 0 if pd.isna(max_peak_val) else max_peak_val
+                mean_z_val = 0 if pd.isna(mean_z_val) else mean_z_val
+
+            metric_rows.append({
+                "Subject": subject_id,
+                "Bout": bout,
+                "Behavior": behavior,
+                "AUC": auc_val,
+                "Max Peak": max_peak_val,
+                "Mean Z-score": mean_z_val
+            })
+
+    return pd.DataFrame(metric_rows)
+
+
+
 # Bimodal Distribution Behavior - Plotting Separate Modes
 def create_metadata_dataframe_with_agent_mapping(trial_data_with_ids, sniff_cup_csv_path):
     """
     Computes total time and average bout duration per subject × agent type,
     using mapping from sniff cup to agent. Preserves full trial IDs.
-    
+
     Parameters:
     - trial_data_with_ids: List of (full_trial_id, DataFrame) tuples.
     - sniff_cup_csv_path: Path to CSV with sniff cup → agent mappings.
@@ -389,33 +457,32 @@ def create_metadata_dataframe_with_agent_mapping(trial_data_with_ids, sniff_cup_
     Returns:
     - DataFrame with rows = full trial IDs, columns = metrics per agent type.
     """
-    import pandas as pd
-    import numpy as np
 
     # Load sniff cup assignment CSV
     assign_df = pd.read_csv(sniff_cup_csv_path)
-    assign_df['Subject'] = assign_df['Subject'].str.lower()
+    assign_df['Subject'] = assign_df['Subject'].str.strip().str.lower()
 
     all_records = []
 
-    for full_trial_id, df in trial_data_with_ids:  # full_trial_id is e.g., 'p5-240826-091418'
-        subject_prefix = full_trial_id.split('-')[0].lower()
+    for full_trial_id, df in trial_data_with_ids:
+        subject_prefix = full_trial_id.lower().strip().split('-')[0]
 
-        mapping_row = assign_df[assign_df['Subject'] == subject_prefix]
-        if mapping_row.empty:
+        # Match first subject that starts with the prefix (e.g., 'pp3')
+        matching_rows = assign_df[assign_df['Subject'].str.startswith(subject_prefix)]
+        if matching_rows.empty:
             print(f"⚠️ No mapping found for subject '{subject_prefix}'. Skipping trial '{full_trial_id}'.")
             continue
 
-        # Build sniff cup → agent type mapping
-        cup_to_agent = {}
-        for col in assign_df.columns:
-            if 'sniff cup' in col.lower():
-                cup_val = str(mapping_row.iloc[0][col]).strip().lower()
-                cup_to_agent[col.lower()] = cup_val
+        mapping_row = matching_rows.iloc[0]  # take first match if multiple
+        cup_to_agent = {
+            col.lower().strip(): str(mapping_row[col]).strip().lower()
+            for col in assign_df.columns if 'sniff cup' in col.lower()
+        }
 
-        # Map each behavior (sniff cup X) to agent
+        # Map behaviors in DataFrame to agent types
         df = df.copy()
-        df['Agent Type'] = df['Behavior'].str.lower().map(cup_to_agent)
+        df['Behavior'] = df['Behavior'].str.strip().str.lower()
+        df['Agent Type'] = df['Behavior'].map(cup_to_agent)
         df = df[df['Agent Type'].notnull()]
 
         if df.empty:
@@ -439,8 +506,25 @@ def create_metadata_dataframe_with_agent_mapping(trial_data_with_ids, sniff_cup_
 
         all_records.append(row_data)
 
-    result_df = pd.DataFrame(all_records).set_index('Subject').fillna(0)
+    if not all_records:
+        print("❌ No records were created. Check subject matching.")
+        return pd.DataFrame()
+
+    result_df = pd.DataFrame(all_records)
+    result_df = result_df.set_index('Subject').fillna(0)
     return result_df
+
+def get_trial_dataframes(experiment):
+    """
+    Given an Experiment object, return a dictionary where:
+    - Keys are subject IDs (Trial.subject_name).
+    - Values are DataFrames corresponding to the behaviors of each trial.
+    """
+    trial_data = {}
+    for trial in experiment.trials.values():
+        subject_id = trial.subject_name
+        trial_data[subject_id] = trial.behaviors
+    return trial_data
 
 def get_trial_dataframes_with_ids(experiment):
     """
@@ -480,27 +564,29 @@ def plot_investigation_by_agent(df,
                                  figsize=(12, 7),
                                  pad_inches=0.1,
                                  save=False,
-                                 save_name=None):
+                                 save_name=None,
+                                 legend_loc='upper right'):  # 🆕 New parameter
     """
     Aesthetic-matched plot: Investigation Time across agents.
     Styled to match `plot_y_across_bouts_ranks` exactly but keeps region legend and colored markers.
     """
-    df = df.copy()
+    import numpy as np
+    import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
+    from scipy.stats import ttest_rel
 
-    # --- Normalize Subject index ---
+    df = df.copy()
+
     if 'Subject' in df.columns:
         df['Subject'] = df['Subject'].astype(str).str.lower()
         df.set_index('Subject', inplace=True)
     else:
         df.index = df.index.astype(str).str.lower()
 
-    # --- Filter Subjects ---
     if subjects_to_include:
         subjects_to_include = [s.lower() for s in subjects_to_include]
         df = df[df.index.isin(subjects_to_include)]
 
-    # --- Column Prep ---
     agents = ['nothing', 'short_term', 'long_term', 'novel']
     columns_to_plot = [f"{metric}_{agent}" for agent in agents]
     missing_cols = [col for col in columns_to_plot if col not in df.columns]
@@ -512,22 +598,18 @@ def plot_investigation_by_agent(df,
     df_plot.columns = agents
 
     if df_plot.empty or df_plot.isnull().all().all():
-        print("⚠️ No valid data available to plot. Check your subjects_to_include and metric selection.")
+        print("⚠️ No valid data available to plot.")
         return
 
-    # --- Paired T-tests ---
+    # Paired t-tests
     def perform_t_tests(df_vals):
-        comparisons = {
-            "nothing_vs_short_term": ("nothing", "short_term"),
-            "nothing_vs_long_term": ("nothing", "long_term"),
-            "nothing_vs_novel": ("nothing", "novel")
-        }
+        from itertools import combinations
         results = {}
-        for key, (a1, a2) in comparisons.items():
+        for a1, a2 in combinations(df_vals.columns, 2):
             paired = df_vals[[a1, a2]].dropna()
             if len(paired) > 1:
-                t_stat, p_value = ttest_rel(paired[a1], paired[a2])
-                results[key] = {"t_stat": t_stat, "p_value": p_value}
+                t_stat, p_val = ttest_rel(paired[a1], paired[a2])
+                results[f"{a1} vs {a2}"] = p_val
         return results
 
     t_test_results = perform_t_tests(df_plot)
@@ -544,12 +626,12 @@ def plot_investigation_by_agent(df,
            width=0.6, hatch=bar_hatch,
            error_kw=dict(elinewidth=2, capthick=2, zorder=5))
 
-    # --- Lines + Colored Markers (No Borders) ---
+    # --- Lines + Colored Markers with black edge
     for subject_id, row in df_plot.iterrows():
         marker_color = '#15616F' if subject_id.startswith('n') else '#FFAF00' if subject_id.startswith('p') else 'gray'
         ax.plot(df_plot.columns, row.values, linestyle='-', color='gray', alpha=0.5, linewidth=2.5, zorder=1)
         ax.scatter(df_plot.columns, row.values, color=marker_color,
-                   s=120, alpha=1.0, zorder=1)  # No edgecolor
+                   s=160, alpha=1.0, zorder=2, edgecolors='black', linewidth=2.5)
 
     # --- Labels ---
     ax.set_ylabel(ylabel, fontsize=30, labelpad=12)
@@ -584,51 +666,27 @@ def plot_investigation_by_agent(df,
         if ylim[0] < 0:
             ax.axhline(0, color='black', linestyle='--', linewidth=2, zorder=1)
 
-    # --- Y-ticks ---
     if yticks_increment:
         y_min, y_max = ax.get_ylim()
         y_ticks = np.arange(np.floor(y_min), np.ceil(y_max) + yticks_increment, yticks_increment)
         ax.set_yticks(y_ticks)
 
-    # --- Spines ---
+    # Spines
     ax.spines['right'].set_visible(False)
     ax.spines['top'].set_visible(False)
     ax.spines['left'].set_linewidth(5)
     ax.spines['bottom'].set_linewidth(5)
 
-    # --- Significance Markers ---
-    if t_test_results:
-        max_y = ax.get_ylim()[1]
-        sig_y_offset = max_y * 0.05
-        comparisons = {
-            "nothing_vs_short_term": (0, 1),
-            "nothing_vs_long_term": (0, 2),
-            "nothing_vs_novel": (0, 3)
-        }
-        line_spacing = sig_y_offset * 2.5
-        current_y = mean_vals.max() + sig_y_offset
-
-        for key, (x1, x2) in comparisons.items():
-            if key in t_test_results:
-                p_value = t_test_results[key]["p_value"]
-                if p_value < 0.05:
-                    significance = "**" if p_value < 0.01 else "*"
-                    ax.plot([x1, x2], [current_y, current_y], color='black', linewidth=5)
-                    ax.text((x1 + x2) / 2, current_y + sig_y_offset / 1.5, significance,
-                            fontsize=40, ha='center', color='black')
-                    current_y += line_spacing
-
     # --- Legend ---
     legend_elements = [
         Line2D([0], [0], marker='o', color='none', label='NAc',
-               markerfacecolor='#15616F', markersize=12, markeredgewidth=0),
+               markerfacecolor='#15616F', markeredgecolor='black', markersize=12, markeredgewidth=2),
         Line2D([0], [0], marker='o', color='none', label='mPFC',
-               markerfacecolor='#FFAF00', markersize=12, markeredgewidth=0)
+               markerfacecolor='#FFAF00', markeredgecolor='black', markersize=12, markeredgewidth=2)
     ]
     ax.legend(handles=legend_elements, title="Region", fontsize=20, title_fontsize=22,
-              loc='upper right', frameon=True)
+              loc=legend_loc, frameon=True)
 
-    # --- Save ---
     plt.tight_layout(pad=pad_inches)
     if save:
         if save_name is None:
@@ -636,3 +694,16 @@ def plot_investigation_by_agent(df,
         plt.savefig(save_name, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
 
     plt.show()
+
+    # --- Print t-test results ---
+    print("\nPaired t-test results (across agents):")
+    for comparison, p in t_test_results.items():
+        if p < 0.001:
+            stars = "***"
+        elif p < 0.01:
+            stars = "**"
+        elif p < 0.05:
+            stars = "*"
+        else:
+            stars = "ns"
+        print(f"{comparison}: p = {p:.4f} ({stars})")
