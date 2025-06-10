@@ -7,12 +7,12 @@ import matplotlib.pyplot as plt
 from trial_class import Trial
 
 class Experiment:
-    def __init__(self, experiment_folder_path, behavior_folder_path, autoload=True):
+    def __init__(self, experiment_folder_path, behavior_folder_path, RTC=False):
         self.experiment_folder_path = experiment_folder_path
         self.behavior_folder_path = behavior_folder_path
         self.trials = {}
 
-        if autoload:
+        if not RTC:
             self.load_trials()
     
 
