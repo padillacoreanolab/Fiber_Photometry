@@ -378,6 +378,107 @@ def plot_grouped_sniff_cup_assignments(experiment,
     plt.show()
 
 # Dopamine
+def prep_combined_da_metrics(experiment, sniff_cup_csv_path, metric_list=None, first_only=False):
+
+    # Normalize behavior label spacing
+    def normalize_behavior_label(label):
+        return re.sub(r'\s+', ' ', label.strip().lower().replace('\u00a0', ' '))
+
+    assign_df = pd.read_csv(sniff_cup_csv_path)
+    assign_df['Subject'] = assign_df['Subject'].astype(str).str.lower()
+
+    # Build subject -> behavior name -> agent identity mapping
+    subject_to_behavior_to_agent = {}
+    for _, row in assign_df.iterrows():
+        subj = row['Subject']
+        subject_to_behavior_to_agent[subj] = {}
+        for col in row.index:
+            col_norm = normalize_behavior_label(str(col))
+            if col_norm.startswith("sniff cup"):
+                agent_label = normalize_behavior_label(str(row[col]))
+                subject_to_behavior_to_agent[subj][col_norm] = agent_label
+
+    all_rows = []
+
+    for trial_name, trial in experiment.trials.items():
+        if not hasattr(trial, 'behaviors') or trial.behaviors.empty:
+            continue
+
+        df = trial.behaviors.copy()
+        df['Behavior'] = df['Behavior'].astype(str).apply(normalize_behavior_label)
+
+        subject_id = trial_name.lower()
+
+        if subject_id not in subject_to_behavior_to_agent:
+            continue
+
+        mapping = subject_to_behavior_to_agent[subject_id]
+
+        # Keep only sniff cup behaviors
+        df = df[df["Behavior"].str.startswith("sniff cup")]
+
+        # Map behaviors to agents
+        df["Agent"] = df["Behavior"].apply(lambda b: mapping.get(b))
+        df["Subject"] = subject_id
+        df["Trial"] = trial_name
+
+        unmatched = df[df["Agent"].isna()]
+        if not unmatched.empty:
+            print(f"‼️ Unmatched behaviors for subject '{subject_id}':")
+            print("Behaviors that failed to map:", unmatched["Behavior"].unique())
+            print("Available mapping keys:", list(mapping.keys()))
+
+        df = df.dropna(subset=["Agent"])
+
+        # Choose metrics
+        known_cols = ["Behavior", "Agent", "Subject", "Trial"]
+        if metric_list:
+            metric_cols = [m for m in metric_list if m in df.columns]
+        else:
+            metric_cols = [c for c in df.columns if c not in known_cols and pd.api.types.is_numeric_dtype(df[c])]
+
+        if not metric_cols:
+            continue
+
+        df = df[["Subject", "Agent"] + metric_cols]
+
+        if first_only:
+            df = df.groupby(["Subject", "Agent"], as_index=False).first()
+
+        all_rows.append(df)
+
+    if not all_rows:
+        print("⚠️ No rows added to DataFrame. Check if behavior labels match and mapping keys are clean.")
+        print(f"Subjects in experiment: {list(experiment.trials.keys())}")
+        print(f"Subjects in assignments file: {assign_df['Subject'].tolist()}")
+        print("Sample mapping dictionary:")
+        for subj, mapping in subject_to_behavior_to_agent.items():
+            print(f"{subj} -> {mapping}")
+        return pd.DataFrame()
+
+    combined_df = pd.concat(all_rows, ignore_index=True)
+
+    # --- Aggregate by Subject-Agent pair ---
+    if first_only:
+        grouped = combined_df  # already one row per subject-agent
+    else:
+        grouped = combined_df.groupby(["Subject", "Agent"], as_index=False)[metric_cols].mean()
+
+    # --- Ensure each subject has all 4 agent rows ---
+    all_agents = ['nothing', 'short_term', 'long_term', 'novel']
+    all_subjects = sorted(grouped['Subject'].unique())
+    full_index = pd.MultiIndex.from_product([all_subjects, all_agents], names=['Subject', 'Agent'])
+
+    final_df = (
+        grouped.set_index(['Subject', 'Agent'])
+               .reindex(full_index)
+               .fillna(0)
+               .reset_index()
+    )
+
+    print(f"✅ Final DA metrics DataFrame created with {len(final_df)} rows from {len(all_subjects)} subjects.")
+    return final_df
+
 def create_da_metrics_dataframe(trial_data, behavior="Investigation", desired_bouts=None):
     """
     Extracts DA metrics per bout per subject for a specified behavior.
@@ -441,6 +542,394 @@ def create_da_metrics_dataframe(trial_data, behavior="Investigation", desired_bo
             })
 
     return pd.DataFrame(metric_rows)
+
+def plot_dopamine_bar_plots(precomputed_df, 
+             metric_name="Mean Z-score", 
+             title="Combined DA Metrics", 
+             ylabel="DA Metric", 
+             xlabel="Agent", 
+             custom_xtick_labels=None, 
+             custom_xtick_colors=None, 
+             ylim=None, 
+             bar_color="#00B7D7", 
+             yticks_increment=None, 
+             figsize=(14, 8), 
+             pad_inches=0.1,
+             save=False,
+             save_name=None,
+             subjects_to_include=None,
+             highlight_subject=None):
+    """
+    Plots DA metrics across agents ("nothing", "short_term", "long_term", "novel")
+    with subject-level spaghetti plots and paired t-tests.
+    """
+
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    from scipy.stats import ttest_rel
+
+    fixed_order = ["nothing", "short_term", "long_term", "novel"]
+    bar_positions = np.arange(len(fixed_order))
+
+    def perform_all_pairwise_t_tests(pivot_df):
+        results = {}
+        bout_names = pivot_df.columns.tolist()
+        for i in range(len(bout_names)):
+            for j in range(i + 1, len(bout_names)):
+                bout1, bout2 = bout_names[i], bout_names[j]
+                paired_df = pivot_df[[bout1, bout2]].dropna()
+                if len(paired_df) > 1:
+                    t_stat, p_value = ttest_rel(paired_df[bout1], paired_df[bout2])
+                    results[f"{bout1} vs {bout2}"] = {"t_stat": t_stat, "p_value": p_value}
+        return results
+
+    df = precomputed_df.copy()
+
+    # --- Filter by Subject ---
+    if subjects_to_include is not None:
+        subjects_to_include = [s.lower() for s in subjects_to_include]
+        df['Subject'] = df['Subject'].astype(str).str.lower()
+        df = df[df['Subject'].isin(subjects_to_include)]
+
+    if df.empty:
+        print("⚠️ No data to plot after filtering.")
+        return
+
+    # --- Pivot by Subject x Agent ---
+    try:
+        pivot_df = df.pivot(index="Subject", columns="Agent", values=metric_name)
+    except Exception as e:
+        print("Error pivoting data:", e)
+        return
+
+    pivot_df = pivot_df.reindex(columns=fixed_order)
+
+    # --- Summary Stats ---
+    stats = pivot_df.agg(['mean', 'sem']).T.reset_index()
+    stats.columns = ['Agent', 'mean', 'sem']
+    stats = stats.set_index('Agent').reindex(fixed_order).reset_index()
+
+    means = stats['mean'].values
+    sems = stats['sem'].values
+
+    # --- Paired T-tests ---
+    t_test_results = perform_all_pairwise_t_tests(pivot_df)
+
+    # --- Plot ---
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Bars
+    ax.bar(
+        bar_positions,
+        means,
+        yerr=sems,
+        capsize=10,
+        color=bar_color,
+        edgecolor='black',
+        linewidth=5,
+        width=0.6
+    )
+
+    # Spaghetti lines (gray for all, black for highlight)
+    for subject_id, row in pivot_df.iterrows():
+        if highlight_subject and subject_id.lower() == highlight_subject.lower():
+            ax.plot(bar_positions, row.values, linestyle='-', color='black', linewidth=4, zorder=3)
+            ax.scatter(bar_positions, row.values, facecolors='black', edgecolors='black', 
+                       s=160, linewidths=2, zorder=4)
+        else:
+            ax.plot(bar_positions, row.values, linestyle='-', color='gray', alpha=0.5, linewidth=2.5, zorder=1)
+            ax.scatter(bar_positions, row.values, facecolors='none', edgecolors='gray', 
+                       s=120, linewidths=3, zorder=2)
+
+    # Labels
+    ax.set_ylabel(ylabel, fontsize=35, labelpad=12)
+    ax.set_xlabel(xlabel, fontsize=35, labelpad=12)
+    if title:
+        ax.set_title(title, fontsize=28)
+
+    ax.set_xticks(bar_positions)
+    xtick_labels = custom_xtick_labels if custom_xtick_labels else ["Empty", "Short Term", "Long Term", "Novel"]
+    ax.set_xticklabels(xtick_labels, fontsize=35)
+    if custom_xtick_colors:
+        for tick, color in zip(ax.get_xticklabels(), custom_xtick_colors):
+            tick.set_color(color)
+
+    ax.tick_params(axis='y', labelsize=35)
+    ax.tick_params(axis='x', labelsize=35)
+
+    # Y-limits
+    if ylim:
+        ax.set_ylim(ylim)
+    else:
+        all_vals = np.concatenate([pivot_df.values.flatten(), means])
+        ax.set_ylim(0, np.nanmax(all_vals) * 1.2)
+
+    if yticks_increment:
+        y_min, y_max = ax.get_ylim()
+        ax.set_yticks(np.arange(np.floor(y_min), np.ceil(y_max) + yticks_increment, yticks_increment))
+
+    ax.axhline(y=0, color='black', linestyle='--', linewidth=2)
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.spines['left'].set_linewidth(5)
+    ax.spines['bottom'].set_linewidth(5)
+
+    plt.tight_layout()
+    if save:
+        if save_name is None:
+            raise ValueError("save_name must be provided if save is True.")
+        plt.savefig(save_name, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
+    plt.show()
+
+    # --- Print T-tests ---
+    print(f"\nPlotted data from {pivot_df.shape[0]} subject(s).")
+    if t_test_results:
+        print("\nPaired t-test results (all agent comparisons):")
+        for comp, stats in t_test_results.items():
+            p = stats["p_value"]
+            stars = "ns"
+            if p < 0.001:
+                stars = "***"
+            elif p < 0.01:
+                stars = "**"
+            elif p < 0.05:
+                stars = "*"
+            print(f"{comp}: p = {p:.4f} ({stars})")
+
+def get_all_per_event_df(experiment, sniff_cup_csv_path, metric_list=None):
+    import re
+
+    def normalize_label(label):
+        return re.sub(r'\s+', ' ', str(label).strip().lower().replace('\u00a0', ' '))
+
+    # Load mapping from cup -> agent
+    assign_df = pd.read_csv(sniff_cup_csv_path)
+    assign_df['Subject'] = assign_df['Subject'].str.lower()
+    
+    subj_map = {}
+    for _, row in assign_df.iterrows():
+        subj = row['Subject']
+        subj_map[subj] = {}
+        for col in row.index:
+            col_norm = normalize_label(col)
+            if col_norm.startswith("sniff cup"):
+                agent = normalize_label(row[col])
+                subj_map[subj][col_norm] = agent
+
+    all_rows = []
+    for trial_name, trial in experiment.trials.items():
+        if not hasattr(trial, 'behaviors') or trial.behaviors.empty:
+            continue
+
+        df = trial.behaviors.copy()
+        df['Behavior'] = df['Behavior'].astype(str).apply(normalize_label)
+
+        subject_id = trial_name.lower()
+        if subject_id not in subj_map:
+            continue
+
+        df = df[df['Behavior'].str.startswith("sniff cup")]
+        df['Agent'] = df['Behavior'].apply(lambda b: subj_map[subject_id].get(b))
+        df['Subject'] = subject_id
+        df['Trial'] = trial_name
+
+        df = df.dropna(subset=["Agent"])
+        
+        known = ['Subject', 'Agent', 'Trial', 'Behavior', 'Event_Start']
+        if metric_list:
+            cols = [col for col in metric_list if col in df.columns]
+        else:
+            cols = [c for c in df.columns if c not in known and pd.api.types.is_numeric_dtype(df[c])]
+
+        df = df[['Subject', 'Agent', 'Trial', 'Event_Start'] + cols]
+        all_rows.append(df)
+
+    final_df = pd.concat(all_rows, ignore_index=True)
+    print(f"✅ Per-event DataFrame created with {len(final_df)} rows from {final_df['Subject'].nunique()} subjects.")
+    return final_df
+
+def plot_peak_by_agent_from_df(
+    df,
+    sniff_cup_csv_path=None,              # optional if Agent column is already present
+    selected_agents=None,                # e.g. ['novel', 'short_term']
+    n_subsequent_investigations=3,
+    peak_col="Max Peak",
+    metric_type='slope',
+    figsize=(14, 8),
+    line_order=None,
+    custom_colors=None,
+    custom_legend_labels=None,
+    custom_xtick_labels=None,
+    ylim=None,
+    ytick_increment=None,
+    xlabel="Investigation Index",
+    ylabel="Avg Max Peak",
+    subjects_to_include=None,            # ✅ MISSING COMMA FIXED HERE
+    plot_title="Average Peak per Agent",
+    save=False,
+    save_name="agent_peak_plot.png"
+):
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from scipy.stats import linregress
+    from scipy.optimize import curve_fit
+
+    def exponential_decay(x, A, B, tau):
+        return A + B * np.exp(-x / tau)
+
+    def normalize_label(label):
+        import re
+        return re.sub(r'\s+', ' ', str(label).strip().lower().replace('\u00a0', ' '))
+
+    def create_mapping(sniff_cup_csv_path):
+        assign_df = pd.read_csv(sniff_cup_csv_path)
+        assign_df['Subject'] = assign_df['Subject'].astype(str).str.lower()
+        subject_to_behavior_to_agent = {}
+        for _, row in assign_df.iterrows():
+            subj = row['Subject']
+            subject_to_behavior_to_agent[subj] = {}
+            for col in row.index:
+                col_norm = normalize_label(col)
+                if col_norm.startswith("sniff cup"):
+                    agent_label = normalize_label(row[col])
+                    subject_to_behavior_to_agent[subj][col_norm] = agent_label
+        return subject_to_behavior_to_agent
+
+    df = df.copy()
+
+    # --- Optional agent mapping ---
+    if "Agent" not in df.columns:
+        if sniff_cup_csv_path is None:
+            raise ValueError("You must provide either an 'Agent' column or a sniff_cup_csv_path.")
+
+        mapping = create_mapping(sniff_cup_csv_path)
+
+        def get_agent(row):
+            subj = str(row['Subject']).lower()
+            bout = str(row['Bout']).lower()
+            if '-' not in bout:
+                return None
+            cup_number = bout.split('-')[1]
+            behavior = f"sniff cup {cup_number}"
+            return mapping.get(subj, {}).get(behavior)
+
+        df['Agent'] = df.apply(get_agent, axis=1)
+
+    # --- Filter agents ---
+    if selected_agents:
+        df = df[df['Agent'].isin(selected_agents)]
+
+    # --- Subject filtering ---
+    if subjects_to_include:
+        subjects_to_include = [s.lower() for s in subjects_to_include]
+        df['Subject'] = df['Subject'].astype(str).str.lower()
+        df = df[df['Subject'].isin(subjects_to_include)]
+
+    # --- Investigation indexing ---
+    df.sort_values(["Subject", "Agent", "Event_Start"], inplace=True)
+    df["InvestigationIndex"] = df.groupby(["Subject", "Agent"]).cumcount() + 1
+    df = df[df["InvestigationIndex"] <= n_subsequent_investigations]
+
+    # --- Aggregate ---
+    agg_df = (
+        df.groupby(["Agent", "InvestigationIndex"], as_index=False)
+        .agg(
+            SubjectCount=("Subject", "nunique"),
+            AvgPeak=(peak_col, "mean")
+        )
+    )
+
+    # --- Plotting ---
+    if custom_colors is None:
+        custom_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_linewidth(5)
+    ax.spines["bottom"].set_linewidth(5)
+    ax.tick_params(axis="both", which="major", labelsize=48)
+    ax.tick_params(axis="y", labelsize=35)
+
+    metrics_dict = {}
+    unique_agents = line_order if line_order else sorted(agg_df["Agent"].dropna().unique())
+
+    for i, agent in enumerate(unique_agents):
+        df_line = agg_df[agg_df["Agent"] == agent].copy()
+        df_line.sort_values("InvestigationIndex", inplace=True)
+
+        x_vals = df_line["InvestigationIndex"].values
+        y_vals = df_line["AvgPeak"].values
+
+        if len(x_vals) == 0 or len(y_vals) == 0:
+            print(f"Skipping agent '{agent}' due to no data.")
+            continue
+
+        if metric_type.lower() == 'slope':
+            slope, _, _, _, _ = linregress(x_vals, y_vals)
+            metrics_dict[agent] = slope
+            metric_label = f"slope: {slope:.3f}"
+        elif metric_type.lower() == 'decay':
+            try:
+                p0 = (np.min(y_vals), np.max(y_vals)-np.min(y_vals), 1.0)
+                popt, _ = curve_fit(exponential_decay, x_vals, y_vals, p0=p0)
+                tau = popt[2]
+                metrics_dict[agent] = tau
+                metric_label = f"decay: {tau:.3f}"
+            except RuntimeError:
+                metrics_dict[agent] = np.nan
+                metric_label = "decay: N/A"
+        else:
+            raise ValueError("metric_type must be 'slope' or 'decay'.")
+
+        legend_label = custom_legend_labels[i] if custom_legend_labels and i < len(custom_legend_labels) else agent
+        legend_label += f" ({metric_label}, n={df_line['SubjectCount'].max()})"
+
+        color = custom_colors[i % len(custom_colors)]
+        ax.plot(
+            x_vals, y_vals,
+            marker='o', linestyle='-',
+            color=color,
+            linewidth=5, markersize=30,
+            label=legend_label
+        )
+
+    ax.set_xlabel(xlabel, fontsize=35, labelpad=12)
+    ax.set_ylabel(ylabel, fontsize=35, labelpad=12)
+
+    if ylim is not None:
+        ax.set_ylim(ylim)
+        if ytick_increment is not None:
+            ticks = np.arange(ylim[0], ylim[1] + ytick_increment, ytick_increment)
+            ax.set_yticks(ticks)
+            ax.set_yticklabels([f"{t:.0f}" if t.is_integer() else f"{t:.1f}" for t in ticks], fontsize=35)
+
+    if custom_xtick_labels:
+        ax.set_xticks(np.arange(1, len(custom_xtick_labels) + 1))
+        ax.set_xticklabels(custom_xtick_labels, fontsize=35)
+    else:
+        x_vals = sorted(agg_df["InvestigationIndex"].unique())
+        ax.set_xticks(x_vals)
+        ax.set_xticklabels([str(x) for x in x_vals], fontsize=35)
+
+    if plot_title:
+        ax.set_title(plot_title, fontsize=24)
+
+    ax.legend(fontsize=26)
+    plt.tight_layout()
+
+    if save:
+        plt.savefig(save_name, dpi=300, transparent=True, bbox_inches='tight')
+
+    plt.show()
+
+    print(f"\n=== Computed Metric ({metric_type.upper()}): ===")
+    for agent, val in metrics_dict.items():
+        print(f"Agent: {agent}, {metric_type} = {val:.3f}")
+
+    return agg_df
 
 
 
