@@ -12,9 +12,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 from scipy.interpolate import interp1d
-from scipy.stats import linregress
+from scipy.stats import pearsonr, linregress
 from rtc_extension import RTC 
-from scipy.stats import pearsonr
 
 
 class Reward_Training(RTC):
@@ -73,232 +72,6 @@ class Reward_Training(RTC):
 
 
 
-    '''********************************** LICKS **********************************'''
-    def compute_standard_DA(self, df=None, pre_time=4, post_time=10):
-        """
-        Computes standard DA responses (no baseline subtraction) for each trial.
-        
-        Two sets of responses are computed:
-        1. Tone Event: Data extracted in a window from -pre_time to +post_time around the sound cue onset.
-        2. Lick Event: Data extracted in a window from 0 to +post_time around the lick onset.
-        
-        The function interpolates each extracted segment onto a common time axis.
-        """
-        import numpy as np
-
-        if df is None:
-            df = self.da_df
-
-        # Determine the smallest sampling interval (dt) across all trials
-        min_dt = np.inf
-        for _, row in df.iterrows():
-            trial_obj = row['trial']
-            timestamps = np.array(trial_obj.timestamps)
-            if len(timestamps) > 1:
-                dt = np.min(np.diff(timestamps))
-                min_dt = min(min_dt, dt)
-        if min_dt == np.inf:
-            print("No valid timestamps found to determine dt.")
-            return
-
-        # Define the common time axes
-        common_tone_time_axis = np.arange(-pre_time, post_time, min_dt)  # For sound cue
-        common_lick_time_axis = np.arange(0, post_time, min_dt)           # For lick event
-
-        # Lists to store results for each trial
-        tone_zscores_all = []
-        tone_times_all = []
-        lick_zscores_all = []
-        lick_times_all = []
-
-        # Process each trial (each row in the dataframe)
-        for _, row in df.iterrows():
-            trial_obj = row['trial']
-            timestamps = np.array(trial_obj.timestamps)
-            # Here we assume the DA signal is still in trial_obj.zscore (even if it's not baseline-corrected)
-            zscore = np.array(trial_obj.zscore)
-
-            # Get event times
-            sound_cues = row['sound cues onset']
-            lick_cues  = row['first_lick_after_sound_cue']
-
-            # ----- Tone Event (Sound Cue) -----
-            tone_zscores_this_trial = []
-            tone_times_this_trial = []
-            if len(sound_cues) == 0:
-                tone_zscores_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
-                tone_times_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
-            else:
-                for sound_event in sound_cues:
-                    window_start = sound_event - pre_time
-                    window_end   = sound_event + post_time
-                    mask = (timestamps >= window_start) & (timestamps <= window_end)
-                    if not np.any(mask):
-                        tone_zscores_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
-                        tone_times_this_trial.append(np.full(common_tone_time_axis.shape, np.nan))
-                        continue
-
-                    # Get the signal and relative time (without baseline subtraction)
-                    rel_time = timestamps[mask] - sound_event
-                    signal   = zscore[mask]
-                    # Interpolate onto the common tone time axis
-                    interp_signal = np.interp(common_tone_time_axis, rel_time, signal)
-                    tone_zscores_this_trial.append(interp_signal)
-                    tone_times_this_trial.append(common_tone_time_axis.copy())
-
-            # ----- Lick Event -----
-            lick_zscores_this_trial = []
-            lick_times_this_trial = []
-            if len(lick_cues) == 0:
-                lick_zscores_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
-                lick_times_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
-            else:
-                for lick_event in lick_cues:
-                    window_start = lick_event
-                    window_end   = lick_event + post_time
-                    mask = (timestamps >= window_start) & (timestamps <= window_end)
-                    if not np.any(mask):
-                        lick_zscores_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
-                        lick_times_this_trial.append(np.full(common_lick_time_axis.shape, np.nan))
-                        continue
-
-                    rel_time = timestamps[mask] - lick_event
-                    signal   = zscore[mask]
-                    # Interpolate onto the common lick time axis
-                    interp_signal = np.interp(common_lick_time_axis, rel_time, signal)
-                    lick_zscores_this_trial.append(interp_signal)
-                    lick_times_this_trial.append(common_lick_time_axis.copy())
-
-            # Append results for this trial
-            tone_zscores_all.append(tone_zscores_this_trial)
-            tone_times_all.append(tone_times_this_trial)
-            lick_zscores_all.append(lick_zscores_this_trial)
-            lick_times_all.append(lick_times_this_trial)
-
-        # Store the results in the dataframe
-        df['Tone Event_Time_Axis'] = tone_times_all
-        df['Tone Event_Zscore']    = tone_zscores_all
-        df['Lick Event_Time_Axis'] = lick_times_all
-        df['Lick Event_Zscore']    = lick_zscores_all
-
-                
-    # def compute_da_metrics(self, mode='EI', bout_duration=4):
-    #     """
-    #     Computes DA metrics (AUC, Max Peak, Time of Max Peak, Mean Z-score) for tone and lick events
-    #     **only** over the 0→bout_duration window for each event.
-
-    #     Two modes supported:
-    #     • mode='EI': uses event-induced, baseline-corrected traces stored in
-    #         `Tone Event_Zscore` / `Lick Event_Zscore` (with axes in `Tone Event_Time_Axis` / `Lick Event_Time_Axis`).
-    #     • mode='standard': extracts raw zscore around each event in a
-    #         [event_time → event_time + bout_duration] window and interpolates onto 0→bout_duration.
-
-    #     Overwrites these columns:
-    #     'Tone AUC', 'Tone Max Peak', 'Tone Time of Max Peak', 'Tone Mean Z-score'
-    #     'Lick AUC', 'Lick Max Peak', 'Lick Time of Max Peak', 'Lick Mean Z-score'
-    #     """
-
-    #     df = self.da_df
-
-    #     use_ei = (mode == 'EI') and ('Tone Event_Zscore' in df.columns)
-
-    #     # helper to extract metrics from (trace, axis) pairs **within** 0→bout_duration
-    #     def extract_metrics(traces, axes):
-    #         aucs, maxs, times, means = [], [], [], []
-    #         for tr, ax in zip(traces, axes):
-    #             tr = np.asarray(tr)
-    #             ax = np.asarray(ax)
-    #             # mask to 0→bout_duration
-    #             m = (ax >= 0) & (ax <= bout_duration)
-    #             seg = tr[m]
-    #             seg_t = ax[m]
-    #             if seg.size:
-    #                 aucs .append(np.trapz(seg, seg_t))
-    #                 idx   = np.nanargmax(seg)
-    #                 maxs .append(seg[idx])
-    #                 times.append(seg_t[idx])
-    #                 means.append(np.nanmean(seg))
-    #             else:
-    #                 aucs .append(np.nan)
-    #                 maxs .append(np.nan)
-    #                 times.append(np.nan)
-    #                 means.append(np.nan)
-    #         return aucs, maxs, times, means
-
-    #     # precompute dt for standard
-    #     if not use_ei:
-    #         min_dt = np.inf
-    #         for _, row in df.iterrows():
-    #             ts = np.array(row['trial'].timestamps)
-    #             if ts.size>1:
-    #                 min_dt = min(min_dt, np.min(np.diff(ts)))
-    #         if not np.isfinite(min_dt):
-    #             raise RuntimeError("Can't find sampling dt for standard mode")
-    #         standard_axes = np.arange(0, bout_duration, min_dt)
-
-    #     # storage
-    #     t_auc, t_max, t_time, t_mean = [], [], [], []
-    #     l_auc, l_max, l_time, l_mean = [], [], [], []
-
-    #     for _, row in df.iterrows():
-    #         if use_ei:
-    #             tone_traces = row.get('Tone Event_Zscore',  []) or []
-    #             tone_axes   = row.get('Tone Event_Time_Axis', []) or []
-    #             lick_traces = row.get('Lick Event_Zscore',  []) or []
-    #             lick_axes   = row.get('Lick Event_Time_Axis', []) or []
-    #         else:
-    #             # build standard traces
-    #             trial = row['trial']
-    #             ts    = np.array(trial.timestamps)
-    #             zs    = np.array(trial.zscore)
-
-    #             tone_traces, tone_axes = [], []
-    #             for on in (row.get('sound cues onset') or []):
-    #                 if on is None or np.isnan(on):
-    #                     tone_traces.append(np.full_like(standard_axes, np.nan))
-    #                 else:
-    #                     mask = (ts >= on) & (ts <= on + bout_duration)
-    #                     rel  = ts[mask] - on
-    #                     sig  = zs[mask]
-    #                     tone_traces.append(np.interp(standard_axes, rel, sig,
-    #                                                 left=np.nan, right=np.nan))
-    #                 tone_axes.append(standard_axes)
-
-    #             lick_traces, lick_axes = [], []
-    #             for on in (row.get('first_lick_after_sound_cue') or []):
-    #                 if on is None or np.isnan(on):
-    #                     lick_traces.append(np.full_like(standard_axes, np.nan))
-    #                 else:
-    #                     mask = (ts >= on) & (ts <= on + bout_duration)
-    #                     rel  = ts[mask] - on
-    #                     sig  = zs[mask]
-    #                     lick_traces.append(np.interp(standard_axes, rel, sig,
-    #                                                 left=np.nan, right=np.nan))
-    #                 lick_axes.append(standard_axes)
-
-    #         # now pull out metrics from the 0→bout_duration window
-    #         ta, tm, tt, tme = extract_metrics(tone_traces, tone_axes)
-    #         la, lm, lt, lme = extract_metrics(lick_traces, lick_axes)
-
-    #         t_auc.append( ta); t_max.append( tm); t_time.append( tt); t_mean.append( tme)
-    #         l_auc.append( la); l_max.append( lm); l_time.append( lt); l_mean.append( lme)
-
-    #     # write back
-    #     df['Tone AUC']              = t_auc
-    #     df['Tone Max Peak']         = t_max
-    #     df['Tone Time of Max Peak'] = t_time
-    #     df['Tone Mean Z-score']     = t_mean
-
-    #     df['Lick AUC']              = l_auc
-    #     df['Lick Max Peak']         = l_max
-    #     df['Lick Time of Max Peak'] = l_time
-    #     df['Lick Mean Z-score']     = l_mean
-
-    #     return df
-
-
-
-
 
     '''********************************** PSTH CODE  **********************************'''
     def plot_event_index_heatmap(self, event_type, max_events, directory_path, brain_region, 
@@ -335,7 +108,7 @@ class Reward_Training(RTC):
             return
         common_time_axis = event_time_axes[0]
 
-        print(f"[DEBUG] Heatmap: Averaging {event_type} data for first {max_events} events in brain region {brain_region}")
+        # print(f"[DEBUG] Heatmap: Averaging {event_type} data for first {max_events} events in brain region {brain_region}")
 
         averaged_event_traces = []
         for event_idx in range(max_events):
@@ -366,18 +139,6 @@ class Reward_Training(RTC):
         else:
             downsampled_time_axis = common_time_axis
 
-        # --- Debug: For event 14, print values in the 4–10 s window ---
-        debug_event = 14  # 1-indexed event 14
-        debug_idx = debug_event - 1
-        if debug_idx < heatmap_data.shape[0]:
-            event_trace = heatmap_data[debug_idx]
-            post_window = (downsampled_time_axis >= 4) & (downsampled_time_axis <= 10)
-            post_vals = event_trace[post_window]
-            print(f"[DEBUG] Heatmap event {debug_event} (row {debug_idx+1}) mean trace, first 10 values: {event_trace[:10]}")
-            print(f"[DEBUG] Heatmap event {debug_event} (row {debug_idx+1}) 4–10 s window, first 10 values: {post_vals[:10]}")
-            print(f"[DEBUG] Heatmap event {debug_event} (row {debug_idx+1}) max in 4–10 s window: {np.max(post_vals)}")
-        else:
-            print(f"[DEBUG] There is no event {debug_event} in the heatmap data.")
 
         # Invert the y-axis so that tone 1 appears at the top.
         x_min, x_max = downsampled_time_axis[0], downsampled_time_axis[-1]
@@ -422,8 +183,7 @@ class Reward_Training(RTC):
         plt.show()
 
 
-
-
+    # Tone number scatter plots
     def plot_sequential_event(self,
                             column: str,
                             color='C0',
@@ -493,4 +253,73 @@ class Reward_Training(RTC):
 
         plt.tight_layout()
         plt.subplots_adjust(right=0.75)  # Leave room for legend
+        plt.show()
+
+
+
+    def plot_scatter(self,
+                            column: str,
+                            color='C0',
+                            individual_dots=False,
+                            xlabel: str = None,
+                            ylabel: str = None,
+                            title: str = None,
+                            yrange: list = None):
+        """
+        …(docstring unchanged)…
+        """
+        df = self.da_df
+        arrays = [np.asarray(v) for v in df[column]
+                if isinstance(v, (list, np.ndarray)) and len(v) > 0]
+        if not arrays:
+            print(f"No data in column {column}")
+            return
+
+        min_len = min(arr.shape[0] for arr in arrays)
+        means = np.zeros(min_len)
+        sems  = np.zeros(min_len)
+        indices = np.arange(1, min_len + 1)
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        for i in range(min_len):
+            ys = [arr[i] for arr in arrays if not np.isnan(arr[i])]
+            if individual_dots:
+                ax.scatter([i + 1] * len(ys), ys,
+                        color=color, alpha=0.6, edgecolor='none', s=40)
+            means[i] = np.mean(ys)
+            sems[i]  = np.std(ys, ddof=1) / np.sqrt(len(ys))
+
+        # plot errorbars as markers only
+        ax.errorbar(indices, means, yerr=sems,
+                    fmt='o',         # <-- marker only
+                    lw=2, capsize=5,
+                    color=color,
+                    label='Mean ± SEM')
+
+        # compute Pearson on the means
+        r, p = pearsonr(indices, means)
+        ax.plot([], [], ' ', label=f"r = {r:.2f}, p = {p:.3f}")
+
+        # compute and plot line of best fit through the mean points
+        slope, intercept, r_val, p_val, stderr = linregress(indices, means)
+        fit_y = intercept + slope * indices
+        ax.plot(indices, fit_y,
+                linestyle='--', linewidth=2,
+                color=color, label=f'Fit: y={slope:.2f}x+{intercept:.2f}')
+
+        ax.set_xlabel(xlabel or column, fontsize=14)
+        ax.set_ylabel(ylabel or column, fontsize=14)
+        ax.set_title(title or column, fontsize=16)
+        ax.set_xticks(indices)
+
+        if yrange and len(yrange)==2:
+            ax.set_ylim(yrange)
+
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        ax.legend(loc='upper left', bbox_to_anchor=(1.01, 1), frameon=False, fontsize=12)
+        plt.tight_layout()
+        plt.subplots_adjust(right=0.75)
         plt.show()

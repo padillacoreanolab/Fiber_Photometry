@@ -164,7 +164,7 @@ class RTC(Experiment):
             'filtered_sound_cues', 'filtered_port_entries', 'filtered_port_entry_offset',
             'first_PE_after_sound_cue',
             'Tone_Time_Axis', 'Tone_Zscore',
-            'PE_Time_Axis', 'PE_Zscore'
+            'PE_Time_Axis', 'PE_Zscore', 'filtered_winner_array'
         ]
 
         # Only keep columns that actually exist in the DataFrame
@@ -186,7 +186,7 @@ class RTC(Experiment):
 
         first_PEs = []  # List to store results
 
-        for index, row in df.iterrows():  # Use df, not self.df
+        for index, row in df.iterrows():  
             sound_cues_onsets = row['filtered_sound_cues']
             port_entries_onsets = row['filtered_port_entries']
             port_entries_offsets = row['filtered_port_entry_offset']
@@ -269,82 +269,150 @@ class RTC(Experiment):
 
 
     """******************************* DOPAMINE CALCULATIONS ********************************"""
-    def compute_EI_DA(self, pre_time=4, post_time=10):
+    def compute_standard_DA(self, pre_time=4, post_time=10):
         """
-        Computes event-induced DA (ΔF/F z-score) responses for every tone (sound cue) 
-        and PE in self.da_df.
-
-        - Tone:
-        * Time axis: -pre_time to +post_time around each sound cue onset.
-        * Baseline: mean of the DA signal in the 4 seconds before the sound cue.
-
-        - PE:
-        * Time axis: 0 to +post_time around the PE onset.
-        * Baseline: same as the tone event baseline (4 s pre-cue).
-        * If the i-th PE has no corresponding sound cue, baseline=0.
+        Compute *raw* peri‐event z‐score traces for Tone and PE.
+        - Tone_Time_Axis / Tone_Zscore:   -pre_time→+post_time around each cue
+        - PE_Time_Axis    / PE_Zscore:     0→+post_time    around each PE
         """
         df = self.da_df
 
-        # 1) Determine global dt
+        # 1) find dt
         min_dt = np.inf
         for _, row in df.iterrows():
             ts = np.array(row['trial'].timestamps)
             if ts.size > 1:
                 min_dt = min(min_dt, np.min(np.diff(ts)))
         if min_dt == np.inf:
-            print("No valid timestamps found to determine dt.")
-            return
+            raise RuntimeError("No valid timestamps found for dt.")
 
-        # 2) Common axes
+        # 2) common axes
         tone_axis = np.arange(-pre_time, post_time, min_dt)
-        PE_axis = np.arange(0,       post_time, min_dt)
+        pe_axis   = np.arange(0,       post_time, min_dt)
 
-        # 3) Containers
-        tone_z  = []; tone_t = []
-        PE_z  = []; PE_t = []
+        # 3) containers
+        tone_z, tone_t = [], []
+        pe_z,   pe_t   = [], []
 
+        # 4) loop trials
         for _, row in df.iterrows():
             trial = row['trial']
             ts    = np.array(trial.timestamps)
             zs    = np.array(trial.zscore)
-            cues  = row.get('filtered_sound_cues', [])
-            PEs = row.get('first_PE_after_sound_cue', [])
 
             # — Tone —
-            this_z_tone = []
-            this_t_tone = []
+            cues = row.get('filtered_sound_cues', [])
+            tz, tt = [], []
             if not cues:
-                this_z_tone.append(np.full(tone_axis.shape, np.nan))
-                this_t_tone.append(np.full(tone_axis.shape, np.nan))
+                tz.append(np.full_like(tone_axis, np.nan))
+                tt.append(tone_axis.copy())
+            else:
+                for cue in cues:
+                    mask = (ts >= cue - pre_time) & (ts <= cue + post_time)
+                    rel  = ts[mask] - cue
+                    sig  = zs[mask]
+                    interp = np.interp(tone_axis, rel, sig,
+                                    left=np.nan, right=np.nan)
+                    tz.append(interp)
+                    tt.append(tone_axis.copy())
+            tone_z.append(tz)
+            tone_t.append(tt)
+
+            # — PE —
+            pes = row.get('first_PE_after_sound_cue', [])
+            pz, pt = [], []
+            if not isinstance(pes, (list, np.ndarray)) or len(pes)==0:
+                pz.append(np.full_like(pe_axis, np.nan))
+                pt.append(pe_axis.copy())
+            else:
+                for i, pe in enumerate(pes):
+                    if pe is None or (isinstance(pe,float) and np.isnan(pe)):
+                        pz.append(np.full_like(pe_axis, np.nan))
+                        pt.append(pe_axis.copy())
+                    else:
+                        mask = (ts >= pe) & (ts <= pe + post_time)
+                        rel  = ts[mask] - pe
+                        sig  = zs[mask]
+                        interp = np.interp(pe_axis, rel, sig,
+                                        left=np.nan, right=np.nan)
+                        pz.append(interp)
+                        pt.append(pe_axis.copy())
+            pe_z.append(pz)
+            pe_t.append(pt)
+
+        # 5) save back
+        df['Tone_Time_Axis'] = tone_t
+        df['Tone_Zscore']    = tone_z
+        df['PE_Time_Axis']   = pe_t
+        df['PE_Zscore']      = pe_z
+
+        return df
+
+
+    def compute_EI_DA(self, pre_time=4, post_time=10):
+        """
+        Compute *baseline‐corrected* peri‐event z‐score traces for Tone and PE.
+        Exactly the same interface / output columns as compute_standard_DA.
+        """
+        df = self.da_df
+
+        # 1) find dt
+        min_dt = np.inf
+        for _, row in df.iterrows():
+            ts = np.array(row['trial'].timestamps)
+            if ts.size > 1:
+                min_dt = min(min_dt, np.min(np.diff(ts)))
+        if min_dt == np.inf:
+            raise RuntimeError("No valid timestamps found for dt.")
+
+        # 2) common axes
+        tone_axis = np.arange(-pre_time, post_time, min_dt)
+        pe_axis   = np.arange(0,       post_time, min_dt)
+
+        # 3) containers
+        tone_z, tone_t = [], []
+        pe_z,   pe_t   = [], []
+
+        # 4) loop trials
+        for _, row in df.iterrows():
+            trial = row['trial']
+            ts    = np.array(trial.timestamps)
+            zs    = np.array(trial.zscore)
+
+            cues = row.get('filtered_sound_cues', [])
+            tz, tt = [], []
+            # — Tone with baseline from −pre_time→0 —
+            if not cues:
+                tz.append(np.full_like(tone_axis, np.nan))
+                tt.append(tone_axis.copy())
             else:
                 for cue in cues:
                     mask = (ts >= cue - pre_time) & (ts <= cue + post_time)
                     if not mask.any():
-                        this_z_tone.append(np.full(tone_axis.shape, np.nan))
-                        this_t_tone.append(np.full(tone_axis.shape, np.nan))
+                        tz.append(np.full_like(tone_axis, np.nan))
+                        tt.append(tone_axis.copy())
                         continue
-
-                    rt   = ts[mask] - cue
+                    rel  = ts[mask] - cue
                     sig  = zs[mask]
-                    base = np.nanmean(sig[rt < 0]) if (rt < 0).any() else 0
+                    base = np.nanmean(sig[rel < 0]) if (rel < 0).any() else 0
                     corr = sig - base
-                    this_z_tone.append(np.interp(tone_axis, rt, corr))
-                    this_t_tone.append(tone_axis.copy())
+                    tz.append(np.interp(tone_axis, rel, corr))
+                    tt.append(tone_axis.copy())
+            tone_z.append(tz); tone_t.append(tt)
 
-            # — PE —
-            this_z_PE = []
-            this_t_PE = []
-            if not isinstance(PEs, (list, np.ndarray)) or len(PEs) == 0:
-                this_z_PE.append(np.full(PE_axis.shape, np.nan))
-                this_t_PE.append(np.full(PE_axis.shape, np.nan))
+            # — PE with same tone‐based baseline —
+            pes = row.get('first_PE_after_sound_cue', [])
+            pz, pt = [], []
+            if not isinstance(pes, (list, np.ndarray)) or len(pes)==0:
+                pz.append(np.full_like(pe_axis, np.nan))
+                pt.append(pe_axis.copy())
             else:
-                for i, PE in enumerate(PEs):
-                    if PE is None or (isinstance(PE, float) and np.isnan(PE)):
-                        this_z_PE.append(np.full(PE_axis.shape, np.nan))
-                        this_t_PE.append(np.full(PE_axis.shape, np.nan))
+                for i, pe in enumerate(pes):
+                    if pe is None or (isinstance(pe,float) and np.isnan(pe)):
+                        pz.append(np.full_like(pe_axis, np.nan))
+                        pt.append(pe_axis.copy())
                         continue
-
-                    # pick baseline cue if available
+                    # pick cue i for baseline
                     baseline_cue = cues[i] if i < len(cues) else None
                     if baseline_cue is not None:
                         bm = (ts >= baseline_cue - pre_time) & (ts <= baseline_cue)
@@ -352,66 +420,54 @@ class RTC(Experiment):
                     else:
                         base_val = 0
 
-                    mask = (ts >= PE) & (ts <= PE + post_time)
+                    mask = (ts >= pe) & (ts <= pe + post_time)
                     if not mask.any():
-                        this_z_PE.append(np.full(PE_axis.shape, np.nan))
-                        this_t_PE.append(np.full(PE_axis.shape, np.nan))
+                        pz.append(np.full_like(pe_axis, np.nan))
+                        pt.append(pe_axis.copy())
                         continue
-
-                    rt   = ts[mask] - PE
+                    rel  = ts[mask] - pe
                     corr = zs[mask] - base_val
-                    this_z_PE.append(np.interp(PE_axis, rt, corr))
-                    this_t_PE.append(PE_axis.copy())
+                    pz.append(np.interp(pe_axis, rel, corr))
+                    pt.append(pe_axis.copy())
+            pe_z.append(pz); pe_t.append(pt)
 
-            tone_z.append(this_z_tone)
-            tone_t.append(this_t_tone)
-            PE_z.append(this_z_PE)
-            PE_t.append(this_t_PE)
-
-        # 4) Store back on da_df
+        # 5) save back
         df['Tone_Time_Axis'] = tone_t
         df['Tone_Zscore']    = tone_z
-        df['PE_Time_Axis'] = PE_t
-        df['PE_Zscore']    = PE_z
+        df['PE_Time_Axis']   = pe_t
+        df['PE_Zscore']      = pe_z
+
+        return df
 
 
-    def compute_rtc_da_metrics(self, mode='EI', bout_duration=4):
+    def compute_rtc_da_metrics(self, bout_duration=4):
         """
-        Computes DA metrics (AUC, Max Peak, Time of Max Peak, Mean Z-score) for Tone and PE events
-        over the 0→bout_duration window for each event.
-
-        mode:
-        • 'EI'       — uses baseline-corrected, peri-event traces in
-                        `Tone_Zscore` / `PE_Zscore`.
-        • 'standard' — extracts raw zscore around each cue or PE from
-                        onset→onset + bout_duration and interpolates onto 0→bout_duration.
+        Consume whatever you’ve already computed (Tone_Zscore, PE_Zscore & their axes)
+        and produce:
+        Tone AUC, Tone Max Peak, Tone Time of Max Peak, Tone Mean Z-score
+        PE   AUC, PE   Max Peak, PE   Time of Max Peak, PE   Mean Z-score
+        all measured over 0→bout_duration.
         """
-
         df = self.da_df
-        use_ei = (mode == 'EI') and ('Tone_Zscore' in df.columns)
 
-        # Map event names to the cue column, EI-trace column, and EI-time‐axis column
         event_info = {
             'Tone': {
-                'cue_col':       'filtered_sound_cues',
-                'ei_z_col':      'Tone_Zscore',
-                'ei_t_col':      'Tone_Time_Axis'
+                'z_col': 'Tone_Zscore',
+                't_col': 'Tone_Time_Axis'
             },
             'PE': {
-                'cue_col':       'first_PE_after_sound_cue',
-                'ei_z_col':      'PE_Zscore',
-                'ei_t_col':      'PE_Time_Axis'
+                'z_col': 'PE_Zscore',
+                't_col': 'PE_Time_Axis'
             }
         }
 
-        # Helper: from (list-of-traces, list-of-axes) → per-event metrics
         def extract_metrics(traces, axes):
             aucs, maxs, times, means = [], [], [], []
             for tr, ax in zip(traces, axes):
                 tr = np.asarray(tr); ax = np.asarray(ax)
-                m = (ax >= 0) & (ax <= bout_duration)
-                seg_t = ax[m]; seg = tr[m]
-                if seg.size:
+                m = (ax>=0)&(ax<=bout_duration)
+                seg = tr[m]; seg_t = ax[m]
+                if seg.size and not np.all(np.isnan(seg)):
                     aucs.append(np.trapz(seg, seg_t))
                     idx = np.nanargmax(seg)
                     maxs.append(seg[idx])
@@ -422,62 +478,30 @@ class RTC(Experiment):
                     times.append(np.nan); means.append(np.nan)
             return aucs, maxs, times, means
 
-        # If standard mode, build a common 0→bout_duration axis
-        if not use_ei:
-            min_dt = np.inf
-            for _, row in df.iterrows():
-                ts = np.array(row['trial'].timestamps)
-                if ts.size > 1:
-                    min_dt = min(min_dt, np.min(np.diff(ts)))
-            if not np.isfinite(min_dt):
-                raise RuntimeError("Cannot determine sampling dt for standard mode.")
-            standard_axis = np.arange(0, bout_duration, min_dt)
+        metrics = {ev:{'auc':[],'max':[],'time':[],'mean':[]} for ev in event_info}
 
-        # Prepare storage
-        metrics = {
-            ev: {'auc': [], 'max': [], 'time': [], 'mean': []}
-            for ev in event_info
-        }
-
-        # Loop over trials
-        for _, row in df.iterrows():
-            trial = row['trial']
-            ts    = np.array(trial.timestamps)
-            zs    = np.array(trial.zscore)
-
+        for row_idx, row in df.iterrows():
+            subj = row.get('subject_name', f'row_{row_idx}')
             for ev, info in event_info.items():
-                # 1) gather traces & axes
-                if use_ei:
-                    traces = row.get(info['ei_z_col'], []) or []
-                    axes   = row.get(info['ei_t_col'], []) or []
-                else:
-                    cues   = row.get(info['cue_col'], []) or []
-                    traces, axes = [], []
-                    for on in cues:
-                        if on is None or (isinstance(on, float) and np.isnan(on)):
-                            traces.append(np.full_like(standard_axis, np.nan))
-                        else:
-                            mask = (ts >= on) & (ts <= on + bout_duration)
-                            rel  = ts[mask] - on
-                            sig  = zs[mask]
-                            interp = np.interp(standard_axis, rel, sig,
-                                            left=np.nan, right=np.nan)
-                            traces.append(interp)
-                        axes.append(standard_axis)
+                traces = row.get(info['z_col'], []) or []
+                axes   = row.get(info['t_col'], []) or []
+                try:
+                    a, M, t, μ = extract_metrics(traces, axes)
+                except ValueError as err:
+                    raise ValueError(
+                    f"Error computing {ev} metrics for subject '{subj}' (row {row_idx}): {err}"
+                    )
+                metrics[ev]['auc'].append(a)
+                metrics[ev]['max'].append(M)
+                metrics[ev]['time'].append(t)
+                metrics[ev]['mean'].append(μ)
 
-                # 2) extract metrics over 0→bout_duration
-                aucs, maxs, times, means = extract_metrics(traces, axes)
-                metrics[ev]['auc'].append(aucs)
-                metrics[ev]['max'].append(maxs)
-                metrics[ev]['time'].append(times)
-                metrics[ev]['mean'].append(means)
-
-        # 3) write back into da_df
+        # write back
         for ev in event_info:
-            df[f'{ev} AUC']               = metrics[ev]['auc']
-            df[f'{ev} Max Peak']          = metrics[ev]['max']
-            df[f'{ev} Time of Max Peak']  = metrics[ev]['time']
-            df[f'{ev} Mean Z-score']      = metrics[ev]['mean']
+            df[f'{ev} AUC']              = metrics[ev]['auc']
+            df[f'{ev} Max Peak']         = metrics[ev]['max']
+            df[f'{ev} Time of Max Peak'] = metrics[ev]['time']
+            df[f'{ev} Mean Z-score']     = metrics[ev]['mean']
 
         return df
 
@@ -628,3 +652,155 @@ class RTC(Experiment):
             save_path = os.path.join(directory_path, f'{brain_region}_{event_type}_Event{event_index}_PSTH.png')
             plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
         plt.show()
+
+    
+
+    def plot_PETH_index_grid(self,
+                          df: pd.DataFrame,
+                          event_type: str,
+                          event_index: int,
+                          brain_region: str,
+                          bin_size: int = 100,
+                          ncols: int = 4,
+                          figsize_per_plot: tuple = (3, 2),
+                          directory_path: str = None):
+        """
+        Plot each session's PSTH for a specific event_index in its own subplot,
+        mark the first PE and the computed max peak, and return a DataFrame of times.
+        Titles now show the 'file name' column.
+        """
+        import math, os, numpy as np, matplotlib.pyplot as plt
+
+        # 1) pick only this region
+        def split_by_subject(df1, region):
+            df_n = df1[df1['subject_name'].str.startswith('n')]
+            df_p = df1[df1['subject_name'].str.startswith('p')]
+            return df_p if region=='mPFC' else df_n
+
+        df_reg = split_by_subject(df, brain_region)
+        idx    = event_index - 1
+
+        traces    = []
+        labels    = []
+        peak_rows = []
+
+        # 2) gather
+        for _, row in df_reg.iterrows():
+            tz = row.get(f'{event_type}_Zscore', [])
+            ta = row.get(f'{event_type}_Time_Axis', [])
+            if not isinstance(tz, (list, np.ndarray)) or len(tz) <= idx:
+                continue
+
+            trace     = np.array(tz[idx])
+            time_axis = np.array(ta[idx])
+            cue_abs   = row['filtered_sound_cues'][idx]
+            first_pe  = row.get('first_PE_after_sound_cue', [None]*len(tz))[idx]
+            peak_abs  = row.get(f'{event_type} Time of Max Peak', [None]*len(tz))[idx]
+
+            # relative times
+            lick_rel = (first_pe - cue_abs) if first_pe is not None else np.nan
+            peak_rel = (peak_abs  - cue_abs) if peak_abs  is not None else np.nan
+
+            traces.append((trace, time_axis, row['file name'], lick_rel, peak_rel))
+            peak_rows.append({
+                'file_name':     row['file name'],
+                'event_type':    event_type,
+                'event_index':   event_index,
+                'brain_region':  brain_region,
+                'first_PE_s':    lick_rel,
+                'peak_time_s':   peak_rel
+            })
+
+        if not traces:
+            print(f"No data for {event_type} event #{event_index} in {brain_region}")
+            return pd.DataFrame()
+
+        # 3) create grid
+        N     = len(traces)
+        nrows = math.ceil(N / ncols)
+        fig, axes = plt.subplots(nrows, ncols,
+                                figsize=(figsize_per_plot[0]*ncols,
+                                        figsize_per_plot[1]*nrows),
+                                sharex=True, sharey=True)
+        axes = axes.flatten()
+
+        # 4) plotting parameters
+        base_color = '#FFAF00' if brain_region=='mPFC' else '#15616F'
+        lick_color = 'cyan'
+        peak_color = 'gray'
+
+        for i, (trace, ta, fname, lick_rel, peak_rel) in enumerate(traces):
+            ds, dt = self.downsample_data(trace, ta, bin_size)
+
+            # helper to find nearest downsampled time
+            def _closest(t):
+                return dt[np.abs(dt - t).argmin()] if not np.isnan(t) else np.nan
+
+            lick_t = _closest(lick_rel)
+            peak_t = _closest(peak_rel)
+
+            ax = axes[i]
+            ax.plot(dt, ds,        color=base_color, lw=1.5)
+            ax.axvline(0,          color='k',      ls='--', lw=1)
+            ax.axvline(4,          color='#FF69B4',ls='-',  lw=1)
+            # only label legend on the first tile
+            lbl_lick = '1st PE'   if i==0 else None
+            lbl_peak = 'max peak' if i==0 else None
+            ax.axvline(lick_t, color=lick_color, ls='-.', lw=1, label=lbl_lick)
+            ax.axvline(peak_t, color=peak_color, ls=':',  lw=1, label=lbl_peak)
+
+            ax.set_title(fname, fontsize=8)       # <-- use file name here
+            ax.set_xlim(dt[0], dt[-1])
+            ax.tick_params(labelsize=6)
+            if i % ncols == 0:
+                ax.set_ylabel('z ΔF/F', fontsize=6)
+            if i // ncols == nrows - 1:
+                ax.set_xlabel('Time (s)', fontsize=6)
+
+        # 5) blank extras
+        for j in range(i+1, len(axes)):
+            axes[j].axis('off')
+
+        # 6) shared legend
+        handles, labels_ = axes[0].get_legend_handles_labels()
+        if handles:
+            axes[0].legend(handles, labels_, fontsize=6, loc='upper right', frameon=False)
+
+        plt.suptitle(f"{event_type} evt#{event_index} PSTH ({brain_region})", fontsize=10)
+        plt.tight_layout(rect=[0,0,1,0.95])
+
+        # 7) save if requested
+        if directory_path:
+            os.makedirs(directory_path, exist_ok=True)
+            out = os.path.join(directory_path,
+                            f'{brain_region}_{event_type}_evt{event_index}_grid.png')
+            fig.savefig(out, dpi=300, bbox_inches='tight')
+
+        plt.show()
+        return pd.DataFrame(peak_rows)
+
+
+
+    """********************************MISC*************************************"""
+    def downsample_data(self, data, time_axis, bin_size=10):
+            """
+            Downsamples the time series data by averaging over bins of 'bin_size' points.
+            
+            Parameters:
+            - data (1D NumPy array): Original Z-score values.
+            - time_axis (1D NumPy array): Corresponding time points.
+            - bin_size (int): Number of original bins to merge into one.
+            
+            Returns:
+            - downsampled_data (1D NumPy array): Smoothed Z-score values.
+            - new_time_axis (1D NumPy array): Adjusted time points.
+            """
+            num_bins = len(data) // bin_size  # Number of new bins
+            data = data[:num_bins * bin_size]  # Trim excess points
+            time_axis = time_axis[:num_bins * bin_size]
+
+            # Reshape and compute mean for each bin
+            downsampled_data = data.reshape(num_bins, bin_size).mean(axis=1)
+            new_time_axis = time_axis.reshape(num_bins, bin_size).mean(axis=1)
+
+            return downsampled_data, new_time_axis
