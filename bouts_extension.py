@@ -362,6 +362,36 @@ def plot_behavior_across_bouts_no_identities(metadata_df,
             print(f"{a} vs {b}: Bout not found in data.")
 
 
+    print("\nPaired t-test results New:")
+    bouts = pivot_df.columns.tolist()
+    for a, b in combinations(bouts, 2):
+        if a in pivot_df.columns and b in pivot_df.columns:
+            paired = pivot_df[[a, b]].dropna()
+            if len(paired) > 1:
+                t_stat, p_val = ttest_rel(paired[a], paired[b])
+
+                # Effect size calculation (Cohen's d for paired samples)
+                diff = paired[a] - paired[b]
+                mean_diff = np.mean(diff)
+                std_diff = np.std(diff, ddof=1)  # Sample standard deviation
+                cohen_d = mean_diff / std_diff if std_diff != 0 else np.nan
+
+                # Stars for significance
+                stars = "ns"
+                if p_val < 0.001:
+                    stars = "***"
+                elif p_val < 0.01:
+                    stars = "**"
+                elif p_val < 0.05:
+                    stars = "*"
+
+                print(f"{a} vs {b}: p = {p_val:.4f} ({stars}), d = {cohen_d:.3f}")
+            else:
+                print(f"{a} vs {b}: Not enough data.")
+        else:
+            print(f"{a} vs {b}: Bout not found in data.")
+
+
 def plot_behavior_across_bouts_with_identities(metadata_df,
                                              y_col="Total Investigation Time",
                                              behavior=None,
