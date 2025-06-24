@@ -164,57 +164,65 @@ class RTC(Experiment):
             'filtered_sound_cues', 'filtered_port_entries', 'filtered_port_entry_offset',
             'first_PE_after_sound_cue',
             'Tone_Time_Axis', 'Tone_Zscore',
-            'PE_Time_Axis', 'PE_Zscore', 'filtered_winner_array'
+            'PE_Time_Axis', 'PE_Zscore', 'filtered_winner_array',
+            'HVL_PreComp', 'HVL_Comp',
         ]
+
 
         # Only keep columns that actually exist in the DataFrame
         available_cols = [col for col in da_cols if col in self.trials_df.columns]
         self.da_df = self.trials_df[available_cols].copy()
 
 
+    
 
     """******************************* PORT ENTRY CALCULATIONS ********************************"""
     def find_first_port_entry_after_sound_cue(self):
         """
-        Finds the first port entry occurring after 4 seconds following each sound cue.
-        If a port entry starts before 4 seconds but extends past it, 
-        the function selects the timestamp at 4 seconds after the sound cue.
-
-        Works with any DataFrame that has the required columns.
+        Finds the first port entry occurring ≥4 s after each sound cue.
+        If a cue is np.nan, emits np.nan.  If an ongoing port-entry spans
+        the 4 s threshold, uses threshold_time; otherwise picks the first
+        port-onset ≥ threshold.  Always returns a list the same length
+        as filtered_sound_cues.
         """
-        df = self.da_df 
+        import numpy as np
 
-        first_PEs = []  # List to store results
+        df = self.da_df
+        all_first_PEs = []
 
-        for index, row in df.iterrows():  
-            sound_cues_onsets = row['filtered_sound_cues']
-            port_entries_onsets = row['filtered_port_entries']
-            port_entries_offsets = row['filtered_port_entry_offset']
+        for idx, row in df.iterrows():
+            # pull in your placeholders (may be lists containing np.nan)
+            cues   = np.asarray(row.get('filtered_sound_cues',   []), dtype=float)
+            onsets = np.asarray(row.get('filtered_port_entries',  []), dtype=float)
+            offs   = np.asarray(row.get('filtered_port_entry_offset', []), dtype=float)
 
-            first_PEs_per_row = []
+            first_PEs = []
+            for cue in cues:
+                # if this cue was a placeholder, carry forward nan
+                if np.isnan(cue):
+                    first_PEs.append(np.nan)
+                    continue
 
-            for sc_onset in sound_cues_onsets:
-                threshold_time = sc_onset + 4
+                threshold = cue + 4.0
 
-                # First, check for an ongoing PE:
-                ongoing_PEs_indices = np.where(
-                    (port_entries_onsets < threshold_time) & (port_entries_offsets >= threshold_time)
-                )[0]
-
-                if len(ongoing_PEs_indices) > 0:
-                    first_PEs_per_row.append(threshold_time)
+                # check for any entry spanning the threshold
+                ongoing_idx = np.where((onsets < threshold) & (offs >= threshold))[0]
+                if ongoing_idx.size > 0:
+                    first_PEs.append(threshold)
                 else:
-                    # Otherwise, find the first port entry that starts after the threshold
-                    future_PEs_indices = np.where(port_entries_onsets >= threshold_time)[0]
-                    if len(future_PEs_indices) > 0:
-                        first_PEs_per_row.append(port_entries_onsets[future_PEs_indices[0]])
+                    # otherwise first future onset
+                    future_idx = np.where(onsets >= threshold)[0]
+                    if future_idx.size > 0:
+                        first_PEs.append(onsets[future_idx[0]])
                     else:
-                        first_PEs_per_row.append(None)
+                        first_PEs.append(np.nan)
 
-            first_PEs.append(first_PEs_per_row)
+            all_first_PEs.append(first_PEs)
 
-        df["first_PE_after_sound_cue"] = first_PEs
+        # write back—each row gets a list of the same length as its cues
+        df['first_PE_after_sound_cue'] = all_first_PEs
         return df
+
 
 
     def compute_closest_port_offset(self, PE_column, offset_column):
@@ -349,124 +357,163 @@ class RTC(Experiment):
         return df
 
 
-    def compute_EI_DA(self, pre_time=4, post_time=10):
+
+    def compute_EI_DA(self,
+                  tone_window: tuple[float,float]    = (-4, 10),
+                  pe_window:    tuple[float,float]    = (0, 10),
+                  baseline_window: tuple[float,float] = (-4, 0)):
         """
-        Compute *baseline‐corrected* peri‐event z‐score traces for Tone and PE.
-        Exactly the same interface / output columns as compute_standard_DA.
+        Compute baseline-corrected peri-event z-score traces for Tone and PE.
+        
+        Parameters
+        ----------
+        tone_window : (start, end) in seconds, relative to cue
+        pe_window   : (start, end) in seconds, relative to first lick
+        baseline_window : (start, end) in seconds, also relative to cue, 
+                        from which to compute your baseline
+        
+        Returns
+        -------
+        Updates self.da_df in place, adding columns:
+        'Tone_Time_Axis', 'Tone_Zscore',
+        'PE_Time_Axis',   'PE_Zscore'
         """
         df = self.da_df
 
-        # 1) find dt
+        # 1) find the finest dt across all trials
         min_dt = np.inf
         for _, row in df.iterrows():
             ts = np.array(row['trial'].timestamps)
             if ts.size > 1:
                 min_dt = min(min_dt, np.min(np.diff(ts)))
-        if min_dt == np.inf:
-            raise RuntimeError("No valid timestamps found for dt.")
+        if not np.isfinite(min_dt):
+            raise RuntimeError("No valid timestamps found to establish dt.")
 
-        # 2) common axes
-        tone_axis = np.arange(-pre_time, post_time, min_dt)
-        pe_axis   = np.arange(0,       post_time, min_dt)
+        # 2) build common time-axes
+        tone_start, tone_end = tone_window
+        pe_start,   pe_end   = pe_window
+        bl_start,   bl_end   = baseline_window
+
+        tone_axis = np.arange(tone_start, tone_end, min_dt)
+        pe_axis   = np.arange(pe_start,   pe_end,   min_dt)
 
         # 3) containers
         tone_z, tone_t = [], []
         pe_z,   pe_t   = [], []
 
-        # 4) loop trials
+        # 4) iterate trials
         for _, row in df.iterrows():
             trial = row['trial']
             ts    = np.array(trial.timestamps)
             zs    = np.array(trial.zscore)
 
-            cues = row.get('filtered_sound_cues', [])
-            tz, tt = [], []
-            # — Tone with baseline from −pre_time→0 —
-            if not cues:
-                tz.append(np.full_like(tone_axis, np.nan))
-                tt.append(tone_axis.copy())
-            else:
-                for cue in cues:
-                    mask = (ts >= cue - pre_time) & (ts <= cue + post_time)
-                    if not mask.any():
-                        tz.append(np.full_like(tone_axis, np.nan))
-                        tt.append(tone_axis.copy())
-                        continue
-                    rel  = ts[mask] - cue
-                    sig  = zs[mask]
-                    base = np.nanmean(sig[rel < 0]) if (rel < 0).any() else 0
-                    corr = sig - base
-                    tz.append(np.interp(tone_axis, rel, corr))
-                    tt.append(tone_axis.copy())
-            tone_z.append(tz); tone_t.append(tt)
+            # get your cues & PEs, defaulting to empty list
+            cues = row.get('filtered_sound_cues') or []
+            pes  = row.get('first_PE_after_sound_cue') or []
 
-            # — PE with same tone‐based baseline —
-            pes = row.get('first_PE_after_sound_cue', [])
-            pz, pt = [], []
-            if not isinstance(pes, (list, np.ndarray)) or len(pes)==0:
-                pz.append(np.full_like(pe_axis, np.nan))
-                pt.append(pe_axis.copy())
-            else:
-                for i, pe in enumerate(pes):
-                    if pe is None or (isinstance(pe,float) and np.isnan(pe)):
-                        pz.append(np.full_like(pe_axis, np.nan))
-                        pt.append(pe_axis.copy())
-                        continue
-                    # pick cue i for baseline
-                    baseline_cue = cues[i] if i < len(cues) else None
-                    if baseline_cue is not None:
-                        bm = (ts >= baseline_cue - pre_time) & (ts <= baseline_cue)
-                        base_val = np.nanmean(zs[bm]) if bm.any() else 0
-                    else:
-                        base_val = 0
+            # —— Tone processing —— 
+            tz_list, tt_list = [], []
+            for i, cue in enumerate(cues):
+                # if exactly 40 cues, skip the 40th one entirely - The last one sometimes didn't have enough data so it looked wonky
+                if len(cues)==40 and i==39:
+                    continue
 
-                    mask = (ts >= pe) & (ts <= pe + post_time)
-                    if not mask.any():
-                        pz.append(np.full_like(pe_axis, np.nan))
-                        pt.append(pe_axis.copy())
-                        continue
-                    rel  = ts[mask] - pe
-                    corr = zs[mask] - base_val
-                    pz.append(np.interp(pe_axis, rel, corr))
-                    pt.append(pe_axis.copy())
-            pe_z.append(pz); pe_t.append(pt)
+                # mask out the window around that cue
+                mask = (ts >= cue + tone_start) & (ts <= cue + tone_end)
+                if not mask.any():
+                    tz_list.append(np.full_like(tone_axis, np.nan))
+                    tt_list.append(tone_axis.copy())
+                    continue
 
-        # 5) save back
+                rel = ts[mask] - cue
+                sig = zs[mask]
+
+                # baseline from baseline_window
+                blm = (rel >= bl_start) & (rel <= bl_end)
+                base = np.nanmean(sig[blm]) if blm.any() else 0.0
+
+                # subtract baseline and re-interpolate
+                corr = sig - base
+                tz_list.append(np.interp(tone_axis, rel, corr))
+                tt_list.append(tone_axis.copy())
+
+            tone_z.append(tz_list)
+            tone_t.append(tt_list)
+
+            # —— PE processing —— 
+            pz_list, pt_list = [], []
+            for i, pe in enumerate(pes):
+                # same skip rule if you want to skip matching last PE
+                if len(cues)==40 and i==39:
+                    continue
+
+                # skip if PE is None or NaN
+                if pe is None or (isinstance(pe,float) and np.isnan(pe)):
+                    pz_list.append(np.full_like(pe_axis, np.nan))
+                    pt_list.append(pe_axis.copy())
+                    continue
+
+                # pick the same cue for baseline if exists
+                cue = cues[i] if i < len(cues) else None
+                if cue is not None:
+                    bm = (ts >= cue + bl_start) & (ts <= cue + bl_end)
+                    base_val = np.nanmean(zs[bm]) if bm.any() else 0.0
+                else:
+                    base_val = 0.0
+
+                mask = (ts >= pe + pe_start) & (ts <= pe + pe_end)
+                if not mask.any():
+                    pz_list.append(np.full_like(pe_axis, np.nan))
+                    pt_list.append(pe_axis.copy())
+                    continue
+
+                rel  = ts[mask] - pe
+                corr = zs[mask] - base_val
+                pz_list.append(np.interp(pe_axis, rel, corr))
+                pt_list.append(pe_axis.copy())
+
+            pe_z.append(pz_list)
+            pe_t.append(pt_list)
+
+        # 5) write back into your DataFrame
         df['Tone_Time_Axis'] = tone_t
         df['Tone_Zscore']    = tone_z
         df['PE_Time_Axis']   = pe_t
         df['PE_Zscore']      = pe_z
 
+        # return for chaining if you like
         return df
 
+    def compute_rtc_da_metrics(
+        self,
+        bout_duration: float = 4.0,       # still used for PE
+        include_pretrial: bool = False,
+        pretrial_duration: float = 10.0
+    ):
+        df = self.da_df.copy()
 
-    def compute_rtc_da_metrics(self, bout_duration=4):
-        """
-        Consume whatever you’ve already computed (Tone_Zscore, PE_Zscore & their axes)
-        and produce:
-        Tone AUC, Tone Max Peak, Tone Time of Max Peak, Tone Mean Z-score
-        PE   AUC, PE   Max Peak, PE   Time of Max Peak, PE   Mean Z-score
-        all measured over 0→bout_duration.
-        """
-        df = self.da_df
+        if include_pretrial and 'Pretrial_Zscore' not in df.columns:
+            self.compute_pretrial_EI_DA()
+            df = self.da_df.copy()
 
-        event_info = {
-            'Tone': {
-                'z_col': 'Tone_Zscore',
-                't_col': 'Tone_Time_Axis'
-            },
-            'PE': {
-                'z_col': 'PE_Zscore',
-                't_col': 'PE_Time_Axis'
-            }
-        }
-
-        def extract_metrics(traces, axes):
+        def _extract(arrs, t_arrs, window):
+            # … your unchanged extraction code …
             aucs, maxs, times, means = [], [], [], []
-            for tr, ax in zip(traces, axes):
-                tr = np.asarray(tr); ax = np.asarray(ax)
-                m = (ax>=0)&(ax<=bout_duration)
-                seg = tr[m]; seg_t = ax[m]
+            for arr, t in zip(arrs, t_arrs):
+                a  = np.asarray(arr, dtype=float)
+                t0 = np.asarray(t,   dtype=float)
+                if a.size == 0 or t0.size == 0:
+                    aucs.append(np.nan); maxs.append(np.nan)
+                    times.append(np.nan); means.append(np.nan)
+                    continue
+
+                if window is None:
+                    mask = np.ones_like(t0, dtype=bool)
+                else:
+                    start, end = window
+                    mask = (t0 >= start) & (t0 <= end)
+
+                seg   = a[mask]; seg_t = t0[mask]
                 if seg.size and not np.all(np.isnan(seg)):
                     aucs.append(np.trapz(seg, seg_t))
                     idx = np.nanargmax(seg)
@@ -476,34 +523,61 @@ class RTC(Experiment):
                 else:
                     aucs.append(np.nan); maxs.append(np.nan)
                     times.append(np.nan); means.append(np.nan)
+
             return aucs, maxs, times, means
 
-        metrics = {ev:{'auc':[],'max':[],'time':[],'mean':[]} for ev in event_info}
+        trial_metrics = {
+            'Tone': {'auc': [], 'max': [], 'time': [], 'mean': []},
+            'PE':   {'auc': [], 'max': [], 'time': [], 'mean': []}
+        }
+        pretrial_metrics = {'auc': [], 'max': [], 'time': [], 'mean': []}
 
-        for row_idx, row in df.iterrows():
-            subj = row.get('subject_name', f'row_{row_idx}')
-            for ev, info in event_info.items():
-                traces = row.get(info['z_col'], []) or []
-                axes   = row.get(info['t_col'], []) or []
-                try:
-                    a, M, t, μ = extract_metrics(traces, axes)
-                except ValueError as err:
-                    raise ValueError(
-                    f"Error computing {ev} metrics for subject '{subj}' (row {row_idx}): {err}"
-                    )
-                metrics[ev]['auc'].append(a)
-                metrics[ev]['max'].append(M)
-                metrics[ev]['time'].append(t)
-                metrics[ev]['mean'].append(μ)
+        for _, row in df.iterrows():
+            # 1) Tone — force window = first 4 seconds only
+            z_tone = row.get('Tone_Zscore', []) or []
+            t_tone = row.get('Tone_Time_Axis', []) or []
+            a_t, M_t, t_t, mu_t = _extract(z_tone, t_tone, window=(0, bout_duration))
+            trial_metrics['Tone']['auc'].append(a_t)
+            trial_metrics['Tone']['max'].append(M_t)
+            trial_metrics['Tone']['time'].append(t_t)
+            trial_metrics['Tone']['mean'].append(mu_t)
 
-        # write back
-        for ev in event_info:
-            df[f'{ev} AUC']              = metrics[ev]['auc']
-            df[f'{ev} Max Peak']         = metrics[ev]['max']
-            df[f'{ev} Time of Max Peak'] = metrics[ev]['time']
-            df[f'{ev} Mean Z-score']     = metrics[ev]['mean']
+            # 2) PE — still uses bout_duration
+            z_pe = row.get('PE_Zscore', []) or []
+            t_pe = row.get('PE_Time_Axis', []) or []
+            a_pe, M_pe, t_pe2, mu_pe = _extract(z_pe, t_pe, window=(0, bout_duration))
+            trial_metrics['PE']['auc'].append(a_pe)
+            trial_metrics['PE']['max'].append(M_pe)
+            trial_metrics['PE']['time'].append(t_pe2)
+            trial_metrics['PE']['mean'].append(mu_pe)
 
+            # 3) pretrial (unchanged)
+            if include_pretrial:
+                pre_z = row.get('Pretrial_Zscore', []) or []
+                pre_t = row.get('Pretrial_Time_Axis', []) or []
+                a_p, M_p, t_p, mu_p = _extract(pre_z, pre_t, window=None)
+                pretrial_metrics['auc'].append(a_p)
+                pretrial_metrics['max'].append(M_p)
+                pretrial_metrics['time'].append(t_p)
+                pretrial_metrics['mean'].append(mu_p)
+
+        # write back trial metrics
+        for ev, store in trial_metrics.items():
+            df[f'{ev} AUC']              = store['auc']
+            df[f'{ev} Max Peak']         = store['max']
+            df[f'{ev} Time of Max Peak'] = store['time']
+            df[f'{ev} Mean Z-score']     = store['mean']
+
+        # write back pretrial metrics
+        if include_pretrial:
+            df['Pretrial AUC']              = pretrial_metrics['auc']
+            df['Pretrial Max Peak']         = pretrial_metrics['max']
+            df['Pretrial Time of Max Peak'] = pretrial_metrics['time']
+            df['Pretrial Mean Z-score']     = pretrial_metrics['mean']
+
+        self.da_df = df
         return df
+
 
 
 
@@ -564,7 +638,108 @@ class RTC(Experiment):
 
 
     """******************************* PLOTTING ********************************"""
-    def plot_specific_event_psth(self, event_type, event_index, directory_path, brain_region, y_min, y_max, condition='Win', bin_size=100):
+    def plot_group_PETH(self,
+                       df: pd.DataFrame = None,
+                       event_type: str = 'Tone',
+                       brain_region: str = 'NAc',
+                       color: str = None,
+                       title: str = None,
+                       ylim: tuple = None,
+                       bin_size: int = 100,
+                       figsize: tuple = (6, 4),
+                       save_path: str = None):
+        """
+        Plot a single PSTH by collapsing *all* event-induced traces (Tone or PE)
+        across trials and subjects for the specified brain region.
+
+        Parameters:
+            df           : DataFrame to use (defaults to self.da_df)
+            event_type   : 'Tone' or 'PE'
+            brain_region : 'NAc' or 'mPFC' (filters by subject_name prefix)
+            color        : hex color for trace (default per region)
+            title        : figure title
+            ylim         : (ymin, ymax) to set y-axis limits
+            bin_size     : downsampling bin size
+            figsize      : figure size tuple
+            save_path    : if provided, path to save figure
+        """
+        # 1) choose input DataFrame
+        if df is None:
+            df = self.da_df
+
+        # 2) filter by region prefix
+        prefix = 'n' if brain_region == 'NAc' else 'p'
+        df_reg = df[df['subject_name'].str.startswith(prefix)]
+        if df_reg.empty:
+            print(f"No data for region {brain_region}")
+            return
+
+        # 3) collect all per-event traces
+        all_traces = []
+        for _, row in df_reg.iterrows():
+            evts = row.get(f"{event_type}_Zscore", [])
+            if not isinstance(evts, (list, np.ndarray)):
+                continue
+            for tr in evts:
+                arr = np.asarray(tr)
+                if arr.size:
+                    all_traces.append(arr)
+        if not all_traces:
+            print(f"No {event_type} traces found in {brain_region}")
+            return
+
+        # 4) stack & compute mean ± SEM
+        M = np.vstack(all_traces)
+        mean_trace = np.nanmean(M, axis=0)
+        sem_trace = np.nanstd(M, axis=0, ddof=1) / np.sqrt(M.shape[0])
+
+        # 5) time axis from first event of first trial
+        t0 = df_reg.iloc[0].get(f"{event_type}_Time_Axis", [])
+        if not isinstance(t0, (list, np.ndarray)) or not t0:
+            print("Cannot find a valid time axis.")
+            return
+        common_t = np.asarray(t0[0])
+
+        # 6) downsample
+        n = len(mean_trace) // bin_size
+        ds_mean = mean_trace[:n*bin_size].reshape(n, bin_size).mean(axis=1)
+        ds_sem = sem_trace[:n*bin_size].reshape(n, bin_size).mean(axis=1)
+        ds_time = common_t[:n*bin_size].reshape(n, bin_size).mean(axis=1)
+
+        # 7) plotting
+        c = color or ('#15616F' if brain_region=='NAc' else '#FFAF00')
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.plot(ds_time, ds_mean, color=c, lw=3)
+        ax.fill_between(ds_time, ds_mean-ds_sem, ds_mean+ds_sem, color=c, alpha=0.3)
+        ax.axvline(0, color='k', ls='--', lw=2)
+        ax.axvline(4, color='#FF69B4', ls='-', lw=2)
+
+        ax.set_xlabel('Time (s)', fontsize=14)
+        ax.set_ylabel('Event-induced Z-scored ΔF/F', fontsize=14)
+        if title:
+            ax.set_title(title, fontsize=16, fontweight='bold')
+        else:
+            ax.set_title(f"{brain_region} {event_type} PSTH", fontsize=16, fontweight='bold')
+
+        if ylim is not None:
+            ax.set_ylim(ylim)
+
+        ax.set_xticks([-4, 0, 4, 10])
+        ax.tick_params(axis='both', which='major', labelsize=12, length=6, width=1.5)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_linewidth(1.5)
+        ax.spines['left'].set_linewidth(1.5)
+        plt.tight_layout()
+
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            fig.savefig(save_path, dpi=300, bbox_inches='tight')
+
+        plt.show()
+
+
+    def plot_specific_event_psth(self, event_type, event_index, directory_path, brain_region, y_min, y_max, df=None, condition='Win', bin_size=100):
         """
         Plots the PSTH (mean and SEM) for a specific event bout (0→4 s after event onset)
         across trials, using the same averaging logic as for a bout response.
@@ -579,7 +754,8 @@ class RTC(Experiment):
             df (DataFrame, optional): DataFrame to use (defaults to self.df).
             bin_size (int, optional): Bin size for downsampling.
         """
-        df = self.da_df
+        if df is None:
+            df = self.da_df
 
         # Filter subjects by brain region.
         def split_by_subject(df1, region):
