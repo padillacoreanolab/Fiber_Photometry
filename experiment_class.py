@@ -41,18 +41,105 @@ class Experiment:
                 self.remove_time_segments_from_block(trial_folder, time_segments_to_remove[trial.subject_name])
 
             print(f"Processing {trial_folder}...")
+            # 1) trim the LED/artifact segments
             trial.remove_initial_LED_artifact(t=30)
-            trial.remove_final_data_segment(t = 10)
-            
-            trial.smooth_and_apply(window_len=int(trial.fs)*4)
-            trial.apply_ma_baseline_drift()
-            trial.align_channels()
-            trial.compute_dFF()
-            baseline_start, baseline_end = trial.find_baseline_period()  
-            # trial.compute_zscore(method = 'baseline', baseline_start = baseline_start, baseline_end = baseline_end)
-            trial.compute_zscore(method = 'standard')
+            trial.remove_final_data_segment(t=10)
+            trial.smooth_and_apply(window_len_seconds = 4)
+            # 2) low-pass filter raw DA/ISOS
+            trial.lowpass_filter(cutoff_hz=3.0)
+            # 5) **high-pass filter** that dF/F
+            # trial.highpass_baseline_drift_DA_ISOS()
+            trial.highpass_baseline_drift_Recentered()
 
+            # 3) fit ISOS→DA via IRLS
+            trial.align_channels_IRLS(IRLS_constant=1.4)
+            # 4) compute raw dF/F
+            trial.compute_dFF()
+
+            # 6) final z-score
+            trial.compute_zscore(method='standard')
             trial.verify_signal()
+
+
+    def _plot_trial_step(self, tr, ts, signals, labels, suptitle):
+        """
+        Helper to plot multiple traces on one set of axes.
+        `signals` is a list of 1D arrays; `labels` a list of strings.
+        """
+        plt.figure(figsize=(10, 2))
+        for sig, lbl in zip(signals, labels):
+            plt.plot(ts, sig, label=lbl, lw=1.2)
+        plt.title(f"{tr.subject_name} – {suptitle}")
+        plt.xlabel("Time (s)")
+        plt.legend(loc="upper right", fontsize="small")
+        plt.tight_layout()
+        plt.show()
+
+
+
+    def preprocessing_plotted(self, time_segments_to_remove=None):
+        for trial_folder, tr in self.trials.items():
+            print(f"\n=== Processing {trial_folder} ===")
+
+            # 1) trim the LED/artifact segments
+            tr.remove_initial_LED_artifact(t=30)
+            tr.remove_final_data_segment(t=10)
+            tr.smooth_and_apply(window_len_seconds = 4)
+
+            self._plot_trial_step(tr, tr.timestamps,
+                                  [tr.streams['DA'], tr.streams['ISOS']],
+                                  ["LP DA", "LP ISOS"],
+                                  "Raw DA and ISOS")
+            
+            # 2) low-pass filter raw DA/ISOS
+            tr.lowpass_filter(cutoff_hz=3.0)
+            self._plot_trial_step(tr, tr.timestamps,
+                                  [tr.updated_DA, tr.updated_ISOS],
+                                  ["LP DA", "LP ISOS"],
+                                  "After low-pass")
+
+            # 5) **high-pass filter** that dF/F
+            # tr.highpass_baseline_drift_DA_ISOS()
+            tr.highpass_baseline_drift_Recentered(cutoff=0.001)
+            # # tr.apply_ma_baseline_drift(window_len_seconds=30)
+            self._plot_trial_step(tr, tr.timestamps,
+                                  [tr.updated_DA, tr.updated_ISOS],
+                                  ["LP DA", "LP ISOS"],
+                                  "After high-pass on dF/F")
+            
+            # 3) fit ISOS→DA via IRLS
+            tr.align_channels_IRLS(IRLS_constant=1.4)
+            self._plot_trial_step(tr, tr.timestamps,
+                                  [tr.updated_DA, tr.isosbestic_fitted],
+                                  ["DA", "fitted ISOS"],
+                                  "After IRLS fit")
+
+            # 4) compute raw dF/F
+            tr.compute_dFF()
+            self._plot_trial_step(tr, tr.timestamps,
+                                  [tr.dFF],
+                                  ["raw ΔF/F"],
+                                  "Raw dF/F")
+            
+            # tr.apply_ma_baseline_drift(window_len_seconds=30)
+            # self._plot_trial_step(tr, tr.timestamps,
+            #                       [tr.dFF],
+            #                       ["ΔF/F"],
+            #                       "dF/F")
+            
+            
+
+            # 6) final z-score
+            tr.compute_zscore(method='standard')
+            self._plot_trial_step(tr, tr.timestamps,
+                                  [tr.zscore],
+                                  ["z-score"],
+                                  "Final z-score")
+
+            tr.verify_signal()
+
+
+    
 
 
     def group_extract_manual_annotations(self, bout_definitions, first_only=True):
@@ -85,31 +172,52 @@ class Experiment:
 
 
     '''********************************** PLOTTING **********************************'''
-    def plot_all_traces(experiment, behavior_name='all'):
+    def plot_all_traces(
+        experiment,
+        behavior_name: str = 'all',
+        ylim: tuple | None = None
+    ):
         """
         Plots behavior events for all trials with all subplots showing x-tick labels.
+        
+        Parameters
+        ----------
+        experiment
+            Your Reward_Competition instance, which must have a .trials dict of Trial objects.
+        behavior_name : str
+            Name of the behavior to highlight (or 'all').
+        ylim : tuple or None
+            (ymin, ymax) limits to apply to each subplot; if None, leaves the automatic scaling.
         """
-        num_trials = len(experiment.trials)
-        if num_trials == 0:
+        trials = list(experiment.trials.items())
+        n_trials = len(trials)
+        if n_trials == 0:
             print("No trials found in the experiment.")
             return
 
-        fig, axes = plt.subplots(nrows=num_trials, figsize=(12, 3 * num_trials), sharex=False)
-
-        if num_trials == 1:
+        fig, axes = plt.subplots(
+            nrows=n_trials,
+            figsize=(12, 3 * n_trials),
+            sharex=False
+        )
+        if n_trials == 1:
             axes = [axes]
 
-        for ax, (trial_name, trial) in zip(axes, experiment.trials.items()):
+        for ax, (trial_name, trial) in zip(axes, trials):
             if trial.behaviors is None or trial.behaviors.empty:
                 ax.set_title(f"{trial_name} (no behavior data)")
                 ax.axis("off")
-                continue
-            trial.plot_behavior_event(behavior_name, ax=ax)
-            ax.set_title(trial_name)
-            ax.tick_params(axis='x', labelbottom=True)  # Ensure x-tick labels are shown
+            else:
+                trial.plot_behavior_event(behavior_name, ax=ax)
+                ax.set_title(trial_name)
+                ax.tick_params(axis='x', labelbottom=True)
+
+                if ylim is not None:
+                    ax.set_ylim(ylim)
 
         plt.tight_layout()
         plt.show()
+
 
 
 

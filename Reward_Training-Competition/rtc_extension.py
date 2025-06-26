@@ -5,15 +5,13 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(parent_dir)
 
 from experiment_class import Experiment
-from scipy.stats import pearsonr
 from trial_class import Trial
 import math
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 import pandas as pd
-from scipy.stats import ttest_ind
-from matplotlib.colors import LinearSegmentedColormap
+from scipy.signal import find_peaks
+
 
 class RTC(Experiment):
     def __init__(self, experiment_folder_path, behavior_folder_path):
@@ -101,6 +99,7 @@ class RTC(Experiment):
             # ----- Preprocessing Steps -----
             trial.remove_initial_LED_artifact(t=30)
             trial.highpass_baseline_drift()  # Used specifically for RTC to not smooth
+            trial.smooth_and_apply(window_len=int(trial.fs)*1)
             trial.align_channels()
             trial.compute_dFF()
             # baseline_start, baseline_end = trial.find_baseline_period()
@@ -224,56 +223,41 @@ class RTC(Experiment):
         return df
 
 
-
     def compute_closest_port_offset(self, PE_column, offset_column):
-        """
-        Computes the closest port entry offsets after each PE time and adds them as a new column in the dataframe.
-        
-        Parameters:
-            PE_column (str): The column name for the PE times (e.g., 'first_PE_after_sound_cue').
-            offset_column (str): The column name for the port entry offset times (e.g., 'filtered_port_entry_offset').
-            new_column_name (str): The name of the new column to store the results. Default is 'closest_port_entry_offsets'.
-        
-        Returns:
-            pd.DataFrame: Updated DataFrame with the new column of closest port entry offsets.
-        """
-        df = self.da_df 
+        df = self.da_df.copy()
 
-        def find_closest_port_entries(PEs, port_entry_offsets):
-            """Finds the closest port entry offsets greater than each PE in 'PEs'."""
-            closest_offsets = []
-            
-            for PE in PEs:
-                # Find the indices where port_entry_offset > PE
-                valid_indices = np.where(port_entry_offsets > PE)[0]
-                
-                if len(valid_indices) == 0:
-                    closest_offsets.append(np.nan)  # Append NaN if no valid offset is found
-                else:
-                    # Get the closest port entry offset (the first valid one in the array)
-                    closest_offset = port_entry_offsets[valid_indices[0]]
-                    closest_offsets.append(closest_offset)
-            
-            return closest_offsets
+        def find_closest_port_entries(PEs, port_offsets):
+            closest = []
+            for pe in PEs:
+                # only keep offsets strictly after this PE
+                valid = [off for off in port_offsets if off > pe]
+                closest.append(valid[0] if valid else np.nan)
+            return closest
 
-        def compute_PE_metrics(row):
-            """Compute the closest port entry offsets for each trial."""
-            # Extract first_PE_after_sound_cue and filtered_port_entry_offset
-            first_PEs = np.array(row[PE_column])
-            port_entry_offsets = np.array(row[offset_column])
-            
-            # Get the closest port entry offsets for each PE
-            closest_offsets = find_closest_port_entries(first_PEs, port_entry_offsets)
-            
-            return closest_offsets
+        def compute_for_row(row):
+            # get the arrays (they may be lists or ndarrays)
+            PEs = row[PE_column]
+            offs = row[offset_column]
 
-        # Apply the function to the DataFrame and create a new column with the results
-        df['closest_PE_offset'] = df.apply(compute_PE_metrics, axis=1)
+            # if it's None or empty, return an empty list
+            if PEs is None or len(PEs) == 0:
+                return []
+            if offs is None or len(offs) == 0:
+                # return NaN for each PE
+                return [np.nan] * len(PEs)
 
-    def compute_duration(self, df=None):
-        if df is None:
-            df = self.df
-        df["duration"] = df.apply(lambda row: np.array(row["closest_PE_offset"]) - np.array(row["first_PE_after_sound_cue"]), axis=1)
+            # make sure they’re proper Python lists
+            PEs = list(PEs)
+            offs = list(offs)
+
+            return find_closest_port_entries(PEs, offs)
+
+        df['closest_PE_offset'] = df.apply(compute_for_row, axis=1)
+        self.da_df = df
+        return df
+
+
+
 
 
     """******************************* DOPAMINE CALCULATIONS ********************************"""
@@ -645,8 +629,10 @@ class RTC(Experiment):
                        color: str = None,
                        title: str = None,
                        ylim: tuple = None,
+                       xlim: tuple = None,
                        bin_size: int = 100,
                        figsize: tuple = (6, 4),
+
                        save_path: str = None):
         """
         Plot a single PSTH by collapsing *all* event-induced traces (Tone or PE)
@@ -724,7 +710,10 @@ class RTC(Experiment):
         if ylim is not None:
             ax.set_ylim(ylim)
 
-        ax.set_xticks([-4, 0, 4, 10])
+    
+        ax.set_xticks([-4, 0, 4, 10,20,30])
+        if xlim is not None:
+            ax.set_xlim(xlim)
         ax.tick_params(axis='both', which='major', labelsize=12, length=6, width=1.5)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
@@ -739,7 +728,7 @@ class RTC(Experiment):
         plt.show()
 
 
-    def plot_specific_event_psth(self, event_type, event_index, directory_path, brain_region, y_min, y_max, df=None, condition='Win', bin_size=100):
+    def plot_specific_event_psth(self, event_type, event_index, directory_path, brain_region, y_min, y_max, df=None, condition='Win', bin_size=100, xlim=None):
         """
         Plots the PSTH (mean and SEM) for a specific event bout (0→4 s after event onset)
         across trials, using the same averaging logic as for a bout response.
@@ -812,9 +801,11 @@ class RTC(Experiment):
         plt.ylabel('Event-Induced z-scored ΔF/F', fontsize=30)
         plt.title(f'{event_type} Event {event_index} {condition} PSTH', fontsize=30, pad=30)
         plt.ylim(y_min, y_max)
-        plt.xticks([-4, 0, 4, 10], fontsize=30)
+        plt.xticks([-4, 0, 4, 10,20,30], fontsize=30)
+        if xlim is not None:
+            ax.set_xlim(xlim)
         plt.yticks(fontsize=30)
-        plt.xlim(-4, 10)  # Force x-axis limits
+        plt.xlim(-4, 30)  # Force x-axis limits
 
         ax = plt.gca()
         ax.spines['top'].set_visible(False)
@@ -831,36 +822,36 @@ class RTC(Experiment):
 
     
 
+
+
     def plot_PETH_index_grid(self,
-                          df: pd.DataFrame,
-                          event_type: str,
-                          event_index: int,
-                          brain_region: str,
-                          bin_size: int = 100,
-                          ncols: int = 4,
-                          figsize_per_plot: tuple = (3, 2),
-                          directory_path: str = None):
+                            df: pd.DataFrame,
+                            event_type: str,
+                            event_index: int,
+                            brain_region: str,
+                            bin_size: int = 100,
+                            ncols: int = 4,
+                            figsize_per_plot: tuple = (3, 2),
+                            directory_path: str = None):
         """
         Plot each session's PSTH for a specific event_index in its own subplot,
-        mark the first PE and the computed max peak, and return a DataFrame of times.
+        mark the first PE and the computed closest‐offset for that PE,
+        and return a DataFrame of those two times.
         Titles now show the 'file name' column.
         """
-        import math, os, numpy as np, matplotlib.pyplot as plt
-
-        # 1) pick only this region
+        # pick only this region
         def split_by_subject(df1, region):
-            df_n = df1[df1['subject_name'].str.startswith('n')]
-            df_p = df1[df1['subject_name'].str.startswith('p')]
-            return df_p if region=='mPFC' else df_n
+            return (df1[df1['subject_name'].str.startswith('p')]
+                    if region=='mPFC'
+                    else df1[df1['subject_name'].str.startswith('n')])
 
         df_reg = split_by_subject(df, brain_region)
         idx    = event_index - 1
 
         traces    = []
-        labels    = []
         peak_rows = []
 
-        # 2) gather
+        # gather per‐session data
         for _, row in df_reg.iterrows():
             tz = row.get(f'{event_type}_Zscore', [])
             ta = row.get(f'{event_type}_Time_Axis', [])
@@ -869,29 +860,31 @@ class RTC(Experiment):
 
             trace     = np.array(tz[idx])
             time_axis = np.array(ta[idx])
-            cue_abs   = row['filtered_sound_cues'][idx]
-            first_pe  = row.get('first_PE_after_sound_cue', [None]*len(tz))[idx]
-            peak_abs  = row.get(f'{event_type} Time of Max Peak', [None]*len(tz))[idx]
+            cue_abs   = row.get('filtered_sound_cues', [np.nan])[idx]
 
-            # relative times
-            lick_rel = (first_pe - cue_abs) if first_pe is not None else np.nan
-            peak_rel = (peak_abs  - cue_abs) if peak_abs  is not None else np.nan
+            # first port entry after cue, and its closest offset
+            first_pe  = row.get('first_PE_after_sound_cue', [np.nan]*len(tz))[idx]
+            offset_abs = row.get('closest_PE_offset', [np.nan]*len(tz))[idx]
 
-            traces.append((trace, time_axis, row['file name'], lick_rel, peak_rel))
+            # convert to time *relative* to cue
+            pe_rel     = (first_pe  - cue_abs) if not np.isnan(first_pe)  else np.nan
+            offset_rel = (offset_abs - cue_abs) if not np.isnan(offset_abs) else np.nan
+
+            traces.append((trace, time_axis, row['file name'], pe_rel, offset_rel))
             peak_rows.append({
-                'file_name':     row['file name'],
-                'event_type':    event_type,
-                'event_index':   event_index,
-                'brain_region':  brain_region,
-                'first_PE_s':    lick_rel,
-                'peak_time_s':   peak_rel
+                'file_name':        row['file name'],
+                'event_type':       event_type,
+                'event_index':      event_index,
+                'brain_region':     brain_region,
+                'first_PE_rel_s':   pe_rel,
+                'offset_rel_s':     offset_rel
             })
 
         if not traces:
             print(f"No data for {event_type} event #{event_index} in {brain_region}")
             return pd.DataFrame()
 
-        # 3) create grid
+        # grid dimensions
         N     = len(traces)
         nrows = math.ceil(N / ncols)
         fig, axes = plt.subplots(nrows, ncols,
@@ -900,32 +893,33 @@ class RTC(Experiment):
                                 sharex=True, sharey=True)
         axes = axes.flatten()
 
-        # 4) plotting parameters
         base_color = '#FFAF00' if brain_region=='mPFC' else '#15616F'
-        lick_color = 'cyan'
-        peak_color = 'gray'
+        pe_color   = 'cyan'
+        off_color  = 'magenta'
 
-        for i, (trace, ta, fname, lick_rel, peak_rel) in enumerate(traces):
+        for i, (trace, ta, fname, pe_rel, off_rel) in enumerate(traces):
             ds, dt = self.downsample_data(trace, ta, bin_size)
 
-            # helper to find nearest downsampled time
+            # find nearest downsampled bin for each marker
             def _closest(t):
                 return dt[np.abs(dt - t).argmin()] if not np.isnan(t) else np.nan
 
-            lick_t = _closest(lick_rel)
-            peak_t = _closest(peak_rel)
+            pe_t  = _closest(pe_rel)
+            off_t = _closest(off_rel)
 
             ax = axes[i]
-            ax.plot(dt, ds,        color=base_color, lw=1.5)
-            ax.axvline(0,          color='k',      ls='--', lw=1)
-            ax.axvline(4,          color='#FF69B4',ls='-',  lw=1)
-            # only label legend on the first tile
-            lbl_lick = '1st PE'   if i==0 else None
-            lbl_peak = 'max peak' if i==0 else None
-            ax.axvline(lick_t, color=lick_color, ls='-.', lw=1, label=lbl_lick)
-            ax.axvline(peak_t, color=peak_color, ls=':',  lw=1, label=lbl_peak)
+            ax.plot(dt, ds, color=base_color, lw=1.5)
+            ax.axvline(0, color='k',       ls='--', lw=1)
+            ax.axvline(4, color='#FF69B4', ls='-',  lw=1)
 
-            ax.set_title(fname, fontsize=8)       # <-- use file name here
+            # only label legend on first subplot
+            lbl_pe  = '1st PE'     if i==0 else None
+            lbl_off = 'PE → offset' if i==0 else None
+
+            ax.axvline(pe_t,  color=pe_color,  ls='-.', lw=1, label=lbl_pe)
+            ax.axvline(off_t, color=off_color, ls=':',  lw=1, label=lbl_off)
+
+            ax.set_title(fname, fontsize=8)
             ax.set_xlim(dt[0], dt[-1])
             ax.tick_params(labelsize=6)
             if i % ncols == 0:
@@ -933,19 +927,19 @@ class RTC(Experiment):
             if i // ncols == nrows - 1:
                 ax.set_xlabel('Time (s)', fontsize=6)
 
-        # 5) blank extras
+        # turn off any unused axes
         for j in range(i+1, len(axes)):
             axes[j].axis('off')
 
-        # 6) shared legend
-        handles, labels_ = axes[0].get_legend_handles_labels()
+        # shared legend
+        handles, labels = axes[0].get_legend_handles_labels()
         if handles:
-            axes[0].legend(handles, labels_, fontsize=6, loc='upper right', frameon=False)
+            axes[0].legend(handles, labels, fontsize=6, loc='upper right', frameon=False)
 
         plt.suptitle(f"{event_type} evt#{event_index} PSTH ({brain_region})", fontsize=10)
         plt.tight_layout(rect=[0,0,1,0.95])
 
-        # 7) save if requested
+        # save
         if directory_path:
             os.makedirs(directory_path, exist_ok=True)
             out = os.path.join(directory_path,
@@ -954,6 +948,7 @@ class RTC(Experiment):
 
         plt.show()
         return pd.DataFrame(peak_rows)
+
 
 
 
@@ -980,3 +975,84 @@ class RTC(Experiment):
             new_time_axis = time_axis.reshape(num_bins, bin_size).mean(axis=1)
 
             return downsampled_data, new_time_axis
+
+
+    def compute_spontaneous_events(self,
+                               threshold_factor: float = 3.0,
+                               min_distance_s:    float = 1.0,
+                               min_width_s:       float = 0.5):
+        """
+        Runs detect_spontaneous_events on every trial's full z‐score trace,
+        and stores a new DataFrame self.spont_peaks with one row per detected peak:
+        ['subject_name','file name','event_time','amplitude','width_s']
+        """
+        def detect_spontaneous_events(
+            timestamps: np.ndarray,
+            signal: np.ndarray,
+            threshold_factor: float = 3.0,
+            min_distance_s: float = 1.0,
+            min_width_s:    float = 0.5
+        ):
+            """
+            Detect peaks using a MAD‐threshold, plus a minimum inter‐peak interval
+            and a minimum peak width.
+            Returns:
+            peak_times (np.ndarray),
+            peak_amps (np.ndarray),
+            peak_widths (np.ndarray, in seconds)
+            """
+            # 1) compute baseline + MAD
+            med = np.median(signal)
+            mad = np.median(np.abs(signal - med))
+            thresh = med + threshold_factor * mad
+
+            # 2) convert time criteria into sample counts (assumes uniform dt)
+            dt = np.median(np.diff(timestamps))
+            min_dist_samples  = int(np.round(min_distance_s / dt))
+            min_width_samples = int(np.round(min_width_s    / dt))
+
+            # 3) detect peaks
+            peaks, props = find_peaks(
+                signal,
+                height=thresh,
+                distance=min_dist_samples,
+                width=min_width_samples
+            )
+
+            # 4) collect outputs
+            peak_times  = timestamps[peaks]
+            peak_amps   = signal[peaks]
+            peak_widths = props["widths"] * dt
+
+            return peak_times, peak_amps, peak_widths
+        rows = []
+        for _, row in self.da_df.iterrows():
+            subj   = row['subject_name']
+            fname  = row['file name']
+            # full‐session trace & timestamps:
+            ts = np.asarray(row['trial'].timestamps, dtype=float)
+            zs = np.asarray(row['trial'].zscore,     dtype=float)
+            # detect
+            peak_times, peak_amps, peak_widths = detect_spontaneous_events(
+                ts, zs,
+                threshold_factor=threshold_factor,
+                min_distance_s=min_distance_s,
+                min_width_s=min_width_s
+            )
+            for t,a,w in zip(peak_times, peak_amps, peak_widths):
+                rows.append({
+                    'subject_name': subj,
+                    'file name':    fname,
+                    'event_time':   t,
+                    'amplitude':    a,
+                    'width_s':      w
+                })
+
+        self.spont_peaks = pd.DataFrame(rows)
+        return self.spont_peaks
+
+
+
+
+
+    

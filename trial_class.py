@@ -4,6 +4,11 @@ import tdt
 import matplotlib.pyplot as plt
 import os
 from scipy.signal import butter, filtfilt, find_peaks
+import numpy as np
+import statsmodels.api as sm
+from statsmodels.robust.norms import TukeyBiweight
+from scipy.optimize import curve_fit
+
 
 
 from sklearn.linear_model import LinearRegression
@@ -32,7 +37,7 @@ class Trial:
         self.zscore = np.empty(1)
 
 
-    '''********************************** PREPROCESSING **********************************'''
+    '''********************************** TIME REMOVAL **********************************'''
     def remove_initial_LED_artifact(self, t=30):
         '''
         This function removes intial LED artifact when starting a recording, assumed to be the first 't' seconds.
@@ -96,38 +101,68 @@ class Trial:
         print(f"Removed time segment from {start_time}s to {end_time}s.")
 
 
-    def smooth_and_apply(self, window_len=1):
-        """Smooth both DA and ISOS signals using a window with requested size, and store them.
-        """
+    '''********************************** SMOOTHING AND FITTING **********************************'''
 
-        def smooth_signal(source, window_len):
-            """Helper function to smooth a signal."""
+    def smooth_and_apply(self, window_len_seconds: float = 1.0):
+        """
+        Smooth both DA and ISOS signals using a moving‐average window of the given length in seconds,
+        and store the results in self.updated_DA / self.updated_ISOS.
+        """
+        def smooth_signal(source: np.ndarray, n_samples: int) -> np.ndarray:
+            """Smooth a 1D array with a flat (uniform) window of n_samples size."""
             if source.ndim != 1:
-                raise ValueError("smooth only accepts 1 dimension arrays.")
-            if source.size < window_len:
-                raise ValueError("Input vector needs to be bigger than window size.")
-            if window_len < 3:
+                raise ValueError("smooth only accepts 1-dimensional arrays")
+            if n_samples < 3 or source.size < n_samples:
+                # too small to smooth meaningfully
                 return source
 
-            # Extend the signal by reflecting at the edges
-            s = np.r_[source[window_len-1:0:-1], source, source[-2:-window_len-1:-1]]
-            # Create a window for smoothing (using a flat window here)
-            w = np.ones(window_len, 'd')
-            # Convolve and return the smoothed signal
-            return np.convolve(w / w.sum(), s, mode='valid')
+            # Reflect padding to minimize edge artifacts
+            pad = n_samples - 1
+            s = np.r_[source[pad:0:-1], source, source[-2:-pad-1:-1]]
+            w = np.ones(n_samples, dtype=float) / n_samples
+            smoothed = np.convolve(s, w, mode='valid')
+            # Trim back to original length
+            start = pad // 2
+            return smoothed[start:start + source.size]
 
+        # Convert window length from seconds to samples
+        n_samp = int(round(window_len_seconds * self.fs))
+        if n_samp < 1:
+            raise ValueError("window_len_seconds too small for your sampling rate")
 
-        # Apply smoothing to DA and ISOS streams, then trim the excess padding
+        # Apply smoothing
         if 'DA' in self.streams:
-            smoothed_DA = smooth_signal(self.streams['DA'], window_len)
-            # Trim the excess by slicing the array to match the original length
-            self.updated_DA = smoothed_DA[window_len//2:-window_len//2+1]
-
+            self.updated_DA = smooth_signal(self.streams['DA'], n_samp)
         if 'ISOS' in self.streams:
-            smoothed_ISOS = smooth_signal(self.streams['ISOS'], window_len)
-            self.updated_ISOS = smoothed_ISOS[window_len//2:-window_len//2+1]
+            self.updated_ISOS = smooth_signal(self.streams['ISOS'], n_samp)
 
 
+    # def centered_moving_average_with_padding(self, source, window=1):
+    #     """
+    #     Applies a centered moving average to the input signal with edge padding to preserve the signal length.
+    #     Used in apply_ma_baseline_correction
+        
+    #     Args:
+    #         source (np.array): The signal for which the moving average is computed.
+    #         window (int): The window size used to compute the moving average.
+
+    #     Returns:
+    #         np.array: The centered moving average of the input signal with the original length preserved.
+    #     """
+    #     source = np.array(source)
+
+    #     if len(source.shape) == 1:
+    #         # Pad the signal by reflecting the edges to avoid cutting
+    #         padded_source = np.pad(source, (window // 2, window // 2), mode='reflect')
+
+    #         # Calculate the cumulative sum and moving average
+    #         cumsum = np.cumsum(padded_source)
+    #         moving_avg = (cumsum[window:] - cumsum[:-window]) / float(window)
+            
+    #         return moving_avg[:len(source)]
+    #     else:
+    #         raise RuntimeError(f"Input array has too many dimensions. Input: {len(source.shape)}D, Required: 1D")
+    
     def centered_moving_average_with_padding(self, source, window=1):
         """
         Applies a centered moving average to the input signal with edge padding to preserve the signal length.
@@ -167,14 +202,32 @@ class Trial:
         window_len = int(self.fs) * window_len_seconds
 
         # Apply centered moving average with padding to both DA and ISOS streams
-        isosbestic_fc = self.centered_moving_average_with_padding(self.updated_ISOS, window_len)
-        DA_fc = self.centered_moving_average_with_padding(self.updated_DA, window_len)
+        # isosbestic_fc = self.centered_moving_average_with_padding(self.updated_ISOS, window_len)
+        # DA_fc = self.centered_moving_average_with_padding(self.updated_DA, window_len)
 
-        self.updated_ISOS = (self.updated_ISOS - isosbestic_fc) / isosbestic_fc
-        self.updated_DA = (self.updated_DA - DA_fc) / DA_fc
+        # self.updated_ISOS = (self.updated_ISOS - isosbestic_fc) / isosbestic_fc
+        # self.updated_DA = (self.updated_DA - DA_fc) / DA_fc
 
 
-    def highpass_baseline_drift(self, cutoff=0.001):
+        DA_fc = self.centered_moving_average_with_padding(self.dFF, window_len)
+        self.dFF = (self.dFF - DA_fc) / DA_fc
+
+
+    def lowpass_filter(self, cutoff_hz: float = 3.0):
+            """
+            2nd-order Butterworth low-pass @ cutoff_hz (Hz), applied to the already-updated DA & ISOS traces.
+            """
+            # design a 2nd-order low-pass (digital) at cutoff_hz
+            b, a = butter(2, cutoff_hz, btype='low', fs=self.fs)
+            # zero-phase filter
+            self.updated_DA   = filtfilt(b, a, self.updated_DA,   padtype='even')
+            self.updated_ISOS = filtfilt(b, a, self.updated_ISOS, padtype='even')
+            print(f"Low-pass filtered @ {cutoff_hz} Hz")
+
+
+
+
+    def highpass_baseline_drift_dFF(self, cutoff=0.001):
         """
         Applies a high-pass Butterworth filter to remove slow drift from the DA and ISOS signals.
         https://github.com/ThomasAkam/photometry_preprocessing/blob/master/Photometry%20data%20preprocessing.ipynb
@@ -186,19 +239,179 @@ class Trial:
         self.updated_DA = filtfilt(b, a, self.streams['DA'], padtype='even')
         self.updated_ISOS = filtfilt(b, a, self.streams['ISOS'], padtype='even')
 
-
-    def align_channels(self):
+    def highpass_baseline_drift_DA_ISOS(self, cutoff=0.001):
         """
-        Function that performs linear regression between isosbestic_corrected and DA_corrected signals, and aligns
-        the fitted isosbestic with the DA signal. 
-
-        Baseline correction must have occurred
+        Applies a 2nd-order Butterworth high-pass filter to remove slow drift
+        from the *already updated* DA and ISOS signals.
+        Call this after any smoothing, on updated_DA/updated_ISOS.
         """
-        reg = LinearRegression()
+        # design filter
+        b, a = butter(N=2, Wn=cutoff, btype='high', fs=self.fs)
+        # apply zero-phase filtering to the updated streams
+        self.updated_DA   = filtfilt(b, a, self.updated_DA,   padtype='even')
+        self.updated_ISOS = filtfilt(b, a, self.updated_ISOS, padtype='even')
+
+    def highpass_baseline_drift_Recentered(self, cutoff=0.001):
+        """
+        High-pass filter out the slow drift *but* keep the original
+        DC-level by adding back the mean afterwards.
+        Call this after any smoothing, on updated_DA/updated_ISOS.
+        """
+        # 1) remember pre-filter mean
+        mu_DA   = np.mean(self.updated_DA)
+        mu_ISOS = np.mean(self.updated_ISOS)
+
+        # 2) design filter
+        b, a = butter(N=2, Wn=cutoff, btype='high', fs=self.fs)
+
+        # 3) filter
+        hp_DA   = filtfilt(b, a, self.updated_DA,   padtype='even')
+        hp_ISOS = filtfilt(b, a, self.updated_ISOS, padtype='even')
+
+        # 4) add back original mean
+        self.updated_DA   = hp_DA   + mu_DA
+        self.updated_ISOS = hp_ISOS + mu_ISOS
+
+    # def align_channels(self):
+    #     """
+    #     Function that performs linear regression between isosbestic_corrected and DA_corrected signals, and aligns
+    #     the fitted isosbestic with the DA signal. 
+
+    #     Baseline correction must have occurred
+    #     """
+    #     reg = LinearRegression()
         
-        n = len(self.updated_DA)
-        reg.fit(self.updated_ISOS.reshape(n, 1), self.updated_DA.reshape(n, 1))
-        self.isosbestic_fitted = reg.predict(self.updated_ISOS.reshape(n, 1)).reshape(n,)
+    #     n = len(self.updated_DA)
+    #     reg.fit(self.updated_ISOS.reshape(n, 1), self.updated_DA.reshape(n, 1))
+    #     self.isosbestic_fitted = reg.predict(self.updated_ISOS.reshape(n, 1)).reshape(n,)
+
+    def apply_double_exp_baseline_drift(self,
+                                        which: str = 'both',
+                                        maxfev: int = 1000):
+        """
+        Fit & remove a double-exponential baseline from the DA and ISOS streams,
+        storing the fit and replacing updated_DA/updated_ISOS with (sig−fit)/fit.
+
+        Parameters
+        ----------
+        which : 'DA', 'ISOS' or 'both'
+            Controls which stream(s) to correct.
+        maxfev : int
+            Maximum number of function evaluations passed to curve_fit.
+        """
+        # 1) inner helper: the double-exp model
+        def double_exponential(t, const, amp_fast, amp_slow, tau_slow, tau_mult):
+            tau_fast = tau_slow * tau_mult
+            return (const
+                    + amp_slow * np.exp(-t / tau_slow)
+                    + amp_fast * np.exp(-t / tau_fast))
+
+        t = self.timestamps
+
+        # 2) default initial guess & bounds if user didn’t supply their own
+        def _init_and_bounds(sig):
+            mx = np.nanmax(sig)
+            p0 = [mx/2, mx/4, mx/4, 600.0, 0.1]
+            lower = [0,    0,    0,   60.0, 0.0]
+            upper = [mx,  mx,   mx, 3600.0, 1.0]
+            return p0, (lower, upper)
+
+        # 3) decide which streams to process
+        targets = []
+        if which in ('DA','both'):
+            targets.append(('updated_DA', 'baseline_DA_fit'))
+        if which in ('ISOS','both'):
+            targets.append(('updated_ISOS', 'baseline_ISOS_fit'))
+
+        # 4) loop over each
+        for stream_attr, fit_attr in targets:
+            sig = getattr(self, stream_attr).astype(float)
+
+            p0, bounds = _init_and_bounds(sig)
+            popt, _ = curve_fit(
+                double_exponential,
+                t, sig,
+                p0=p0,
+                bounds=bounds,
+                maxfev=maxfev
+            )
+
+            # store the fitted baseline
+            fit = double_exponential(t, *popt)
+            setattr(self, fit_attr, fit)
+
+            # apply ΔF/F correction
+            corrected = (sig - fit) / fit
+            setattr(self, stream_attr, corrected)
+
+        # 5) clear any downstream data so you can recompute
+        self.dFF    = None
+        self.zscore = None
+
+        
+    def align_channels_poly(self):
+        """
+        Fit a degree-1 polynomial (slope + intercept) to predict DA from the isosbestic channel.
+        Stores the fitted control trace in self.isosbestic_fitted, which you can then use
+        for dF/F calculation (e.g. (DA – fitted_control)/fitted_control).
+        """
+        # grab your two equal-length 1D arrays
+        x = np.asarray(self.updated_ISOS, dtype=float)
+        y = np.asarray(self.updated_DA,   dtype=float)
+
+        # perform degree-1 polynomial fit: y ≃ m·x + b
+        m, b = np.polyfit(x, y, deg=1)
+
+        # build the fitted control trace
+        self.isosbestic_fitted = m * x + b
+
+        # optional: print fit parameters
+        print(f"Align fit: DA ≃ {m:.4f}·ISOS + {b:.4f}")
+
+
+    def align_channels_linReg(self):
+        """
+        Use ordinary least-squares LinearRegression to fit the isosbestic channel
+        to the DA channel and store the fitted control trace in self.isosbestic_fitted.
+        """
+        # pull out your two equal-length 1D arrays
+        X = np.asarray(self.updated_ISOS, dtype=float).reshape(-1, 1)  # predictor
+        y = np.asarray(self.updated_DA,   dtype=float)               # target
+
+        # fit a simple linear regression y ≃ m·X + b
+        model = LinearRegression()
+        model.fit(X, y)
+
+        m = model.coef_[0]
+        b = model.intercept_
+
+        # build the fitted control trace
+        self.isosbestic_fitted = model.predict(X)
+
+        print(f"Align fit: DA ≃ {m:.4f}·ISOS + {b:.4f}")
+
+    def align_channels_IRLS(self, IRLS_constant: float = 1.4):
+        """
+        Fit a robust (Tukey bisquare) regression of DA on ISOS,
+        store the fitted control trace in self.isosbestic_fitted.
+        """
+        # grab your two equal‐length 1D arrays
+        x = np.asarray(self.updated_ISOS, dtype=float)
+        y = np.asarray(self.updated_DA,   dtype=float)
+
+        # design matrix with intercept
+        X = sm.add_constant(x)
+
+        # RLM with Tukey’s bisquare M‐estimator
+        rlm = sm.RLM(y, X, M=TukeyBiweight(IRLS_constant))
+        res = rlm.fit()
+
+        b0, b1 = res.params  # intercept, slope
+        self.isosbestic_fitted = b0 + b1 * x
+
+        # optional: log the fit
+        print(f"IRLS fit: DA ≃ {b1:.4f}·ISOS + {b0:.4f}")
+
 
 
     def compute_dFF(self):
@@ -209,7 +422,7 @@ class Trial:
         da = self.updated_DA
         
         # Compute dF/F by subtracting the fitted isosbestic from the DA signal
-        df_f = da - isosbestic
+        df_f = (da - isosbestic) / isosbestic
         
         # Save the computed dF/F into the class attribute
         self.dFF = df_f
