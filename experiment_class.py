@@ -41,25 +41,26 @@ class Experiment:
                 self.remove_time_segments_from_block(trial_folder, time_segments_to_remove[trial.subject_name])
 
             print(f"Processing {trial_folder}...")
-            # 1) trim the LED/artifact segments
-            trial.remove_initial_LED_artifact(t=30)
+            trial.remove_initial_LED_artifact(t=160)
             trial.remove_final_data_segment(t=10)
-            trial.smooth_and_apply(window_len_seconds = 4)
-            # 2) low-pass filter raw DA/ISOS
-            trial.lowpass_filter(cutoff_hz=3.0)
-            # 5) **high-pass filter** that dF/F
-            # trial.highpass_baseline_drift_DA_ISOS()
-            trial.highpass_baseline_drift_Recentered()
 
-            # 3) fit ISOS→DA via IRLS
+            # 2) smooth (in‐place)
+            trial.smooth_and_apply(window_len_seconds=4)
+
+            # 3) low‐pass
+            trial.lowpass_filter(cutoff_hz=3.0)
+
+            # 4) high‐pass recentered
+            trial.highpass_baseline_drift_Recentered(cutoff=0.001)
+
+            # 5) IRLS fit
             trial.align_channels_IRLS(IRLS_constant=1.4)
-            # 4) compute raw dF/F
+
+            # 6) compute dF/F
             trial.compute_dFF()
 
-            # 6) final z-score
+            # 7) zscore
             trial.compute_zscore(method='standard')
-            trial.verify_signal()
-
 
     def _plot_trial_step(self, tr, ts, signals, labels, suptitle):
         """
@@ -77,68 +78,181 @@ class Experiment:
 
 
 
-    def preprocessing_plotted(self, time_segments_to_remove=None):
+    def preprocessing_plotted_all(self, time_segments_to_remove=None):
         for trial_folder, tr in self.trials.items():
             print(f"\n=== Processing {trial_folder} ===")
 
-            # 1) trim the LED/artifact segments
-            tr.remove_initial_LED_artifact(t=30)
+            # 1) trim LED/artifact
+            tr.remove_initial_LED_artifact(t=160)
             tr.remove_final_data_segment(t=10)
-            tr.smooth_and_apply(window_len_seconds = 4)
 
-            self._plot_trial_step(tr, tr.timestamps,
-                                  [tr.streams['DA'], tr.streams['ISOS']],
-                                  ["LP DA", "LP ISOS"],
-                                  "Raw DA and ISOS")
-            
-            # 2) low-pass filter raw DA/ISOS
+            # 2) smooth (in‐place)
+            tr.smooth_and_apply(window_len_seconds=4)
+            raw_da   = tr.streams['DA']
+            raw_iso  = tr.streams['ISOS']
+
+            # 3) low‐pass
             tr.lowpass_filter(cutoff_hz=3.0)
-            self._plot_trial_step(tr, tr.timestamps,
-                                  [tr.updated_DA, tr.updated_ISOS],
-                                  ["LP DA", "LP ISOS"],
-                                  "After low-pass")
+            lp_da    = tr.updated_DA.copy()
+            lp_iso   = tr.updated_ISOS.copy()
 
-            # 5) **high-pass filter** that dF/F
-            # tr.highpass_baseline_drift_DA_ISOS()
+            # 4) high‐pass recentered
             tr.highpass_baseline_drift_Recentered(cutoff=0.001)
-            # # tr.apply_ma_baseline_drift(window_len_seconds=30)
-            self._plot_trial_step(tr, tr.timestamps,
-                                  [tr.updated_DA, tr.updated_ISOS],
-                                  ["LP DA", "LP ISOS"],
-                                  "After high-pass on dF/F")
-            
-            # 3) fit ISOS→DA via IRLS
+            hp_da    = tr.updated_DA.copy()
+            hp_iso   = tr.updated_ISOS.copy()
+
+            # 5) IRLS fit
             tr.align_channels_IRLS(IRLS_constant=1.4)
-            self._plot_trial_step(tr, tr.timestamps,
-                                  [tr.updated_DA, tr.isosbestic_fitted],
-                                  ["DA", "fitted ISOS"],
-                                  "After IRLS fit")
+            fit_iso  = tr.isosbestic_fitted.copy()
 
-            # 4) compute raw dF/F
+            # 6) compute dF/F
             tr.compute_dFF()
-            self._plot_trial_step(tr, tr.timestamps,
-                                  [tr.dFF],
-                                  ["raw ΔF/F"],
-                                  "Raw dF/F")
-            
-            # tr.apply_ma_baseline_drift(window_len_seconds=30)
-            # self._plot_trial_step(tr, tr.timestamps,
-            #                       [tr.dFF],
-            #                       ["ΔF/F"],
-            #                       "dF/F")
-            
-            
+            raw_dff  = tr.dFF.copy()
 
-            # 6) final z-score
+            # 7) zscore
             tr.compute_zscore(method='standard')
-            self._plot_trial_step(tr, tr.timestamps,
-                                  [tr.zscore],
-                                  ["z-score"],
-                                  "Final z-score")
+            z        = tr.zscore.copy()
 
-            tr.verify_signal()
+            # now plot them all in one figure:
+            steps = [
+                ([raw_da,    raw_iso], ["raw DA",    "raw ISOS"],      "1) Raw"),
+                ([lp_da,     lp_iso],  ["LP DA",     "LP ISOS"],       "2) Low-pass and smoothing"),
+                ([hp_da,     hp_iso],  ["HP DA",     "HP ISOS"],       "3) High-pass recentered"),
+                ([hp_da,     fit_iso], ["DA",        "fitted ISOS"],    "4) IRLS fit"),
+                ([raw_dff],           ["raw ΔF/F"],         "5) dF/F"),
+                ([z],                 ["z-score"],           "6) z-score"),
+            ]
+
+            fig, axes = plt.subplots(len(steps), 1,
+                                     figsize=(12, 2.5*len(steps)),
+                                     sharex=True)
+            for ax, (sigs, labs, title) in zip(axes, steps):
+                for sig, lab in zip(sigs, labs):
+                    ax.plot(tr.timestamps, sig, lw=1.2, label=lab)
+                ax.set_ylabel(title, fontsize=10)
+                ax.legend(frameon=False, fontsize="small")
+            axes[-1].set_xlabel("Time (s)", fontsize=12)
+            fig.suptitle(f"{tr.subject_name} preprocessing steps", fontsize=14, y=0.99)
+            plt.tight_layout(rect=[0,0,1,0.96])
+            plt.show()
 
 
+    def preprocessing_plotted_old_pipeline(self, time_segments_to_remove=None):
+        for trial_folder, tr in self.trials.items():
+            print(f"\n=== Processing {trial_folder} ===")
+
+            # 1) trim LED/artifact
+            tr.remove_initial_LED_artifact(t=60)
+            tr.remove_final_data_segment(t=10)
+
+
+            raw_da   = tr.streams['DA']
+            raw_iso  = tr.streams['ISOS']
+
+            # 2) smooth (in‐place)
+            tr.smooth_and_apply(window_len_seconds=4)
+            lp_da = tr.updated_DA.copy()
+            lp_iso = tr.updated_ISOS.copy()
+
+        
+            # 4) MA baseline drift
+            tr.apply_ma_baseline_drift()
+            hp_da    = tr.updated_DA.copy()
+            hp_iso   = tr.updated_ISOS.copy()
+
+            # 5) lin regression fit
+            tr.align_channels_linReg()
+            fit_iso  = tr.isosbestic_fitted.copy()
+
+            # 6) compute dF/F
+            tr.compute_dFF()
+            raw_dff  = tr.dFF.copy()
+
+            # 7) zscore
+            tr.compute_zscore(method='standard')
+            z        = tr.zscore.copy()
+
+            # now plot them all in one figure:
+            steps = [
+                ([raw_da,    raw_iso], ["raw DA",    "raw ISOS"],      "1) Raw"),
+                ([lp_da,     lp_iso],  ["LP DA",     "LP ISOS"],       "2) smoothing"),
+                ([hp_da,     hp_iso],  ["HP DA",     "HP ISOS"],       "3) Moving Average (Drift)"),
+                ([hp_da,     fit_iso], ["DA",        "fitted ISOS"],    "4) Lin Reg fit"),
+                ([raw_dff],           ["raw ΔF/F"],         "5) dF/F"),
+                ([z],                 ["z-score"],           "6) z-score"),
+            ]
+
+            fig, axes = plt.subplots(len(steps), 1,
+                                     figsize=(12, 2.5*len(steps)),
+                                     sharex=True)
+            for ax, (sigs, labs, title) in zip(axes, steps):
+                for sig, lab in zip(sigs, labs):
+                    ax.plot(tr.timestamps, sig, lw=1.2, label=lab)
+                ax.set_ylabel(title, fontsize=10)
+                ax.legend(frameon=False, fontsize="small")
+            axes[-1].set_xlabel("Time (s)", fontsize=12)
+            fig.suptitle(f"{tr.subject_name} preprocessing steps", fontsize=14, y=0.99)
+            plt.tight_layout(rect=[0,0,1,0.96])
+            plt.show()
+
+    def preprocessing_plotted_keevers(self, time_segments_to_remove=None):
+        for trial_folder, tr in self.trials.items():
+            print(f"\n=== Processing {trial_folder} ===")
+
+             # 1) trim LED/artifact
+            tr.remove_initial_LED_artifact(t=120)
+            tr.remove_final_data_segment(t=10)
+
+            # 2) smooth (in‐place)
+            tr.smooth_and_apply(window_len_seconds=2)
+            raw_da   = tr.streams['DA']
+            raw_iso  = tr.streams['ISOS']
+
+            # 3) low‐pass
+            tr.lowpass_filter(cutoff_hz=3.0)
+            lp_da    = tr.updated_DA.copy()
+            lp_iso   = tr.updated_ISOS.copy()
+
+
+            # 5) IRLS fit
+            tr.align_channels_IRLS(IRLS_constant=1.4)
+            fit_iso  = tr.isosbestic_fitted.copy()
+            hp_da    = tr.updated_DA.copy()
+
+            # 6) compute dF/F
+            tr.compute_dFF()
+            raw_dff  = tr.dFF.copy()
+
+            # 4) high‐pass dF/F
+            tr.highpass_baseline_drift_dFF(cutoff=0.001)
+            raw_dff  = tr.dFF.copy()
+
+            # 7) zscore
+            tr.compute_zscore(method='standard')
+            z        = tr.zscore.copy()
+
+            # now plot them all in one figure:
+            steps = [
+                ([raw_da,    raw_iso], ["raw DA",    "raw ISOS"],      "1) Raw"),
+                ([lp_da,     lp_iso],  ["LP DA",     "LP ISOS"],       "2) Low-pass and smoothing"),
+                ([hp_da,     fit_iso], ["DA",        "fitted ISOS"],    "4) IRLS fit"),
+                ([raw_dff],           ["raw ΔF/F"],         "5) dF/F"),
+                ([raw_dff],  ["ΔF/F"],       "3) High-pass"),
+                ([z],                 ["z-score"],           "6) z-score"),
+            ]
+
+            fig, axes = plt.subplots(len(steps), 1,
+                                     figsize=(12, 2.5*len(steps)),
+                                     sharex=True)
+            for ax, (sigs, labs, title) in zip(axes, steps):
+                for sig, lab in zip(sigs, labs):
+                    ax.plot(tr.timestamps, sig, lw=1.2, label=lab)
+                ax.set_ylabel(title, fontsize=10)
+                ax.legend(frameon=False, fontsize="small")
+            axes[-1].set_xlabel("Time (s)", fontsize=12)
+            fig.suptitle(f"{tr.subject_name} preprocessing steps", fontsize=14, y=0.99)
+            plt.tight_layout(rect=[0,0,1,0.96])
+            plt.show()
     
 
 

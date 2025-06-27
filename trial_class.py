@@ -137,32 +137,6 @@ class Trial:
             self.updated_ISOS = smooth_signal(self.streams['ISOS'], n_samp)
 
 
-    # def centered_moving_average_with_padding(self, source, window=1):
-    #     """
-    #     Applies a centered moving average to the input signal with edge padding to preserve the signal length.
-    #     Used in apply_ma_baseline_correction
-        
-    #     Args:
-    #         source (np.array): The signal for which the moving average is computed.
-    #         window (int): The window size used to compute the moving average.
-
-    #     Returns:
-    #         np.array: The centered moving average of the input signal with the original length preserved.
-    #     """
-    #     source = np.array(source)
-
-    #     if len(source.shape) == 1:
-    #         # Pad the signal by reflecting the edges to avoid cutting
-    #         padded_source = np.pad(source, (window // 2, window // 2), mode='reflect')
-
-    #         # Calculate the cumulative sum and moving average
-    #         cumsum = np.cumsum(padded_source)
-    #         moving_avg = (cumsum[window:] - cumsum[:-window]) / float(window)
-            
-    #         return moving_avg[:len(source)]
-    #     else:
-    #         raise RuntimeError(f"Input array has too many dimensions. Input: {len(source.shape)}D, Required: 1D")
-    
     def centered_moving_average_with_padding(self, source, window=1):
         """
         Applies a centered moving average to the input signal with edge padding to preserve the signal length.
@@ -202,16 +176,11 @@ class Trial:
         window_len = int(self.fs) * window_len_seconds
 
         # Apply centered moving average with padding to both DA and ISOS streams
-        # isosbestic_fc = self.centered_moving_average_with_padding(self.updated_ISOS, window_len)
-        # DA_fc = self.centered_moving_average_with_padding(self.updated_DA, window_len)
+        isosbestic_fc = self.centered_moving_average_with_padding(self.updated_ISOS, window_len)
+        DA_fc = self.centered_moving_average_with_padding(self.updated_DA, window_len)
 
-        # self.updated_ISOS = (self.updated_ISOS - isosbestic_fc) / isosbestic_fc
-        # self.updated_DA = (self.updated_DA - DA_fc) / DA_fc
-
-
-        DA_fc = self.centered_moving_average_with_padding(self.dFF, window_len)
-        self.dFF = (self.dFF - DA_fc) / DA_fc
-
+        self.updated_ISOS = (self.updated_ISOS - isosbestic_fc) / isosbestic_fc
+        self.updated_DA = (self.updated_DA - DA_fc) / DA_fc
 
     def lowpass_filter(self, cutoff_hz: float = 3.0):
             """
@@ -226,7 +195,6 @@ class Trial:
 
 
 
-
     def highpass_baseline_drift_dFF(self, cutoff=0.001):
         """
         Applies a high-pass Butterworth filter to remove slow drift from the DA and ISOS signals.
@@ -236,20 +204,8 @@ class Trial:
         b, a = butter(N=2, Wn=cutoff, btype='high', fs=self.fs)
 
         # Apply zero-phase filtering to avoid phase distortion
-        self.updated_DA = filtfilt(b, a, self.streams['DA'], padtype='even')
-        self.updated_ISOS = filtfilt(b, a, self.streams['ISOS'], padtype='even')
+        self.dFF = filtfilt(b, a, self.dFF, padtype='even')
 
-    def highpass_baseline_drift_DA_ISOS(self, cutoff=0.001):
-        """
-        Applies a 2nd-order Butterworth high-pass filter to remove slow drift
-        from the *already updated* DA and ISOS signals.
-        Call this after any smoothing, on updated_DA/updated_ISOS.
-        """
-        # design filter
-        b, a = butter(N=2, Wn=cutoff, btype='high', fs=self.fs)
-        # apply zero-phase filtering to the updated streams
-        self.updated_DA   = filtfilt(b, a, self.updated_DA,   padtype='even')
-        self.updated_ISOS = filtfilt(b, a, self.updated_ISOS, padtype='even')
 
     def highpass_baseline_drift_Recentered(self, cutoff=0.001):
         """
@@ -285,68 +241,6 @@ class Trial:
     #     reg.fit(self.updated_ISOS.reshape(n, 1), self.updated_DA.reshape(n, 1))
     #     self.isosbestic_fitted = reg.predict(self.updated_ISOS.reshape(n, 1)).reshape(n,)
 
-    def apply_double_exp_baseline_drift(self,
-                                        which: str = 'both',
-                                        maxfev: int = 1000):
-        """
-        Fit & remove a double-exponential baseline from the DA and ISOS streams,
-        storing the fit and replacing updated_DA/updated_ISOS with (sig−fit)/fit.
-
-        Parameters
-        ----------
-        which : 'DA', 'ISOS' or 'both'
-            Controls which stream(s) to correct.
-        maxfev : int
-            Maximum number of function evaluations passed to curve_fit.
-        """
-        # 1) inner helper: the double-exp model
-        def double_exponential(t, const, amp_fast, amp_slow, tau_slow, tau_mult):
-            tau_fast = tau_slow * tau_mult
-            return (const
-                    + amp_slow * np.exp(-t / tau_slow)
-                    + amp_fast * np.exp(-t / tau_fast))
-
-        t = self.timestamps
-
-        # 2) default initial guess & bounds if user didn’t supply their own
-        def _init_and_bounds(sig):
-            mx = np.nanmax(sig)
-            p0 = [mx/2, mx/4, mx/4, 600.0, 0.1]
-            lower = [0,    0,    0,   60.0, 0.0]
-            upper = [mx,  mx,   mx, 3600.0, 1.0]
-            return p0, (lower, upper)
-
-        # 3) decide which streams to process
-        targets = []
-        if which in ('DA','both'):
-            targets.append(('updated_DA', 'baseline_DA_fit'))
-        if which in ('ISOS','both'):
-            targets.append(('updated_ISOS', 'baseline_ISOS_fit'))
-
-        # 4) loop over each
-        for stream_attr, fit_attr in targets:
-            sig = getattr(self, stream_attr).astype(float)
-
-            p0, bounds = _init_and_bounds(sig)
-            popt, _ = curve_fit(
-                double_exponential,
-                t, sig,
-                p0=p0,
-                bounds=bounds,
-                maxfev=maxfev
-            )
-
-            # store the fitted baseline
-            fit = double_exponential(t, *popt)
-            setattr(self, fit_attr, fit)
-
-            # apply ΔF/F correction
-            corrected = (sig - fit) / fit
-            setattr(self, stream_attr, corrected)
-
-        # 5) clear any downstream data so you can recompute
-        self.dFF    = None
-        self.zscore = None
 
         
     def align_channels_poly(self):
@@ -375,20 +269,11 @@ class Trial:
         to the DA channel and store the fitted control trace in self.isosbestic_fitted.
         """
         # pull out your two equal-length 1D arrays
-        X = np.asarray(self.updated_ISOS, dtype=float).reshape(-1, 1)  # predictor
-        y = np.asarray(self.updated_DA,   dtype=float)               # target
-
-        # fit a simple linear regression y ≃ m·X + b
-        model = LinearRegression()
-        model.fit(X, y)
-
-        m = model.coef_[0]
-        b = model.intercept_
-
-        # build the fitted control trace
-        self.isosbestic_fitted = model.predict(X)
-
-        print(f"Align fit: DA ≃ {m:.4f}·ISOS + {b:.4f}")
+        reg = LinearRegression()
+        
+        n = len(self.updated_DA)
+        reg.fit(self.updated_ISOS.reshape(n, 1), self.updated_DA.reshape(n, 1))
+        self.isosbestic_fitted = reg.predict(self.updated_ISOS.reshape(n, 1)).reshape(n,)
 
     def align_channels_IRLS(self, IRLS_constant: float = 1.4):
         """
