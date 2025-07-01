@@ -97,14 +97,26 @@ class RTC(Experiment):
             print(f"Processing trial {trial_folder}...")
 
             # ----- Preprocessing Steps -----
-            trial.remove_initial_LED_artifact(t=30)
-            trial.highpass_baseline_drift()  # Used specifically for RTC to not smooth
-            trial.smooth_and_apply(window_len=int(trial.fs)*1)
-            trial.align_channels()
+            trial.remove_initial_LED_artifact(t=160)
+            trial.remove_final_data_segment(t=10)
+
+            # 2) smooth (in‐place)
+            # trial.smooth_and_apply(window_len_seconds=4)
+
+            # 3) low‐pass
+            trial.lowpass_filter(cutoff_hz=3.0)
+
+            # 4) high‐pass recentered
+            trial.highpass_baseline_drift_Recentered(cutoff=0.001)
+
+            # 5) IRLS fit
+            trial.align_channels_IRLS(IRLS_constant=1.4)
+
+            # 6) compute dF/F
             trial.compute_dFF()
-            # baseline_start, baseline_end = trial.find_baseline_period()
+
+            # 7) zscore
             trial.compute_zscore(method='standard')
-            trial.verify_signal()
 
             # ----- Reassign Behavior Channels -----
             # Sound cues always come from PC0_
@@ -728,97 +740,104 @@ class RTC(Experiment):
         plt.show()
 
 
-    def plot_specific_event_psth(self, event_type, event_index, directory_path, brain_region, y_min, y_max, df=None, condition='Win', bin_size=100, xlim=None):
+    def plot_specific_event_psth(
+        self,
+        event_type: str,
+        event_index: int,
+        directory_path: str,
+        brain_region: str,
+        y_min: float,
+        y_max: float,
+        df=None,
+        condition='Win',
+        bin_size=100,
+        xlim=None
+    ):
         """
-        Plots the PSTH (mean and SEM) for a specific event bout (0→4 s after event onset)
-        across trials, using the same averaging logic as for a bout response.
-
-        Parameters:
-            event_type (str): The event type (e.g. 'Tone' or 'PE').
-            event_index (int): 1-indexed event number to plot.
-            directory_path (str or None): Directory to save the plot (if None, the plot is not saved).
-            brain_region (str): Brain region ('mPFC' or other) to filter subjects.
-            y_min (float): Lower bound of the y-axis.
-            y_max (float): Upper bound of the y-axis.
-            df (DataFrame, optional): DataFrame to use (defaults to self.df).
-            bin_size (int, optional): Bin size for downsampling.
+        Two‐step PSTH: top panel shows mean±SEM of z‐scored ΔF/F around a specific event.
+        xlim can be a float (end time, start assumed -4) or a (xmin,xmax) tuple.
         """
         if df is None:
             df = self.da_df
 
-        # Filter subjects by brain region.
-        def split_by_subject(df1, region):
-            df_n = df1[df1['subject_name'].str.startswith('n')]
-            df_p = df1[df1['subject_name'].str.startswith('p')]
-            return df_p if region == 'mPFC' else df_n
-
-        df = split_by_subject(df, brain_region)
+        # 1) filter by region prefix
+        mask = df['subject_name'].str.startswith('p' if brain_region=='mPFC' else 'n')
+        df = df[mask]
         idx = event_index - 1
-        # print(f"[DEBUG] PSTH: Plotting {event_type} event index {event_index} (0-indexed {idx}) for brain region {brain_region}")
 
-        selected_traces = []
-        for i, row in df.iterrows():
-            event_z_list = row.get(f'{event_type}_Zscore', [])
-            if isinstance(event_z_list, list) and len(event_z_list) > idx:
-                trace = np.array(event_z_list[idx])
-                selected_traces.append(trace)
-        if len(selected_traces) == 0:
-            print(f"No trials have an event at index {event_index} for {event_type}.")
+        # 2) collect each trial's Z‐score trace for that event
+        traces = []
+        for _, row in df.iterrows():
+            ev = row.get(f'{event_type}_Zscore', [])
+            if isinstance(ev, list) and len(ev) > idx:
+                traces.append(np.array(ev[idx]))
+        if not traces:
+            print(f"No {event_type}#{event_index} in {brain_region}")
             return
 
-        # Use the common time axis from the first trial's bout.
-        common_time_axis = df.iloc[0][f'{event_type}_Time_Axis'][idx]
-        selected_traces = np.array(selected_traces)
+        # 3) common time axis & stack
+        common_t = df.iloc[0][f'{event_type}_Time_Axis'][idx]
+        traces = np.vstack(traces)
+        mean_tr = traces.mean(axis=0)
+        sem_tr  = traces.std(axis=0, ddof=1) / np.sqrt(traces.shape[0])
 
-        mean_trace = np.mean(selected_traces, axis=0)
-        sem_trace = np.std(selected_traces, axis=0) / np.sqrt(selected_traces.shape[0])
-        
+        # 4) optional downsampling
         if hasattr(self, 'downsample_data'):
-            mean_trace, downsampled_time_axis = self.downsample_data(mean_trace, common_time_axis, bin_size)
-            sem_trace, _ = self.downsample_data(sem_trace, common_time_axis, bin_size)
+            mean_tr, t_ds = self.downsample_data(mean_tr, common_t, bin_size)
+            sem_tr, _   = self.downsample_data(sem_tr,   common_t, bin_size)
         else:
-            downsampled_time_axis = common_time_axis
+            t_ds = common_t
 
-        # # --- Debug: Check values in the 4–10 s window ---
-        # post_window = (downsampled_time_axis >= 4) & (downsampled_time_axis <= 10)
-        # post_vals = mean_trace[post_window]
-        # print("[DEBUG] PSTH: Final mean trace shape:", mean_trace.shape)
-        # print("[DEBUG] PSTH: Final mean trace first 10 values:", mean_trace[:10])
-        # print("[DEBUG] PSTH: 4–10 s window values, first 10:", post_vals[:10])
-        # print("[DEBUG] PSTH: Max in 4–10 s window:", np.max(post_vals))
+        # 5) plotting
+        fig, ax = plt.subplots(figsize=(10,6))
 
-        trace_color = '#FFAF00' if brain_region == 'mPFC' else '#15616F'
+        color = '#FFAF00' if brain_region=='mPFC' else '#15616F'
+        ax.plot(t_ds, mean_tr, color=color, lw=3, label='Mean DA')
+        ax.fill_between(t_ds, mean_tr-sem_tr, mean_tr+sem_tr,
+                        color=color, alpha=0.4, label='SEM')
 
-        plt.figure(figsize=(10, 6))
-        plt.plot(downsampled_time_axis, mean_trace, color=trace_color, lw=3, label='Mean DA')
-        plt.fill_between(downsampled_time_axis, mean_trace - sem_trace, mean_trace + sem_trace,
-                        color=trace_color, alpha=0.4, label='SEM')
-        plt.axvline(0, color='black', linestyle='--', lw=2)
-        plt.axvline(4, color='#FF69B4', linestyle='-', lw=2)
+        # event markers
+        ax.axvline(0, color='black', linestyle='--', lw=2)
+        ax.axvline(4, color='#FF69B4', linestyle='-', lw=2)
 
-        # Force the x-axis to be from -4 to 10 seconds.
-        plt.xlabel('Time from Tone Onset (s)', fontsize=30)
-        plt.ylabel('Event-Induced z-scored ΔF/F', fontsize=30)
-        plt.title(f'{event_type} Event {event_index} {condition} PSTH', fontsize=30, pad=30)
-        plt.ylim(y_min, y_max)
-        plt.xticks([-4, 0, 4, 10,20,30], fontsize=30)
+        # axes labels
+        ax.set_xlabel('Time from Tone Onset (s)', fontsize=30)
+        ax.set_ylabel('Event‐Induced z‐scored ΔF/F', fontsize=30)
+        ax.set_title(f'{event_type} Event {event_index} {condition} PSTH', fontsize=30, pad=30)
+        ax.set_ylim(y_min, y_max)
+
+        # interpret xlim argument
         if xlim is not None:
-            ax.set_xlim(xlim)
-        plt.yticks(fontsize=30)
-        plt.xlim(-4, 30)  # Force x-axis limits
+            if isinstance(xlim, (list,tuple)) and len(xlim)==2:
+                xmin, xmax = xlim
+            else:
+                xmin, xmax = -4, float(xlim)
+            ax.set_xlim(xmin, xmax)
+        else:
+            # default window -4 to 30
+            ax.set_xlim(-4, 30)
 
-        ax = plt.gca()
+        # dynamic xticks
+        xmin, xmax = ax.get_xlim()
+        xt = np.unique(np.round(np.linspace(xmin, xmax, 5),1))
+        ax.set_xticks(xt)
+        ax.set_xticklabels([f"{t:.0f}" for t in xt], fontsize=30)
+
+        ax.tick_params(axis='y', labelsize=30)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         ax.spines['bottom'].set_linewidth(3)
         ax.spines['left'].set_linewidth(3)
 
-        if directory_path is not None:
-            # Ensure the directory exists.
+        # save if requested
+        if directory_path:
             os.makedirs(directory_path, exist_ok=True)
-            save_path = os.path.join(directory_path, f'{brain_region}_{event_type}_Event{event_index}_PSTH.png')
-            plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+            fname = f"{brain_region}_{event_type}_Evt{event_index}_PSTH.png"
+            plt.savefig(os.path.join(directory_path, fname),
+                        transparent=True, dpi=300, bbox_inches="tight")
+
         plt.show()
+
 
     
 

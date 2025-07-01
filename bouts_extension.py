@@ -7,6 +7,7 @@ from sklearn.linear_model import LinearRegression
 from trial_class import *
 from itertools import combinations
 import seaborn as sns
+from statsmodels.stats.multitest import multipletests
 
 
 from scipy.optimize import curve_fit
@@ -226,46 +227,47 @@ def create_da_metrics_first_instance(
 
 
 
-def plot_behavior_across_bouts_no_identities(metadata_df,
-                                          y_col="Total Investigation Time",
-                                          behavior=None,
-                                          title='Mean Across Bouts',
-                                          ylabel=None,
-                                          custom_xtick_labels=None,
-                                          custom_xtick_colors=None,
-                                          ylim=None,
-                                          bar_color='#00B7D7',
-                                          yticks_increment=None,
-                                          xlabel='Agent',
-                                          figsize=(12, 7),
-                                          pad_inches=0.1,
-                                          save=False,
-                                          save_name=None):
-
-
-    # 1) Optionally filter by behavior
+def plot_behavior_across_bouts_no_identities(
+    metadata_df,
+    y_col="Total Investigation Time",
+    behavior=None,
+    title='Mean Across Bouts',
+    ylabel=None,
+    custom_xtick_labels=None,
+    custom_xtick_colors=None,
+    ylim=None,
+    bar_color='#00B7D7',
+    yticks_increment=None,
+    xlabel='Agent',
+    figsize=(12, 7),
+    pad_inches=0.1,
+    save=False,
+    save_name=None,
+    save_stats: str = None,       # path to save the t-test results CSV
+):
+    # 1) Optional filter by behavior
     if behavior is not None:
         metadata_df = metadata_df[metadata_df["Behavior"] == behavior].copy()
         if metadata_df.empty:
             raise ValueError(f"No data found for behavior='{behavior}'.")
 
-    # 2) Check if the desired y_col exists
+    # 2) Check y_col
     if y_col not in metadata_df.columns:
         raise ValueError(f"'{y_col}' not found in metadata_df columns.")
 
-    # 3) Pivot the DataFrame: rows -> Subjects, columns -> Bout, values -> y_col
+    # 3) Pivot into (subjects × bouts)
     pivot_df = metadata_df.pivot(index="Subject", columns="Bout", values=y_col)
 
-    # 4) Calculate mean and SEM across subjects for each bout
+    # 4) Mean & SEM
     mean_values = pivot_df.mean()
-    sem_values = pivot_df.sem()
+    sem_values  = pivot_df.sem()
 
-    # 5) Create the plot
+    # 5) Create the figure
     fig, ax = plt.subplots(figsize=figsize)
 
-    # 6) Bar plot with error bars (SEM)
+    # 6) Bars + error bars
     bars = ax.bar(
-        pivot_df.columns,
+        np.arange(len(pivot_df.columns)),
         mean_values,
         yerr=sem_values,
         capsize=6,
@@ -276,23 +278,34 @@ def plot_behavior_across_bouts_no_identities(metadata_df,
         error_kw=dict(elinewidth=3, capthick=3, zorder=5)
     )
 
-    # 7) Plot individual subject data in gray
+    # 7) Individual subject lines + markers
     for subject in pivot_df.index:
-        ax.plot(pivot_df.columns, pivot_df.loc[subject],
-                linestyle='-', color='gray', alpha=0.5,
-                linewidth=2.5, zorder=1)
-        ax.scatter(pivot_df.columns, pivot_df.loc[subject],
-                   facecolors='none', edgecolors='gray',
-                   s=120, alpha=0.6, linewidth=4, zorder=2)
+        ax.plot(
+            np.arange(len(pivot_df.columns)),
+            pivot_df.loc[subject].values,
+            linestyle='-',
+            color='gray',
+            alpha=0.5,
+            linewidth=2.5,
+            zorder=1
+        )
+        ax.scatter(
+            np.arange(len(pivot_df.columns)),
+            pivot_df.loc[subject].values,
+            facecolors='none',
+            edgecolors='gray',
+            s=120,
+            alpha=0.6,
+            linewidth=4,
+            zorder=2
+        )
 
-    # 8) Labels
-    if ylabel is None:
-        ylabel = y_col
-    ax.set_ylabel(ylabel, fontsize=30, labelpad=12)
-    ax.set_xlabel(xlabel, fontsize=30, labelpad=12)
+    # 8) Labels & title
     ax.set_title(title, fontsize=16)
+    ax.set_ylabel(ylabel or y_col, fontsize=30, labelpad=12)
+    ax.set_xlabel(xlabel, fontsize=30, labelpad=12)
 
-    # 9) X-ticks
+    # 9) X-ticks & custom labels/colors
     ax.set_xticks(np.arange(len(pivot_df.columns)))
     if custom_xtick_labels:
         ax.set_xticklabels(custom_xtick_labels, fontsize=28)
@@ -302,94 +315,107 @@ def plot_behavior_across_bouts_no_identities(metadata_df,
     else:
         ax.set_xticklabels(pivot_df.columns, fontsize=26)
 
-    ax.tick_params(axis='y', labelsize=30)
     ax.tick_params(axis='x', labelsize=30)
+    ax.tick_params(axis='y', labelsize=30)
 
-    # 10) Y-limits
+    # 10) Y-limits (automatic or user‐provided)
     if ylim is None:
         all_vals = np.concatenate([pivot_df.values.flatten(), mean_values.values.flatten()])
-        min_val = np.nanmin(all_vals)
-        max_val = np.nanmax(all_vals)
-        lower_ylim = 0 if min_val > 0 else min_val * 1.1
-        upper_ylim = max_val * 1.1
-        ax.set_ylim(lower_ylim, upper_ylim)
-        if lower_ylim < 0:
+        mn, mx = np.nanmin(all_vals), np.nanmax(all_vals)
+        lower = 0 if mn>0 else mn*1.1
+        upper = mx*1.1
+        ax.set_ylim(lower, upper)
+        if lower<0:
             ax.axhline(0, color='black', linestyle='--', linewidth=2, zorder=1)
     else:
         ax.set_ylim(ylim)
-        if ylim[0] < 0:
+        if ylim[0]<0:
             ax.axhline(0, color='black', linestyle='--', linewidth=2, zorder=1)
 
-    # 11) Custom Y-ticks
+    # 11) Custom y-ticks
     if yticks_increment:
         y_min, y_max = ax.get_ylim()
-        y_ticks = np.arange(np.floor(y_min), np.ceil(y_max) + yticks_increment, yticks_increment)
-        ax.set_yticks(y_ticks)
+        yt = np.arange(np.floor(y_min), np.ceil(y_max)+yticks_increment, yticks_increment)
+        ax.set_yticks(yt)
 
     # 12) Spines
-    ax.spines['right'].set_visible(False)
     ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
     ax.spines['left'].set_linewidth(5)
     ax.spines['bottom'].set_linewidth(5)
 
     plt.tight_layout()
     if save:
-        if save_name is None:
-            raise ValueError("save_name must be provided if save is True.")
+        if not save_name:
+            raise ValueError("save_name must be provided if save=True")
         plt.savefig(save_name, transparent=True, bbox_inches='tight', pad_inches=pad_inches)
-
     plt.show()
 
-    # 13) Paired t-tests
-    print("\nPaired t-test results (all pairwise combinations):")
-    bouts = pivot_df.columns.tolist()
-    for a, b in combinations(bouts, 2):
-        if a in pivot_df.columns and b in pivot_df.columns:
-            paired = pivot_df[[a, b]].dropna()
-            if len(paired) > 1:
-                t_stat, p_val = ttest_rel(paired[a], paired[b])
-                stars = "ns"
-                if p_val < 0.001:
-                    stars = "***"
-                elif p_val < 0.01:
-                    stars = "**"
-                elif p_val < 0.05:
-                    stars = "*"
-                print(f"{a} vs {b}: p = {p_val:.4f} ({stars})")
-            else:
-                print(f"{a} vs {b}: Not enough data.")
-        else:
-            print(f"{a} vs {b}: Bout not found in data.")
+    # ——————————————————————————————————
+    # 13) Paired t-tests, store in DataFrame
+    rows = []
+    for a, b in combinations(pivot_df.columns, 2):
+        pair = pivot_df[[a,b]].dropna()
+        if len(pair)<2:
+            rows.append({
+                'comparison': f"{a} vs {b}",
+                'n': len(pair),
+                't_stat': np.nan,
+                'p_value': np.nan,
+                'cohen_d': np.nan
+            })
+            continue
+
+        t_stat, p_val = ttest_rel(pair[a], pair[b])
+        diff = pair[a]-pair[b]
+        cohen_d = diff.mean() / diff.std(ddof=1) if diff.std(ddof=1)!=0 else np.nan
+        rows.append({
+            'comparison': f"{a} vs {b}",
+            'n': len(pair),
+            't_stat': t_stat,
+            'p_value': p_val,
+            'cohen_d': cohen_d
+        })
+
+    stats_df = pd.DataFrame(rows)
+
+    if save_stats:
+        stats_df.to_csv(save_stats, index=False)
+
+    print("\nPaired t-test results:")
+    print(stats_df.to_string(index=False, float_format="%.4f"))
+
+    # return both pivot & stats
+    return pivot_df, stats_df
 
 
-    print("\nPaired t-test results New:")
-    bouts = pivot_df.columns.tolist()
-    for a, b in combinations(bouts, 2):
-        if a in pivot_df.columns and b in pivot_df.columns:
-            paired = pivot_df[[a, b]].dropna()
-            if len(paired) > 1:
-                t_stat, p_val = ttest_rel(paired[a], paired[b])
+def apply_multiple_comparisons(
+    stats_df: pd.DataFrame,
+    method: str = 'holm',
+    alpha: float = 0.05,
+    comparisons: list = None
+):
+    """
+    Run a multiple‐testing correction on the rows in stats_df.
+    If `comparisons` is provided, only those rows are kept.
+    """
+    df = stats_df.copy()
+    if comparisons is not None:
+        df = df[df['comparison'].isin(comparisons)]
+        if df.empty:
+            raise ValueError("No matching comparisons found.")
 
-                # Effect size calculation (Cohen's d for paired samples)
-                diff = paired[a] - paired[b]
-                mean_diff = np.mean(diff)
-                std_diff = np.std(diff, ddof=1)  # Sample standard deviation
-                cohen_d = mean_diff / std_diff if std_diff != 0 else np.nan
+    raw_p = df['p_value'].values
+    reject, p_adj, _, _ = multipletests(raw_p, alpha=alpha, method=method)
 
-                # Stars for significance
-                stars = "ns"
-                if p_val < 0.001:
-                    stars = "***"
-                elif p_val < 0.01:
-                    stars = "**"
-                elif p_val < 0.05:
-                    stars = "*"
+    df['p_adj']  = p_adj
+    df['reject'] = reject
+    df['sig']    = np.where(reject, '✔', 'ns')
 
-                print(f"{a} vs {b}: p = {p_val:.4f} ({stars}), d = {cohen_d:.3f}")
-            else:
-                print(f"{a} vs {b}: Not enough data.")
-        else:
-            print(f"{a} vs {b}: Bout not found in data.")
+    print(f"\n{method.capitalize()}‐corrected results (α={alpha}):")
+    print(df[['comparison','p_value','p_adj','sig']].to_string(index=False, float_format="%.4f"))
+    return df
+
 
 
 def plot_behavior_across_bouts_with_identities(metadata_df,

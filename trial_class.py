@@ -8,7 +8,7 @@ import numpy as np
 import statsmodels.api as sm
 from statsmodels.robust.norms import TukeyBiweight
 from scipy.optimize import curve_fit
-
+from scipy.signal import welch
 
 
 from sklearn.linear_model import LinearRegression
@@ -103,7 +103,7 @@ class Trial:
 
     '''********************************** SMOOTHING AND FITTING **********************************'''
 
-    def smooth_and_apply(self, window_len_seconds: float = 1.0):
+    def smooth_and_apply_DA_ISOS(self, window_len_seconds: float = 1.0):
         """
         Smooth both DA and ISOS signals using a moving‐average window of the given length in seconds,
         and store the results in self.updated_DA / self.updated_ISOS.
@@ -136,6 +136,43 @@ class Trial:
         if 'ISOS' in self.streams:
             self.updated_ISOS = smooth_signal(self.streams['ISOS'], n_samp)
 
+    def smooth_and_apply(
+        self,
+        window_len_seconds: float = 1.0,
+        smooth_zscore:      bool  = True
+    ):
+        """
+        Smooth the self.dFF trace (and, if requested, self.zscore) using
+        a moving‐average window of the given length in seconds.
+        """
+        def smooth_signal(source: np.ndarray, n_samples: int) -> np.ndarray:
+            if source is None or source.ndim != 1 or source.size < n_samples or n_samples < 3:
+                return source
+            pad = n_samples - 1
+            s = np.r_[source[pad:0:-1], source, source[-2:-pad-1:-1]]
+            w = np.ones(n_samples, dtype=float) / n_samples
+            v = np.convolve(s, w, mode='valid')
+            start = pad // 2
+            return v[start:start + source.size]
+
+        # compute n_samples from seconds
+        n_samp = int(round(window_len_seconds * self.fs))
+        if n_samp < 1:
+            raise ValueError("window_len_seconds too small for your sampling rate")
+
+        # 1) smooth dFF
+        if hasattr(self, 'dFF') and self.dFF is not None:
+            self.dFF = smooth_signal(np.asarray(self.dFF, dtype=float), n_samp)
+        else:
+            raise RuntimeError("Cannot smooth: self.dFF is missing")
+
+        # 2) optionally smooth zscore
+        if smooth_zscore:
+            if hasattr(self, 'zscore') and self.zscore is not None:
+                self.zscore = smooth_signal(np.asarray(self.zscore, dtype=float), n_samp)
+            else:
+                # if no zscore yet, just skip or warn
+                print("Warning: no self.zscore to smooth.")
 
     def centered_moving_average_with_padding(self, source, window=1):
         """
@@ -241,8 +278,62 @@ class Trial:
     #     reg.fit(self.updated_ISOS.reshape(n, 1), self.updated_DA.reshape(n, 1))
     #     self.isosbestic_fitted = reg.predict(self.updated_ISOS.reshape(n, 1)).reshape(n,)
 
+    def _double_exponential(t, c, A_fast, A_slow, tau_slow, tau_mul):
+            tau_fast = tau_slow * tau_mul
+            return c + A_slow * np.exp(-t / tau_slow) + A_fast * np.exp(-t / tau_fast)
+    
+    def correct_photobleach(self,
+                            p0: dict | None = None,
+                            bounds: dict | None = None,
+                            maxfev: int = 2000):
+        """
+        Fit & subtract a double‐exp bleaching baseline from both updated_DA and updated_ISOS,
+        then add back each signal’s original mean so the DC level is preserved.
 
-        
+        After this:
+          self.bleach_baseline_DA/ISOS  = the fitted baselines
+          self.updated_DA/ISOS          = (orig – baseline) + orig_mean
+
+        Returns a dict { 'DA': popt_DA, 'ISOS': popt_ISOS } of fit params.
+        """
+        results = {}
+        t = self.timestamps
+
+        for ch in ('DA', 'ISOS'):
+            key = 'updated_' + ch
+            sig = getattr(self, key)
+            mu  = np.nanmean(sig)  # remember original DC
+
+            # pick or build initial guess & bounds
+            m = np.nanmax(sig)
+            p0_ch = p0.get(ch) if p0 and ch in p0 else [m/2, m/4, m/4, 3600, 0.1]
+            if bounds and ch in bounds:
+                bnds = bounds[ch]
+            else:
+                lo = [0,     0,     0,     600,    0]
+                hi = [m,     m,     m,  36000,    1]
+                bnds = (lo, hi)
+
+            popt, _ = curve_fit(
+                Trial._double_exponential,
+                t, sig,
+                p0=p0_ch,
+                bounds=bnds,
+                maxfev=maxfev
+            )
+
+            baseline = Trial._double_exponential(t, *popt)
+            setattr(self, f'bleach_baseline_{ch}', baseline)
+
+            # remove drift but preserve DC
+            detrended = sig - baseline
+            recentered = detrended + mu
+            setattr(self, key, recentered)
+
+            results[ch] = popt
+
+        return results
+
     def align_channels_poly(self):
         """
         Fit a degree-1 polynomial (slope + intercept) to predict DA from the isosbestic channel.
@@ -368,6 +459,43 @@ class Trial:
             self.timestamps = self.timestamps[:min_length]
 
 
+
+    def compute_psd(self, channel: str = 'DA', nperseg: int = None):
+        """
+        Compute Welch PSD for the specified channel.
+        channel: 'DA', 'ISOS', 'dFF', or 'zscore'
+        nperseg: length of each segment for Welch; default ≃ 1/8 of the record
+        Returns (f, Pxx).
+        """
+        if channel == 'DA':
+            data = self.updated_DA
+        elif channel == 'ISOS':
+            data = self.updated_ISOS
+        elif channel == 'dFF':
+            data = self.dFF
+        elif channel == 'zscore':
+            data = self.zscore
+        else:
+            raise ValueError(f"Unknown channel '{channel}'")
+        # pick a sensible default if none given
+        if nperseg is None:
+            nperseg = max(256, len(data)//8)
+        f, Pxx = welch(data, fs=self.fs, nperseg=nperseg)
+        return f, Pxx
+
+    def plot_psd(self, channel: str = 'DA', nperseg: int = None, ax=None):
+        """
+        Plot PSD for this trial.
+        Returns (f, Pxx).
+        """
+        f, Pxx = self.compute_psd(channel, nperseg)
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(8,4))
+        ax.semilogy(f, Pxx, lw=1.3)
+        ax.set_xlabel("Frequency (Hz)")
+        ax.set_ylabel("PSD")
+        ax.set_title(f"{self.subject_name} — PSD ({channel})")
+        return f, Pxx
 
     '''********************************** BEHAVIORS **********************************'''
     def extract_bouts_and_behaviors(self, csv_path, bout_definitions, first_only=False):
