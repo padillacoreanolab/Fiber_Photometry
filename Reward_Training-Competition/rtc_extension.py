@@ -97,20 +97,22 @@ class RTC(Experiment):
             print(f"Processing trial {trial_folder}...")
 
             # ----- Preprocessing Steps -----
-            trial.remove_initial_LED_artifact(t=160)
+            # 1) Downsampling to 100 Hz
+            trial.downsample(target_fs=100)
+
+            # 2) trim LED/artifact
+            trial.remove_initial_LED_artifact(t=30)
             trial.remove_final_data_segment(t=10)
 
-            # 2) smooth (in‐place)
-            # trial.smooth_and_apply(window_len_seconds=4)
 
             # 3) low‐pass
             trial.lowpass_filter(cutoff_hz=3.0)
 
             # 4) high‐pass recentered
-            trial.highpass_baseline_drift_Recentered(cutoff=0.001)
+            trial.basline_drift_double_exponential()
 
             # 5) IRLS fit
-            trial.align_channels_IRLS(IRLS_constant=1.4)
+            trial.motion_correction_align_channels_IRLS(IRLS_constant=1.4)
 
             # 6) compute dF/F
             trial.compute_dFF()
