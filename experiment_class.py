@@ -3,6 +3,12 @@ import pandas as pd
 import tdt
 import os
 import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
+from sklearn.linear_model import LinearRegression
+from scipy.signal import butter, filtfilt
+from scipy.stats   import linregress
+from scipy.optimize import curve_fit
+
 
 from trial_class import Trial
 
@@ -41,20 +47,53 @@ class Experiment:
                 self.remove_time_segments_from_block(trial_folder, time_segments_to_remove[trial.subject_name])
 
             print(f"Processing {trial_folder}...")
-            trial.remove_initial_LED_artifact(t=160)
+            trial.remove_initial_LED_artifact(t=30)
             trial.remove_final_data_segment(t=10)
 
-            # 2) smooth (in‐place)
-            trial.smooth_and_apply(window_len_seconds=4)
+            # 2) downsample
+            trial.downsample(target_fs = 100)
 
             # 3) low‐pass
             trial.lowpass_filter(cutoff_hz=3.0)
 
             # 4) high‐pass recentered
-            trial.highpass_baseline_drift_Recentered(cutoff=0.001)
+            trial.baseline_drift_highpass_recentered(cutoff=0.001)
 
             # 5) IRLS fit
-            trial.align_channels_IRLS(IRLS_constant=1.4)
+            trial.motion_correction_align_channels_IRLS(IRLS_constant=1.4)
+
+            # 6) compute dF/F
+            trial.compute_dFF()
+
+            # 7) zscore
+            trial.compute_zscore(method='standard')
+
+    def batch_process_exponential(self, time_segments_to_remove=None):
+        """
+        Batch processes the TDT data by extracting behaviors, removing LED artifacts, and computing z-score.
+        """
+        for trial_folder, trial in self.trials.items():
+            # Check if the subject name is in the time_segments_to_remove dictionary
+            if time_segments_to_remove and trial.subject_name in time_segments_to_remove:
+                self.remove_time_segments_from_block(trial_folder, time_segments_to_remove[trial.subject_name])
+
+            print(f"Processing {trial_folder}...")
+            trial.remove_initial_LED_artifact(t=30)
+            trial.remove_final_data_segment(t=10)
+
+            # 2) smooth (in‐place)
+            trial.downsample(target_fs = 100)
+
+
+            # 3) low‐pass
+            trial.lowpass_filter(cutoff_hz=3.0)
+
+            # 4) Double Exponential
+            trial.basline_drift_double_exponential()
+            # trial.highpass_baseline_drift_Recentered(cutoff=0.001)
+
+            # 5) IRLS fit
+            trial.motion_correction_align_channels_IRLS(IRLS_constant=1.4)
 
             # 6) compute dF/F
             trial.compute_dFF()
@@ -63,33 +102,230 @@ class Experiment:
             trial.compute_zscore(method='standard')
 
 
-    def _plot_trial_step(self, tr, ts, signals, labels, suptitle, max_time=None):
+    def preprocessing_Melugin(self, max_time=None):
+        import numpy as np
+        import matplotlib.pyplot as plt
+        from scipy.optimize  import curve_fit
+        from scipy.signal    import butter, filtfilt
+        from scipy.stats     import linregress
+
+        def double_exponential(t, c, A_fast, A_slow, tau_slow, tau_mul):
+            tau_fast = tau_slow * tau_mul
+            return c + A_slow*np.exp(-t/tau_slow) + A_fast*np.exp(-t/tau_fast)
+
+        for trial_folder, tr in self.trials.items():
+            print(f"\n=== Processing {trial_folder} ===")
+
+            # 1) trim & downsample
+            tr.downsample(target_fs=100)
+
+            tr.remove_initial_LED_artifact(t=30)
+            tr.remove_final_data_segment(t=10)
+
+            ts      = tr.timestamps
+            raw_da  = tr.streams['DA']
+            raw_iso = tr.streams['ISOS']
+            if max_time is not None:
+                m = ts <= max_time
+                ts, raw_da, raw_iso = ts[m], raw_da[m], raw_iso[m]
+
+            # fallback high-pass baseline (0.001 Hz)
+            def hp_baseline(sig):
+                b, a = butter(2, 0.001, btype='high', fs=tr.fs)
+                return filtfilt(b, a, sig, padtype='even')
+
+            # 2) fit & subtract for DA
+            try:
+                p0_da = [raw_da.max()/2, raw_da.max()/4, raw_da.max()/4, 3600, 0.1]
+                bnds  = ([0,0,0,600,0], [raw_da.max()]*3 + [36000,1])
+                popt_da, _ = curve_fit(
+                    double_exponential, ts, raw_da,
+                    p0=p0_da, bounds=bnds, maxfev=20000
+                )
+                da_baseline = double_exponential(ts, *popt_da)
+            except RuntimeError as e:
+                print("  ⚠️ DA exp‐fit failed, using high-pass instead:", e)
+                da_baseline = hp_baseline(raw_da)
+
+            da_detr = raw_da - da_baseline
+
+            # 3) fit & subtract for ISO
+            try:
+                p0_iso = [raw_iso.max()/2, raw_iso.max()/4, raw_iso.max()/4, 3600, 0.1]
+                bnds   = ([0,0,0,600,0], [raw_iso.max()]*3 + [36000,1])
+                popt_iso, _ = curve_fit(
+                    double_exponential, ts, raw_iso,
+                    p0=p0_iso, bounds=bnds, maxfev=20000
+                )
+                iso_baseline = double_exponential(ts, *popt_iso)
+            except RuntimeError as e:
+                print("  ⚠️ ISO exp‐fit failed, using high-pass instead:", e)
+                iso_baseline = hp_baseline(raw_iso)
+
+            iso_detr = raw_iso - iso_baseline
+
+            # 4) %ΔF/F
+            da_pct  = 100 * da_detr  / da_baseline
+            iso_pct = 100 * iso_detr / iso_baseline
+            tr.dFF  = da_pct
+
+            # 5) difference & z-score
+            diff_pct = da_pct - iso_pct
+            z        = (diff_pct - np.nanmean(diff_pct)) / np.nanstd(diff_pct)
+            tr.zscore = z
+
+            # 6) Plot exactly as before
+            steps = [
+                ((raw_da, raw_iso),        ("raw DA","raw ISO"),      "1) Raw"),
+                ((da_baseline, iso_baseline),("DA fit","ISO fit"),      "2) Baseline"),
+                ((da_pct,),                ("%ΔF/F",),                "3) %ΔF/F"),
+                ((diff_pct,),             ("DA–ISO ΔF/F",),          "4) Diff %ΔF/F"),
+                ((z,),                    ("z-score",),              "5) z-score"),
+            ]
+
+            fig, axes = plt.subplots(len(steps),1,
+                                    figsize=(12,2.5*len(steps)),
+                                    sharex=True)
+            dual = {"1) Raw", "2) Baseline"}
+
+            for ax, ((sig1,*rest),(lbl1,*r_lbl),title) in zip(axes,steps):
+                if title in dual:
+                    ax1, ax2 = ax, ax.twinx()
+                    ax1.plot(ts, sig1,    'tab:blue',  lw=1.2,label=lbl1)
+                    ax2.plot(ts, rest[0], 'tab:orange',lw=1.2,label=r_lbl[0])
+                    ax1.spines['left'].set_position(('outward',10))
+                    ax2.spines['right'].set_position(('outward',40))
+                    ax1.set_ylabel(f"{title}\nDA",  color='tab:blue',   labelpad=8)
+                    ax2.set_ylabel(f"{title}\nISO", color='tab:orange', labelpad=8)
+                    h1,l1 = ax1.get_legend_handles_labels()
+                    h2,l2 = ax2.get_legend_handles_labels()
+                    ax1.legend(h1+h2, l1+l2, loc='upper right', fontsize='small')
+                else:
+                    ax.plot(ts, sig1, lw=1.2, label=lbl1)
+                    ax.set_ylabel(title, fontsize=10)
+                    ax.legend(frameon=False, fontsize='small')
+
+            axes[-1].set_xlabel("Time (s)", fontsize=12)
+            fig.suptitle(f"{tr.subject_name} preprocessing steps", fontsize=14, y=0.99)
+            plt.tight_layout(rect=[0,0,1,0.96])
+            plt.show()
+
+
+    def preprocessing_Simpson(self, max_time=None):
         """
-        Helper to plot multiple traces on one set of axes.
-        `signals` is a list of 1D arrays; `labels` a list of strings.
-        If max_time is not None, only the time 0→max_time seconds is shown.
+        1) downsample → trim 30s/10s  
+        2) low-pass @10Hz via Trial.lowpass_filter  
+        3) double-exp bleach-fit & subtract  
+        4) linear regression motion correction  
+        5) compute %ΔF/F and store in tr.dFF  
+        6) compute z-score via tr.compute_zscore()  
+        then plot all six panels
         """
-        fig, ax = plt.subplots(figsize=(10, 2))
-        for sig, lbl in zip(signals, labels):
-            ax.plot(ts, sig, label=lbl, lw=1.2)
+        import numpy as np
+        import matplotlib.pyplot as plt
+        from scipy.optimize  import curve_fit
+        from scipy.stats     import linregress
 
-        if max_time is not None:
-            ax.set_xlim(0, max_time)
+        def double_exponential(t, c, A_fast, A_slow, tau_slow, tau_mul):
+            tau_fast = tau_slow * tau_mul
+            return c + A_slow * np.exp(-t/tau_slow) + A_fast * np.exp(-t/tau_fast)
 
-        ax.set_title(f"{tr.subject_name} – {suptitle}")
-        ax.set_xlabel("Time (s)")
-        ax.legend(loc="upper right", fontsize="small")
-        fig.tight_layout()
-        plt.show()
+        for trial_folder, tr in self.trials.items():
+            print(f"\n=== Processing {trial_folder} ===")
 
+            # 1) prep
+            tr.downsample(target_fs=100)
+            tr.remove_initial_LED_artifact(t=30)
+            tr.remove_final_data_segment(t=10)
+
+            # raw streams
+            ts      = tr.timestamps
+            raw_da  = tr.streams['DA']
+            raw_iso = tr.streams['ISOS']
+            if max_time is not None:
+                m = ts <= max_time
+                ts, raw_da, raw_iso = ts[m], raw_da[m], raw_iso[m]
+
+            # 2) low-pass @10Hz
+            tr.lowpass_filter(cutoff_hz=10.0)
+            denoise_da  = tr.updated_DA.copy()
+            denoise_iso = tr.updated_ISOS.copy()
+
+            # 3) bleach-correction by double-exponential
+            #   DA
+            p0 = [np.max(denoise_da)/2, np.max(denoise_da)/4, np.max(denoise_da)/4, 3600, 0.1]
+            bnds = ([0,0,0,600,0], [np.max(denoise_da)]*3 + [36000,1])
+            popt_d, _ = curve_fit(double_exponential, ts, denoise_da, p0=p0, bounds=bnds, maxfev=2000)
+            da_baseline  = double_exponential(ts, *popt_d)
+            da_detrended = denoise_da - da_baseline
+
+            #   ISO
+            p0 = [np.max(denoise_iso)/2, np.max(denoise_iso)/4, np.max(denoise_iso)/4, 3600, 0.1]
+            bnds = ([0,0,0,600,0], [np.max(denoise_iso)]*3 + [36000,1])
+            popt_i, _ = curve_fit(double_exponential, ts, denoise_iso, p0=p0, bounds=bnds, maxfev=2000)
+            iso_baseline   = double_exponential(ts, *popt_i)
+            iso_detrended  = denoise_iso - iso_baseline
+
+            # 4) motion correction via linear regression
+            slope, intercept, _, _, _ = linregress(iso_detrended, da_detrended)
+            est_motion   = intercept + slope * iso_detrended
+            da_corrected = da_detrended - est_motion
+
+            # 5) compute %ΔF/F and store in trial
+            dFF = 100 * da_corrected / da_baseline
+            tr.dFF = dFF
+
+            # 6) compute z-score
+            tr.compute_zscore(method='standard')
+            zscore = tr.zscore.copy()
+
+            # Assemble plotting steps
+            steps = [
+                ((raw_da,       raw_iso),      ("raw DA",    "raw ISO"),     "1) Raw"),
+                ((denoise_da,   denoise_iso),  ("LP DA",     "LP ISO"),      "2) Low-pass (10Hz)"),
+                ((da_detrended, iso_detrended),("DA detr",   "ISO detr"),    "3) Double-exp detrend"),
+                ((da_detrended, est_motion),   ("DA",        "motion est"),  "4) LinReg fit"),
+                ((dFF,),        ("%ΔF/F",),     "5) %ΔF/F"),
+                ((zscore,),     ("z-score",),    "6) z-score"),
+            ]
+
+            fig, axes = plt.subplots(len(steps), 1, figsize=(12, 2.5*len(steps)), sharex=True)
+            dual = {"1) Raw", "2) Low-pass (10Hz)", "3) Double-exp detrend"}
+
+            for ax, ((sig1, *rest), (lbl1, *lbl_rest), title) in zip(axes, steps):
+                if title in dual:
+                    ax1, ax2 = ax, ax.twinx()
+                    ax1.plot(ts, sig1,       color='tab:blue',  lw=1.2, label=lbl1)
+                    ax2.plot(ts, rest[0],    color='tab:orange',lw=1.2, label=lbl_rest[0])
+                    ax1.spines['left'].set_position(('outward', 10))
+                    ax2.spines['right'].set_position(('outward',40))
+                    ax1.set_ylabel(f"{title}\nDA",  color='tab:blue',   labelpad=8)
+                    ax2.set_ylabel(f"{title}\nISO", color='tab:orange', labelpad=8)
+                    h1,l1 = ax1.get_legend_handles_labels()
+                    h2,l2 = ax2.get_legend_handles_labels()
+                    ax1.legend(h1+h2, l1+l2, loc='upper right', fontsize='small')
+                else:
+                    ax.plot(ts, sig1, lw=1.2, label=lbl1)
+                    if rest:
+                        ax.plot(ts, rest[0], lw=1.2, label=lbl_rest[0])
+                    ax.set_ylabel(title, fontsize=10)
+                    ax.legend(frameon=False, fontsize='small')
+
+            axes[-1].set_xlabel("Time (s)", fontsize=12)
+            fig.suptitle(f"{tr.subject_name} preprocessing steps", fontsize=14, y=0.99)
+            plt.tight_layout(rect=[0,0,1,0.96])
+            plt.show()
 
 
     def preprocessing_plotted_all(self, max_time=None):
         for trial_folder, tr in self.trials.items():
             print(f"\n=== Processing {trial_folder} ===")
+            
+            # Downsample
+            tr.downsample(target_fs=100)
 
             # 1) trim LED/artifact
-            tr.remove_initial_LED_artifact(t=00)
+            tr.remove_initial_LED_artifact(t=30)
             tr.remove_final_data_segment(t=10)
 
             # grab raw
@@ -101,13 +337,206 @@ class Experiment:
             lp_da   = tr.updated_DA.copy()
             lp_iso  = tr.updated_ISOS.copy()
 
-            # 3) high-pass recentered
-            tr.highpass_baseline_drift_Recentered(cutoff=0.001)
+            # 3) bleach-correct
+            tr.basline_drift_double_exponential()
             hp_da   = tr.updated_DA.copy()
             hp_iso  = tr.updated_ISOS.copy()
 
             # 4) IRLS fit
-            tr.align_channels_IRLS(IRLS_constant=1.4)
+            tr.motion_correction_align_channels_IRLS(IRLS_constant=1.4)
+            fit_iso = tr.isosbestic_fitted.copy()
+
+            # 5) compute dF/F
+            tr.compute_dFF()
+            raw_dff = tr.dFF.copy()
+
+            # 6) z-score
+            tr.compute_zscore(method='standard')
+            z       = tr.zscore.copy()
+
+            # time‐mask if desired
+            ts = tr.timestamps
+            if max_time is not None:
+                m = ts <= max_time
+                ts, raw_da, raw_iso, lp_da, lp_iso, hp_da, hp_iso, fit_iso, raw_dff, z = (
+                    ts[m], raw_da[m], raw_iso[m], lp_da[m], lp_iso[m],
+                    hp_da[m], hp_iso[m], fit_iso[m], raw_dff[m], z[m]
+                )
+
+            steps = [
+                ((raw_da,  raw_iso),  ("raw DA",  "raw ISOS"),    "1) Raw"),
+                ((lp_da,   lp_iso),   ("LP DA",   "LP ISOS"),     "2) Low-pass (3 Hz)"),
+                ((hp_da,   hp_iso),   ("DA",      "ISOS"),         "3) Double Exponential"),
+                ((hp_da,   fit_iso),  ("DA",      "fitted ISOS"),  "4) IRLS fit"),
+                ((raw_dff,),          ("raw ΔF/F",),             "5) dF/F"),
+                ((z,),                ("z-score",),               "6) z-score"),
+            ]
+
+            fig, axes = plt.subplots(len(steps), 1,
+                                     figsize=(12, 2.5*len(steps)),
+                                     sharex=True)
+
+            dual_axes_titles = {"1) Raw", "2) Low-pass (3 Hz)", "3) Double Exponential"}
+
+            for ax, ((sig1, *rest), (lbl1, *rest_lbls), title) in zip(axes, steps):
+                if title in dual_axes_titles:
+                    ax1 = ax
+                    ax2 = ax1.twinx()
+
+                    # plot both
+                    ax1.plot(ts, sig1,  color='tab:blue',  lw=1.2, label=lbl1)
+                    ax2.plot(ts, rest[0], color='tab:orange', lw=1.2, label=rest_lbls[0])
+
+                    # nudge spines out so they don’t overlap
+                    ax1.spines['left'].set_position(('outward', 10))
+                    ax2.spines['right'].set_position(('outward', 40))
+
+                    # now force each side’s ylim to its own data range + padding
+                    da_min, da_max = sig1.min(), sig1.max()
+                    pad_da = (da_max - da_min) * 0.1
+                    ax1.set_ylim(da_min - pad_da, da_max + pad_da)
+
+                    iso = rest[0]
+                    iso_min, iso_max = iso.min(), iso.max()
+                    pad_iso = (iso_max - iso_min) * 0.1
+                    ax2.set_ylim(iso_min - pad_iso, iso_max + pad_iso)
+
+                    # labels
+                    ax1.set_ylabel(f"{title}\nDA", color='tab:blue', labelpad=8)
+                    ax2.set_ylabel(f"{title}\nISOS", color='tab:orange', labelpad=8)
+
+                    # combined legend
+                    l1, t1 = ax1.get_legend_handles_labels()
+                    l2, t2 = ax2.get_legend_handles_labels()
+                    ax1.legend(l1 + l2, t1 + t2, loc='upper right', fontsize='small')
+
+                else:
+                    # single axis
+                    ax.plot(ts, sig1, lw=1.2, label=lbl1)
+                    if rest:
+                        ax.plot(ts, rest[0], lw=1.2, label=rest_lbls[0])
+                    ax.set_ylabel(title, fontsize=10)
+                    ax.legend(frameon=False, fontsize="small")
+
+            axes[-1].set_xlabel("Time (s)", fontsize=12)
+            fig.suptitle(f"{tr.subject_name} preprocessing steps", fontsize=14, y=0.99)
+            plt.tight_layout(rect=[0, 0, 1, 0.96])
+            plt.show()
+
+
+
+    def preprocessing_plotted_Urs(self, max_time=None):
+        for trial_folder, tr in self.trials.items():
+            print(f"\n=== Processing {trial_folder} ===")
+
+            # 0) prepare: downsample + trim artifacts
+            tr.downsample(target_fs=100)
+            tr.remove_initial_LED_artifact(t=30)
+            tr.remove_final_data_segment(t=10)
+
+            # raw streams
+            ts      = tr.timestamps
+            raw_da  = tr.streams['DA']
+            raw_iso = tr.streams['ISOS']
+
+            # optional time cutoff
+            if max_time is not None:
+                m = ts <= max_time
+                ts, raw_da, raw_iso = ts[m], raw_da[m], raw_iso[m]
+
+            # 1) Raw
+            da_raw, iso_raw = raw_da, raw_iso
+
+            # 2) Linear detrend (polyfit) on [time → signal] for each channel
+            m_da, b_da   = np.polyfit(ts, da_raw, 1)
+            baseline_da  = m_da * ts + b_da
+            da_detrended = da_raw - baseline_da + np.mean(baseline_da)
+
+            m_iso, b_iso    = np.polyfit(ts, iso_raw, 1)
+            baseline_iso    = m_iso * ts + b_iso
+            iso_detrended   = iso_raw - baseline_iso + np.mean(baseline_iso)
+
+            # 3) compute %ΔF/F from detrended traces
+            #    NOTE: your compute_dFF() expects tr.isosbestic_fitted,
+            #          so here we just do it inline:
+            dF      = da_detrended - iso_detrended
+            dFF     = 100 * (dF / iso_detrended)
+
+            # 4) z-score
+            zscore  = (dFF - np.nanmean(dFF)) / np.nanstd(dFF)
+            tr.zscore = zscore
+
+            # assemble plotting steps
+            steps = [
+                ((da_raw,      iso_raw),    ("raw DA",    "raw ISOS"),      "1) Raw"),
+                ((da_detrended, iso_detrended), ("DA det.", "ISOS det."),   "2) Linear detrend"),
+                ((dFF,),       ("raw %ΔF/F",),   "3) %ΔF/F"),
+                ((zscore,),    ("z-score",),      "4) z-score"),
+            ]
+
+            fig, axes = plt.subplots(len(steps), 1,
+                                    figsize=(12, 2.5*len(steps)),
+                                    sharex=True)
+            dual = {"1) Raw", "2) Linear detrend"}
+
+            for ax, ((sig1, *rest), (lbl1, *lbl_rest), title) in zip(axes, steps):
+                if title in dual:
+                    ax1, ax2 = ax, ax.twinx()
+                    ax1.plot(ts, sig1,   color='tab:blue',  lw=1.2, label=lbl1)
+                    ax2.plot(ts, rest[0], color='tab:orange', lw=1.2, label=lbl_rest[0])
+                    ax1.spines['left'].set_position(('outward', 10))
+                    ax2.spines['right'].set_position(('outward', 40))
+                    ax1.set_ylabel(f"{title}\nDA",   color='tab:blue',   labelpad=8)
+                    ax2.set_ylabel(f"{title}\nISOS", color='tab:orange', labelpad=8)
+                    # combined legend
+                    h1, l1 = ax1.get_legend_handles_labels()
+                    h2, l2 = ax2.get_legend_handles_labels()
+                    ax1.legend(h1+h2, l1+l2, loc='upper right', fontsize='small')
+                else:
+                    ax.plot(ts, sig1, lw=1.2, label=lbl1)
+                    if rest:
+                        ax.plot(ts, rest[0], lw=1.2, label=lbl_rest[0])
+                    ax.set_ylabel(title, fontsize=10)
+                    ax.legend(frameon=False, fontsize='small')
+
+            axes[-1].set_xlabel("Time (s)", fontsize=12)
+            fig.suptitle(f"{tr.subject_name} preprocessing steps", fontsize=14, y=0.99)
+            plt.tight_layout(rect=[0, 0, 1, 0.96])
+            plt.show()
+
+
+
+
+
+    def preprocessing_plotted_hp(self, max_time=None):
+        for trial_folder, tr in self.trials.items():
+            print(f"\n=== Processing {trial_folder} ===")
+            
+            # Downsample
+            tr.downsample(target_fs = 100)
+
+            # 1) trim LED/artifact
+            tr.remove_initial_LED_artifact(t=30)
+            tr.remove_final_data_segment(t=10)
+
+
+            # grab raw
+            raw_da  = tr.streams['DA']
+            raw_iso = tr.streams['ISOS']
+
+            # 2) low-pass
+            tr.lowpass_filter(cutoff_hz=3.0)
+            lp_da   = tr.updated_DA.copy()
+            lp_iso  = tr.updated_ISOS.copy()
+
+            # 3) high-pass recentered
+            tr.baseline_drift_highpass_recentered(cutoff=0.001)
+            # tr.basline_drift_double_exponential()
+            hp_da   = tr.updated_DA.copy()
+            hp_iso  = tr.updated_ISOS.copy()
+
+            # 4) IRLS fit
+            tr.motion_correction_align_channels_IRLS(IRLS_constant=1.4)
             fit_iso = tr.isosbestic_fitted.copy()
 
             # 5) compute dF/F
@@ -130,7 +559,7 @@ class Experiment:
             steps = [
                 ((raw_da,  raw_iso),  ("raw DA",  "raw ISOS"),    "1) Raw"),
                 ((lp_da,   lp_iso),   ("LP DA",   "LP ISOS"),     "2) Low-pass (3 Hz)"),
-                ((hp_da,   hp_iso),   ("HP DA",   "HP ISOS"),     "3) High-pass (0.001 Hz)"),
+                ((hp_da,   hp_iso),   ("HP DA",   "HP ISOS"),     "3) High Pass (0.001 Hz)"),
                 ((hp_da,   fit_iso),  ("DA",      "fitted ISOS"),  "4) IRLS fit"),
                 ((raw_dff,),          ("raw ΔF/F",),             "5) dF/F"),
                 ((z,),                ("z-score",),               "6) z-score"),
@@ -140,7 +569,7 @@ class Experiment:
                                     figsize=(12, 2.5*len(steps)),
                                     sharex=True)
 
-            dual_axes_titles = {"1) Raw", "2) Low-pass (3 Hz)", "3) High-pass (0.001 Hz)"}
+            dual_axes_titles = {"1) Raw", "2) Low-pass (3 Hz)", "3) High Pass (0.001 Hz)"}
 
             for ax, ((sig1, *rest), (lbl1, *rest_lbls), title) in zip(axes, steps):
                 if title in dual_axes_titles:
@@ -169,7 +598,6 @@ class Experiment:
             fig.suptitle(f"{tr.subject_name} preprocessing steps", fontsize=14, y=0.99)
             plt.tight_layout(rect=[0, 0, 1, 0.96])
             plt.show()
-
 
 
     def preprocessing_plotted_linreg(self, max_time=None):
@@ -251,185 +679,6 @@ class Experiment:
             plt.tight_layout(rect=[0, 0, 1, 0.96])
             plt.show()
 
-
-    def plot_psd_and_drift(self,
-                           channel='DA',
-                           drift_cutoff=0.1,
-                           zoom_cutoff=0.1,
-                           nperseg_seconds=4):
-        """
-        1) Overlays the PSD of every trial (log–log),
-        2) Zooms into the low-frequency band to show drift,
-        3) Prints % power < drift_cutoff,
-        4) Estimates the knee frequency via curvature.
-        """
-        plt.figure(figsize=(8,6))
-        for trial_name, tr in self.trials.items():
-            f, Pxx = tr.compute_psd(channel=channel,
-                                    nperseg_seconds=nperseg_seconds)
-            plt.loglog(f, Pxx, alpha=0.5, label=trial_name)
-        plt.title(f"All trials PSD — {channel}")
-        plt.xlabel("Frequency (Hz)")
-        plt.ylabel("PSD")
-        plt.legend(ncol=2, fontsize='small', loc='upper right')
-        plt.tight_layout()
-        plt.show()
-
-        # Now zoom into the drift band
-        plt.figure(figsize=(8,4))
-        for trial_name, tr in self.trials.items():
-            f, Pxx = tr.compute_psd(channel=channel,
-                                    nperseg_seconds=nperseg_seconds)
-            mask = f <= zoom_cutoff
-            plt.loglog(f[mask], Pxx[mask], alpha=0.8, label=trial_name)
-        plt.title(f"Drift band (<{zoom_cutoff} Hz)")
-        plt.xlabel("Frequency (Hz)")
-        plt.ylabel("PSD")
-        plt.tight_layout()
-        plt.show()
-
-        # Quantify percent power below drift_cutoff
-        print(f"\nPower fraction below {drift_cutoff} Hz:")
-        for trial_name, tr in self.trials.items():
-            f, Pxx = tr.compute_psd(channel=channel,
-                                    nperseg_seconds=nperseg_seconds)
-            total_power = np.trapz(Pxx, f)
-            drift_power = np.trapz(Pxx[f < drift_cutoff], f[f < drift_cutoff])
-            frac = 100 * drift_power / total_power
-            print(f"  {trial_name}: {frac:.1f}%")
-
-        # Estimate knee frequency via curvature on log–log PSD (first trial only)
-        # (just to give you an idea of where the spectrum bends)
-        tr0 = next(iter(self.trials.values()))
-        f0, P0 = tr0.compute_psd(channel=channel,
-                                 nperseg_seconds=nperseg_seconds)
-        # skip the zero-frequency bin
-        lf = np.log10(f0[1:])
-        lP = np.log10(P0[1:])
-        # second difference (approx. curvature) on log–log curve
-        curvature = np.diff(lP, n=2)
-        knee_idx = np.argmax(curvature) + 1
-        knee_freq = 10**lf[knee_idx]
-        print(f"\nEstimated knee (drift→1/f transition) at ≈ {knee_freq:.3f} Hz")
-
-
-    def preprocessing_plotted_old_pipeline(self, time_segments_to_remove=None):
-        for trial_folder, tr in self.trials.items():
-            print(f"\n=== Processing {trial_folder} ===")
-
-            # 1) trim LED/artifact
-            tr.remove_initial_LED_artifact(t=60)
-            tr.remove_final_data_segment(t=10)
-
-
-            raw_da   = tr.streams['DA']
-            raw_iso  = tr.streams['ISOS']
-
-            # 2) smooth (in‐place)
-            tr.smooth_and_apply(window_len_seconds=4)
-            lp_da = tr.updated_DA.copy()
-            lp_iso = tr.updated_ISOS.copy()
-
-        
-            # 4) MA baseline drift
-            tr.apply_ma_baseline_drift()
-            hp_da    = tr.updated_DA.copy()
-            hp_iso   = tr.updated_ISOS.copy()
-
-            # 5) lin regression fit
-            tr.align_channels_linReg()
-            fit_iso  = tr.isosbestic_fitted.copy()
-
-            # 6) compute dF/F
-            tr.compute_dFF()
-            raw_dff  = tr.dFF.copy()
-
-            # 7) zscore
-            tr.compute_zscore(method='standard')
-            z        = tr.zscore.copy()
-
-            # now plot them all in one figure:
-            steps = [
-                ([raw_da,    raw_iso], ["raw DA",    "raw ISOS"],      "1) Raw"),
-                ([lp_da,     lp_iso],  ["LP DA",     "LP ISOS"],       "2) smoothing"),
-                ([hp_da,     hp_iso],  ["HP DA",     "HP ISOS"],       "3) Moving Average (Drift)"),
-                ([hp_da,     fit_iso], ["DA",        "fitted ISOS"],    "4) Lin Reg fit"),
-                ([raw_dff],           ["raw ΔF/F"],         "5) dF/F"),
-                ([z],                 ["z-score"],           "6) z-score"),
-            ]
-
-            fig, axes = plt.subplots(len(steps), 1,
-                                     figsize=(12, 2.5*len(steps)),
-                                     sharex=True)
-            for ax, (sigs, labs, title) in zip(axes, steps):
-                for sig, lab in zip(sigs, labs):
-                    ax.plot(tr.timestamps, sig, lw=1.2, label=lab)
-                ax.set_ylabel(title, fontsize=10)
-                ax.legend(frameon=False, fontsize="small")
-            axes[-1].set_xlabel("Time (s)", fontsize=12)
-            fig.suptitle(f"{tr.subject_name} preprocessing steps", fontsize=14, y=0.99)
-            plt.tight_layout(rect=[0,0,1,0.96])
-            plt.show()
-
-    def preprocessing_plotted_keevers(self, time_segments_to_remove=None):
-        for trial_folder, tr in self.trials.items():
-            print(f"\n=== Processing {trial_folder} ===")
-
-             # 1) trim LED/artifact
-            tr.remove_initial_LED_artifact(t=120)
-            tr.remove_final_data_segment(t=10)
-
-            # 2) smooth (in‐place)
-            tr.smooth_and_apply(window_len_seconds=2)
-            raw_da   = tr.streams['DA']
-            raw_iso  = tr.streams['ISOS']
-
-            # 3) low‐pass
-            tr.lowpass_filter(cutoff_hz=3.0)
-            lp_da    = tr.updated_DA.copy()
-            lp_iso   = tr.updated_ISOS.copy()
-
-
-            # 5) IRLS fit
-            tr.align_channels_IRLS(IRLS_constant=1.4)
-            fit_iso  = tr.isosbestic_fitted.copy()
-            hp_da    = tr.updated_DA.copy()
-
-            # 6) compute dF/F
-            tr.compute_dFF()
-            raw_dff  = tr.dFF.copy()
-
-            # 4) high‐pass dF/F
-            tr.highpass_baseline_drift_dFF(cutoff=0.001)
-            raw_dff  = tr.dFF.copy()
-
-            # 7) zscore
-            tr.compute_zscore(method='standard')
-            z        = tr.zscore.copy()
-
-            # now plot them all in one figure:
-            steps = [
-                ([raw_da,    raw_iso], ["raw DA",    "raw ISOS"],      "1) Raw"),
-                ([lp_da,     lp_iso],  ["LP DA",     "LP ISOS"],       "2) Low-pass and smoothing"),
-                ([hp_da,     fit_iso], ["DA",        "fitted ISOS"],    "4) IRLS fit"),
-                ([raw_dff],           ["raw ΔF/F"],         "5) dF/F"),
-                ([raw_dff],  ["ΔF/F"],       "3) High-pass"),
-                ([z],                 ["z-score"],           "6) z-score"),
-            ]
-
-            fig, axes = plt.subplots(len(steps), 1,
-                                     figsize=(12, 2.5*len(steps)),
-                                     sharex=True)
-            for ax, (sigs, labs, title) in zip(axes, steps):
-                for sig, lab in zip(sigs, labs):
-                    ax.plot(tr.timestamps, sig, lw=1.2, label=lab)
-                ax.set_ylabel(title, fontsize=10)
-                ax.legend(frameon=False, fontsize="small")
-            axes[-1].set_xlabel("Time (s)", fontsize=12)
-            fig.suptitle(f"{tr.subject_name} preprocessing steps", fontsize=14, y=0.99)
-            plt.tight_layout(rect=[0,0,1,0.96])
-            plt.show()
-    
 
 
     def group_extract_manual_annotations(self, bout_definitions, first_only=True):

@@ -3,13 +3,12 @@ import pandas as pd
 import tdt
 import matplotlib.pyplot as plt
 import os
-from scipy.signal import butter, filtfilt, find_peaks
+from scipy.signal import butter, filtfilt, find_peaks, welch, resample_poly
 import numpy as np
 import statsmodels.api as sm
 from statsmodels.robust.norms import TukeyBiweight
+from typing import Sequence
 from scipy.optimize import curve_fit
-from scipy.signal import welch
-
 
 from sklearn.linear_model import LinearRegression
 
@@ -101,124 +100,100 @@ class Trial:
         print(f"Removed time segment from {start_time}s to {end_time}s.")
 
 
-    '''********************************** SMOOTHING AND FITTING **********************************'''
-
-    def smooth_and_apply_DA_ISOS(self, window_len_seconds: float = 1.0):
-        """
-        Smooth both DA and ISOS signals using a moving‐average window of the given length in seconds,
-        and store the results in self.updated_DA / self.updated_ISOS.
-        """
-        def smooth_signal(source: np.ndarray, n_samples: int) -> np.ndarray:
-            """Smooth a 1D array with a flat (uniform) window of n_samples size."""
-            if source.ndim != 1:
-                raise ValueError("smooth only accepts 1-dimensional arrays")
-            if n_samples < 3 or source.size < n_samples:
-                # too small to smooth meaningfully
-                return source
-
-            # Reflect padding to minimize edge artifacts
-            pad = n_samples - 1
-            s = np.r_[source[pad:0:-1], source, source[-2:-pad-1:-1]]
-            w = np.ones(n_samples, dtype=float) / n_samples
-            smoothed = np.convolve(s, w, mode='valid')
-            # Trim back to original length
-            start = pad // 2
-            return smoothed[start:start + source.size]
-
-        # Convert window length from seconds to samples
-        n_samp = int(round(window_len_seconds * self.fs))
-        if n_samp < 1:
-            raise ValueError("window_len_seconds too small for your sampling rate")
-
-        # Apply smoothing
-        if 'DA' in self.streams:
-            self.updated_DA = smooth_signal(self.streams['DA'], n_samp)
-        if 'ISOS' in self.streams:
-            self.updated_ISOS = smooth_signal(self.streams['ISOS'], n_samp)
-
-    def smooth_and_apply(
+    '''********************************** SMOOTHING AND DOWNSAMPLING **********************************'''
+    def smooth(
         self,
         window_len_seconds: float = 1.0,
-        smooth_zscore:      bool  = True
+        fields: Sequence[str] | None = None
     ):
         """
-        Smooth the self.dFF trace (and, if requested, self.zscore) using
-        a moving‐average window of the given length in seconds.
+        Smooth any number of 1D‐array attributes in place using a centered moving average
+        with reflect-padding to preserve length.
+
+        Parameters
+        ----------
+        window_len_seconds : float
+            length of the moving-average window in seconds.
+        fields : sequence of str, optional
+            List of attribute names to smooth.  E.g.
+            ['updated_DA','updated_ISOS','dFF','zscore'].
+            If None, defaults to smoothing only the two raw streams:
+               ['updated_DA','updated_ISOS'].
+
+        Raises
+        ------
+        ValueError
+            if window_len_seconds is too small for the sampling rate.
+        RuntimeError
+            if any field is missing or not a 1D array.
         """
-        def smooth_signal(source: np.ndarray, n_samples: int) -> np.ndarray:
-            if source is None or source.ndim != 1 or source.size < n_samples or n_samples < 3:
-                return source
-            pad = n_samples - 1
-            s = np.r_[source[pad:0:-1], source, source[-2:-pad-1:-1]]
-            w = np.ones(n_samples, dtype=float) / n_samples
+        # default fields
+        if fields is None:
+            fields = ['updated_DA', 'updated_ISOS']
+
+        # number of samples in window
+        n_samp = int(round(window_len_seconds * self.fs))
+        if n_samp < 3:
+            raise ValueError(f"window_len_seconds={window_len_seconds}s is too small at {self.fs} Hz")
+
+        def _smooth_signal(src: np.ndarray) -> np.ndarray:
+            if src is None or src.ndim != 1 or src.size < n_samp:
+                raise RuntimeError(f"Cannot smooth array of shape {src.shape}")
+            pad = n_samp - 1
+            # reflect‐pad
+            s = np.r_[src[pad:0:-1], src, src[-2:-pad-1:-1]]
+            w = np.ones(n_samp, dtype=float) / n_samp
             v = np.convolve(s, w, mode='valid')
             start = pad // 2
-            return v[start:start + source.size]
+            return v[start:start + src.size]
 
-        # compute n_samples from seconds
-        n_samp = int(round(window_len_seconds * self.fs))
-        if n_samp < 1:
-            raise ValueError("window_len_seconds too small for your sampling rate")
+        for attr in fields:
+            if not hasattr(self, attr):
+                raise RuntimeError(f"No such attribute to smooth: {attr}")
+            arr = getattr(self, attr)
+            smoothed = _smooth_signal(np.asarray(arr, dtype=float))
+            setattr(self, attr, smoothed)
 
-        # 1) smooth dFF
-        if hasattr(self, 'dFF') and self.dFF is not None:
-            self.dFF = smooth_signal(np.asarray(self.dFF, dtype=float), n_samp)
-        else:
-            raise RuntimeError("Cannot smooth: self.dFF is missing")
 
-        # 2) optionally smooth zscore
-        if smooth_zscore:
-            if hasattr(self, 'zscore') and self.zscore is not None:
-                self.zscore = smooth_signal(np.asarray(self.zscore, dtype=float), n_samp)
-            else:
-                # if no zscore yet, just skip or warn
-                print("Warning: no self.zscore to smooth.")
-
-    def centered_moving_average_with_padding(self, source, window=1):
+    def downsample(self, target_fs: float = 100.0):
         """
-        Applies a centered moving average to the input signal with edge padding to preserve the signal length.
-        Used in apply_ma_baseline_correction
-        
-        Args:
-            source (np.array): The signal for which the moving average is computed.
-            window (int): The window size used to compute the moving average.
-
-        Returns:
-            np.array: The centered moving average of the input signal with the original length preserved.
+        Downsample both DA and ISOS streams (and their timestamps) to `target_fs` Hz,
+        updating self.streams, self.updated_DA/ISOS, self.timestamps, and self.fs.
+        Clears any previously computed dFF or z-score.
         """
-        source = np.array(source)
+        if target_fs >= self.fs:
+            raise ValueError(f"Target rate {target_fs} must be lower than original {self.fs} Hz.")
 
-        if len(source.shape) == 1:
-            # Pad the signal by reflecting the edges to avoid cutting
-            padded_source = np.pad(source, (window // 2, window // 2), mode='reflect')
+        # compute up/down factors
+        up = int(target_fs)
+        down = int(self.fs)
 
-            # Calculate the cumulative sum and moving average
-            cumsum = np.cumsum(padded_source)
-            moving_avg = (cumsum[window:] - cumsum[:-window]) / float(window)
-            
-            return moving_avg[:len(source)]
-        else:
-            raise RuntimeError(f"Input array has too many dimensions. Input: {len(source.shape)}D, Required: 1D")
+        # anti-aliased polyphase resampling
+        da_ds   = resample_poly(self.streams['DA'],   up, down)
+        iso_ds  = resample_poly(self.streams['ISOS'], up, down)
+
+        # update sampling rate
+        self.fs = target_fs
+
+        # overwrite raw streams
+        self.streams['DA']   = da_ds
+        self.streams['ISOS'] = iso_ds
+
+        # reset “updated” traces to match
+        self.updated_DA   = da_ds.copy()
+        self.updated_ISOS = iso_ds.copy()
+
+        # rebuild timestamps (preserving start time)
+        t0 = self.timestamps[0]
+        n  = len(da_ds)
+        self.timestamps = t0 + np.arange(n) / self.fs
+
+        # clear any downstream computations
+        self.dFF    = None
+        self.zscore = None
+
     
-
-    def apply_ma_baseline_drift(self, window_len_seconds=30):
-        """
-        Applies centered moving average (MA) to both DA and ISOS signals and performs baseline correction,
-        with padding to avoid shortening the signals. 
-
-        Args:
-            window_len_seconds (int): The window size in seconds for the moving average filter (default: 30 seconds).
-        """
-        # Adjust the window length in data points
-        window_len = int(self.fs) * window_len_seconds
-
-        # Apply centered moving average with padding to both DA and ISOS streams
-        isosbestic_fc = self.centered_moving_average_with_padding(self.updated_ISOS, window_len)
-        DA_fc = self.centered_moving_average_with_padding(self.updated_DA, window_len)
-
-        self.updated_ISOS = (self.updated_ISOS - isosbestic_fc) / isosbestic_fc
-        self.updated_DA = (self.updated_DA - DA_fc) / DA_fc
-
+    '''********************************** FILTERING **********************************'''
     def lowpass_filter(self, cutoff_hz: float = 3.0):
             """
             2nd-order Butterworth low-pass @ cutoff_hz (Hz), applied to the already-updated DA & ISOS traces.
@@ -232,6 +207,8 @@ class Trial:
 
 
 
+
+    
     def highpass_baseline_drift_dFF(self, cutoff=0.001):
         """
         Applies a high-pass Butterworth filter to remove slow drift from the DA and ISOS signals.
@@ -244,7 +221,7 @@ class Trial:
         self.dFF = filtfilt(b, a, self.dFF, padtype='even')
 
 
-    def highpass_baseline_drift_Recentered(self, cutoff=0.001):
+    def baseline_drift_highpass_recentered(self, cutoff=0.001):
         """
         High-pass filter out the slow drift *but* keep the original
         DC-level by adding back the mean afterwards.
@@ -265,24 +242,12 @@ class Trial:
         self.updated_DA   = hp_DA   + mu_DA
         self.updated_ISOS = hp_ISOS + mu_ISOS
 
-    # def align_channels(self):
-    #     """
-    #     Function that performs linear regression between isosbestic_corrected and DA_corrected signals, and aligns
-    #     the fitted isosbestic with the DA signal. 
-
-    #     Baseline correction must have occurred
-    #     """
-    #     reg = LinearRegression()
-        
-    #     n = len(self.updated_DA)
-    #     reg.fit(self.updated_ISOS.reshape(n, 1), self.updated_DA.reshape(n, 1))
-    #     self.isosbestic_fitted = reg.predict(self.updated_ISOS.reshape(n, 1)).reshape(n,)
 
     def _double_exponential(t, c, A_fast, A_slow, tau_slow, tau_mul):
             tau_fast = tau_slow * tau_mul
             return c + A_slow * np.exp(-t / tau_slow) + A_fast * np.exp(-t / tau_fast)
     
-    def correct_photobleach(self,
+    def basline_drift_double_exponential(self,
                             p0: dict | None = None,
                             bounds: dict | None = None,
                             maxfev: int = 2000):
@@ -334,7 +299,11 @@ class Trial:
 
         return results
 
-    def align_channels_poly(self):
+
+
+
+    '''********************************** MOTION CORRECTION **********************************'''
+    def motion_correction_align_channels_poly(self):
         """
         Fit a degree-1 polynomial (slope + intercept) to predict DA from the isosbestic channel.
         Stores the fitted control trace in self.isosbestic_fitted, which you can then use
@@ -354,7 +323,7 @@ class Trial:
         print(f"Align fit: DA ≃ {m:.4f}·ISOS + {b:.4f}")
 
 
-    def align_channels_linReg(self):
+    def motion_correction_align_channels_linReg(self):
         """
         Use ordinary least-squares LinearRegression to fit the isosbestic channel
         to the DA channel and store the fitted control trace in self.isosbestic_fitted.
@@ -366,7 +335,7 @@ class Trial:
         reg.fit(self.updated_ISOS.reshape(n, 1), self.updated_DA.reshape(n, 1))
         self.isosbestic_fitted = reg.predict(self.updated_ISOS.reshape(n, 1)).reshape(n,)
 
-    def align_channels_IRLS(self, IRLS_constant: float = 1.4):
+    def motion_correction_align_channels_IRLS(self, IRLS_constant: float = 1.4):
         """
         Fit a robust (Tukey bisquare) regression of DA on ISOS,
         store the fitted control trace in self.isosbestic_fitted.
@@ -390,6 +359,7 @@ class Trial:
 
 
 
+    '''********************************** NORMALIZATION METHODS **********************************'''
     def compute_dFF(self):
         """
         Function that computes the dF/F of the fitted isosbestic and DA signals and saves it in self.dFF.

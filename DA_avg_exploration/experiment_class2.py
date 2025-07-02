@@ -111,6 +111,126 @@ class Experiment2:
             fig.suptitle(f"{tr.subject_name} preprocessing steps", fontsize=14, y=0.99)
             plt.tight_layout(rect=[0,0,1,0.96])
             plt.show()
+    def plot_psd_and_drift(self,
+                           channel='DA',
+                           drift_cutoff=0.1,
+                           zoom_cutoff=0.1,
+                           nperseg_seconds=4):
+        """
+        1) Overlays the PSD of every trial (log–log),
+        2) Zooms into the low-frequency band to show drift,
+        3) Prints % power < drift_cutoff,
+        4) Estimates the knee frequency via curvature.
+        """
+        plt.figure(figsize=(8,6))
+        for trial_name, tr in self.trials.items():
+            f, Pxx = tr.compute_psd(channel=channel,
+                                    nperseg_seconds=nperseg_seconds)
+            plt.loglog(f, Pxx, alpha=0.5, label=trial_name)
+        plt.title(f"All trials PSD — {channel}")
+        plt.xlabel("Frequency (Hz)")
+        plt.ylabel("PSD")
+        plt.legend(ncol=2, fontsize='small', loc='upper right')
+        plt.tight_layout()
+        plt.show()
+
+        # Now zoom into the drift band
+        plt.figure(figsize=(8,4))
+        for trial_name, tr in self.trials.items():
+            f, Pxx = tr.compute_psd(channel=channel,
+                                    nperseg_seconds=nperseg_seconds)
+            mask = f <= zoom_cutoff
+            plt.loglog(f[mask], Pxx[mask], alpha=0.8, label=trial_name)
+        plt.title(f"Drift band (<{zoom_cutoff} Hz)")
+        plt.xlabel("Frequency (Hz)")
+        plt.ylabel("PSD")
+        plt.tight_layout()
+        plt.show()
+
+        # Quantify percent power below drift_cutoff
+        print(f"\nPower fraction below {drift_cutoff} Hz:")
+        for trial_name, tr in self.trials.items():
+            f, Pxx = tr.compute_psd(channel=channel,
+                                    nperseg_seconds=nperseg_seconds)
+            total_power = np.trapz(Pxx, f)
+            drift_power = np.trapz(Pxx[f < drift_cutoff], f[f < drift_cutoff])
+            frac = 100 * drift_power / total_power
+            print(f"  {trial_name}: {frac:.1f}%")
+
+        # Estimate knee frequency via curvature on log–log PSD (first trial only)
+        # (just to give you an idea of where the spectrum bends)
+        tr0 = next(iter(self.trials.values()))
+        f0, P0 = tr0.compute_psd(channel=channel,
+                                 nperseg_seconds=nperseg_seconds)
+        # skip the zero-frequency bin
+        lf = np.log10(f0[1:])
+        lP = np.log10(P0[1:])
+        # second difference (approx. curvature) on log–log curve
+        curvature = np.diff(lP, n=2)
+        knee_idx = np.argmax(curvature) + 1
+        knee_freq = 10**lf[knee_idx]
+        print(f"\nEstimated knee (drift→1/f transition) at ≈ {knee_freq:.3f} Hz")
+
+
+    def preprocessing_plotted_keevers(self, time_segments_to_remove=None):
+        for trial_folder, tr in self.trials.items():
+            print(f"\n=== Processing {trial_folder} ===")
+
+             # 1) trim LED/artifact
+            tr.remove_initial_LED_artifact(t=120)
+            tr.remove_final_data_segment(t=10)
+
+            # 2) smooth (in‐place)
+            tr.smooth_and_apply(window_len_seconds=2)
+            raw_da   = tr.streams['DA']
+            raw_iso  = tr.streams['ISOS']
+
+            # 3) low‐pass
+            tr.lowpass_filter(cutoff_hz=3.0)
+            lp_da    = tr.updated_DA.copy()
+            lp_iso   = tr.updated_ISOS.copy()
+
+
+            # 5) IRLS fit
+            tr.align_channels_IRLS(IRLS_constant=1.4)
+            fit_iso  = tr.isosbestic_fitted.copy()
+            hp_da    = tr.updated_DA.copy()
+
+            # 6) compute dF/F
+            tr.compute_dFF()
+            raw_dff  = tr.dFF.copy()
+
+            # 4) high‐pass dF/F
+            tr.highpass_baseline_drift_dFF(cutoff=0.001)
+            raw_dff  = tr.dFF.copy()
+
+            # 7) zscore
+            tr.compute_zscore(method='standard')
+            z        = tr.zscore.copy()
+
+            # now plot them all in one figure:
+            steps = [
+                ([raw_da,    raw_iso], ["raw DA",    "raw ISOS"],      "1) Raw"),
+                ([lp_da,     lp_iso],  ["LP DA",     "LP ISOS"],       "2) Low-pass and smoothing"),
+                ([hp_da,     fit_iso], ["DA",        "fitted ISOS"],    "4) IRLS fit"),
+                ([raw_dff],           ["raw ΔF/F"],         "5) dF/F"),
+                ([raw_dff],  ["ΔF/F"],       "3) High-pass"),
+                ([z],                 ["z-score"],           "6) z-score"),
+            ]
+
+            fig, axes = plt.subplots(len(steps), 1,
+                                     figsize=(12, 2.5*len(steps)),
+                                     sharex=True)
+            for ax, (sigs, labs, title) in zip(axes, steps):
+                for sig, lab in zip(sigs, labs):
+                    ax.plot(tr.timestamps, sig, lw=1.2, label=lab)
+                ax.set_ylabel(title, fontsize=10)
+                ax.legend(frameon=False, fontsize="small")
+            axes[-1].set_xlabel("Time (s)", fontsize=12)
+            fig.suptitle(f"{tr.subject_name} preprocessing steps", fontsize=14, y=0.99)
+            plt.tight_layout(rect=[0,0,1,0.96])
+            plt.show()
+    
 
     def group_extract_manual_annotations(self, bout_definitions, first_only=True):
         """
