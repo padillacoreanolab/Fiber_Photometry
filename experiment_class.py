@@ -423,81 +423,74 @@ class Experiment:
             plt.tight_layout(rect=[0, 0, 1, 0.96])
             plt.show()
 
-
-
-    def preprocessing_plotted_Urs(self, max_time=None):
+    def preprocessing_plotted_all_same_axis(self, max_time=None):
         for trial_folder, tr in self.trials.items():
             print(f"\n=== Processing {trial_folder} ===")
-
-            # 0) prepare: downsample + trim artifacts
+            
+            # Downsample
             tr.downsample(target_fs=100)
+
+            # 1) trim LED/artifact
             tr.remove_initial_LED_artifact(t=30)
             tr.remove_final_data_segment(t=10)
 
-            # raw streams
-            ts      = tr.timestamps
+            # grab raw
             raw_da  = tr.streams['DA']
             raw_iso = tr.streams['ISOS']
 
-            # optional time cutoff
+            # 2) low-pass
+            tr.lowpass_filter(cutoff_hz=3.0)
+            lp_da   = tr.updated_DA.copy()
+            lp_iso  = tr.updated_ISOS.copy()
+
+            # 3) bleach-correct
+            tr.basline_drift_double_exponential()
+            hp_da   = tr.updated_DA.copy()
+            hp_iso  = tr.updated_ISOS.copy()
+
+            # 4) IRLS fit
+            tr.motion_correction_align_channels_IRLS(IRLS_constant=1.4)
+            fit_iso = tr.isosbestic_fitted.copy()
+
+            # 5) compute dF/F
+            tr.compute_dFF()
+            raw_dff = tr.dFF.copy()
+
+            # 6) z-score
+            tr.compute_zscore(method='standard')
+            z       = tr.zscore.copy()
+
+            # time‐mask if desired
+            ts = tr.timestamps
             if max_time is not None:
                 m = ts <= max_time
-                ts, raw_da, raw_iso = ts[m], raw_da[m], raw_iso[m]
+                ts, raw_da, raw_iso, lp_da, lp_iso, hp_da, hp_iso, fit_iso, raw_dff, z = (
+                    ts[m], raw_da[m], raw_iso[m], lp_da[m], lp_iso[m],
+                    hp_da[m], hp_iso[m], fit_iso[m], raw_dff[m], z[m]
+                )
 
-            # 1) Raw
-            da_raw, iso_raw = raw_da, raw_iso
-
-            # 2) Linear detrend (polyfit) on [time → signal] for each channel
-            m_da, b_da   = np.polyfit(ts, da_raw, 1)
-            baseline_da  = m_da * ts + b_da
-            da_detrended = da_raw - baseline_da + np.mean(baseline_da)
-
-            m_iso, b_iso    = np.polyfit(ts, iso_raw, 1)
-            baseline_iso    = m_iso * ts + b_iso
-            iso_detrended   = iso_raw - baseline_iso + np.mean(baseline_iso)
-
-            # 3) compute %ΔF/F from detrended traces
-            #    NOTE: your compute_dFF() expects tr.isosbestic_fitted,
-            #          so here we just do it inline:
-            dF      = da_detrended - iso_detrended
-            dFF     = 100 * (dF / iso_detrended)
-
-            # 4) z-score
-            zscore  = (dFF - np.nanmean(dFF)) / np.nanstd(dFF)
-            tr.zscore = zscore
-
-            # assemble plotting steps
             steps = [
-                ((da_raw,      iso_raw),    ("raw DA",    "raw ISOS"),      "1) Raw"),
-                ((da_detrended, iso_detrended), ("DA det.", "ISOS det."),   "2) Linear detrend"),
-                ((dFF,),       ("raw %ΔF/F",),   "3) %ΔF/F"),
-                ((zscore,),    ("z-score",),      "4) z-score"),
+                ((raw_da,  raw_iso),  ("raw DA",  "raw ISOS"),    "1) Raw"),
+                ((lp_da,   lp_iso),   ("LP DA",   "LP ISOS"),     "2) Low-pass (3 Hz)"),
+                ((hp_da,   hp_iso),   ("DA",      "ISOS"),         "3) Double Exponential"),
+                ((hp_da,   fit_iso),  ("DA",      "fitted ISOS"),  "4) IRLS fit"),
+                ((raw_dff,),          ("raw ΔF/F",),             "5) dF/F"),
+                ((z,),                ("z-score",),               "6) z-score"),
             ]
 
             fig, axes = plt.subplots(len(steps), 1,
                                     figsize=(12, 2.5*len(steps)),
                                     sharex=True)
-            dual = {"1) Raw", "2) Linear detrend"}
 
-            for ax, ((sig1, *rest), (lbl1, *lbl_rest), title) in zip(axes, steps):
-                if title in dual:
-                    ax1, ax2 = ax, ax.twinx()
-                    ax1.plot(ts, sig1,   color='tab:blue',  lw=1.2, label=lbl1)
-                    ax2.plot(ts, rest[0], color='tab:orange', lw=1.2, label=lbl_rest[0])
-                    ax1.spines['left'].set_position(('outward', 10))
-                    ax2.spines['right'].set_position(('outward', 40))
-                    ax1.set_ylabel(f"{title}\nDA",   color='tab:blue',   labelpad=8)
-                    ax2.set_ylabel(f"{title}\nISOS", color='tab:orange', labelpad=8)
-                    # combined legend
-                    h1, l1 = ax1.get_legend_handles_labels()
-                    h2, l2 = ax2.get_legend_handles_labels()
-                    ax1.legend(h1+h2, l1+l2, loc='upper right', fontsize='small')
-                else:
-                    ax.plot(ts, sig1, lw=1.2, label=lbl1)
-                    if rest:
-                        ax.plot(ts, rest[0], lw=1.2, label=lbl_rest[0])
-                    ax.set_ylabel(title, fontsize=10)
-                    ax.legend(frameon=False, fontsize='small')
+            for ax, ((sig1, *rest), (lbl1, *rest_lbls), title) in zip(axes, steps):
+                ax.plot(ts, sig1, lw=1.2, label=lbl1)
+                if rest:
+                    ax.plot(ts, rest[0], lw=1.2, label=rest_lbls[0])
+                ax.set_ylabel(title, fontsize=10)
+                ax.legend(frameon=False, fontsize="small")
+            
+            xticks = range(0, int(ts.max()) + 50, 50)
+            ax.set_xticks(xticks)
 
             axes[-1].set_xlabel("Time (s)", fontsize=12)
             fig.suptitle(f"{tr.subject_name} preprocessing steps", fontsize=14, y=0.99)
@@ -505,7 +498,84 @@ class Experiment:
             plt.show()
 
 
+        def preprocessing_plotted_Urs(self, max_time=None):
+            for trial_folder, tr in self.trials.items():
+                print(f"\n=== Processing {trial_folder} ===")
 
+                # 0) prepare: downsample + trim artifacts
+                tr.downsample(target_fs=100)
+                tr.remove_initial_LED_artifact(t=30)
+                tr.remove_final_data_segment(t=10)
+
+                # raw streams
+                ts      = tr.timestamps
+                raw_da  = tr.streams['DA']
+                raw_iso = tr.streams['ISOS']
+
+                # optional time cutoff
+                if max_time is not None:
+                    m = ts <= max_time
+                    ts, raw_da, raw_iso = ts[m], raw_da[m], raw_iso[m]
+
+                # 1) Raw
+                da_raw, iso_raw = raw_da, raw_iso
+
+                # 2) Linear detrend (polyfit) on [time → signal] for each channel
+                m_da, b_da   = np.polyfit(ts, da_raw, 1)
+                baseline_da  = m_da * ts + b_da
+                da_detrended = da_raw - baseline_da + np.mean(baseline_da)
+
+                m_iso, b_iso    = np.polyfit(ts, iso_raw, 1)
+                baseline_iso    = m_iso * ts + b_iso
+                iso_detrended   = iso_raw - baseline_iso + np.mean(baseline_iso)
+
+                # 3) compute %ΔF/F from detrended traces
+                #    NOTE: your compute_dFF() expects tr.isosbestic_fitted,
+                #          so here we just do it inline:
+                dF      = da_detrended - iso_detrended
+                dFF     = 100 * (dF / iso_detrended)
+
+                # 4) z-score
+                zscore  = (dFF - np.nanmean(dFF)) / np.nanstd(dFF)
+                tr.zscore = zscore
+
+                # assemble plotting steps
+                steps = [
+                    ((da_raw,      iso_raw),    ("raw DA",    "raw ISOS"),      "1) Raw"),
+                    ((da_detrended, iso_detrended), ("DA det.", "ISOS det."),   "2) Linear detrend"),
+                    ((dFF,),       ("raw %ΔF/F",),   "3) %ΔF/F"),
+                    ((zscore,),    ("z-score",),      "4) z-score"),
+                ]
+
+                fig, axes = plt.subplots(len(steps), 1,
+                                        figsize=(12, 2.5*len(steps)),
+                                        sharex=True)
+                dual = {"1) Raw", "2) Linear detrend"}
+
+                for ax, ((sig1, *rest), (lbl1, *lbl_rest), title) in zip(axes, steps):
+                    if title in dual:
+                        ax1, ax2 = ax, ax.twinx()
+                        ax1.plot(ts, sig1,   color='tab:blue',  lw=1.2, label=lbl1)
+                        ax2.plot(ts, rest[0], color='tab:orange', lw=1.2, label=lbl_rest[0])
+                        ax1.spines['left'].set_position(('outward', 10))
+                        ax2.spines['right'].set_position(('outward', 40))
+                        ax1.set_ylabel(f"{title}\nDA",   color='tab:blue',   labelpad=8)
+                        ax2.set_ylabel(f"{title}\nISOS", color='tab:orange', labelpad=8)
+                        # combined legend
+                        h1, l1 = ax1.get_legend_handles_labels()
+                        h2, l2 = ax2.get_legend_handles_labels()
+                        ax1.legend(h1+h2, l1+l2, loc='upper right', fontsize='small')
+                    else:
+                        ax.plot(ts, sig1, lw=1.2, label=lbl1)
+                        if rest:
+                            ax.plot(ts, rest[0], lw=1.2, label=lbl_rest[0])
+                        ax.set_ylabel(title, fontsize=10)
+                        ax.legend(frameon=False, fontsize='small')
+
+                axes[-1].set_xlabel("Time (s)", fontsize=12)
+                fig.suptitle(f"{tr.subject_name} preprocessing steps", fontsize=14, y=0.99)
+                plt.tight_layout(rect=[0, 0, 1, 0.96])
+                plt.show()
 
 
     def preprocessing_plotted_hp(self, max_time=None):
@@ -978,8 +1048,6 @@ class Experiment:
         bout_name,
         behavior="Investigation"
     ):
-        import matplotlib.pyplot as plt
-        import numpy as np
 
         trial = self.trials.get(trial_name, None)
         if trial is None or not hasattr(trial, 'behaviors'):
