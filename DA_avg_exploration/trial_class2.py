@@ -200,7 +200,37 @@ class Trial2:
         reg.fit(self.updated_ISOS.reshape(n, 1), self.updated_DA.reshape(n, 1))
         self.isosbestic_fitted = reg.predict(self.updated_ISOS.reshape(n, 1)).reshape(n,)
 
+    def motion_correction_align_channels_poly(self):
+            """
+            Fit a degree-1 polynomial (slope + intercept) to predict DA from the isosbestic channel.
+            Stores the fitted control trace in self.isosbestic_fitted, which you can then use
+            for dF/F calculation (e.g. (DA – fitted_control)/fitted_control).
+            """
+            # grab your two equal-length 1D arrays
+            x = np.asarray(self.updated_ISOS, dtype=float)
+            y = np.asarray(self.updated_DA,   dtype=float)
 
+            # perform degree-1 polynomial fit: y ≃ m·x + b
+            m, b = np.polyfit(x, y, deg=1)
+
+            # build the fitted control trace
+            self.isosbestic_fitted = m * x + b
+
+            # optional: print fit parameters
+            print(f"Align fit: DA ≃ {m:.4f}·ISOS + {b:.4f}")
+
+
+    def motion_correction_align_channels_linReg(self):
+        """
+        Use ordinary least-squares LinearRegression to fit the isosbestic channel
+        to the DA channel and store the fitted control trace in self.isosbestic_fitted.
+        """
+        # pull out your two equal-length 1D arrays
+        reg = LinearRegression()
+        
+        n = len(self.updated_DA)
+        reg.fit(self.updated_ISOS.reshape(n, 1), self.updated_DA.reshape(n, 1))
+        self.isosbestic_fitted = reg.predict(self.updated_ISOS.reshape(n, 1)).reshape(n,)
     def compute_dFF(self):
         """
         Function that computes the dF/F of the fitted isosbestic and DA signals and saves it in self.dFF.

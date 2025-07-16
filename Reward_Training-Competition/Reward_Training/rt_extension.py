@@ -74,112 +74,209 @@ class Reward_Training(RTC):
 
 
     '''********************************** PSTH CODE  **********************************'''
-    def plot_event_index_heatmap(self, event_type, max_events, directory_path, brain_region, 
+    def plot_events_heatmap(self, event_type, max_events, directory_path, brain_region, 
                              vmin, vmax, df=None, bin_size=125):
         """
         Plots a heatmap in which each row is the average DA trace (PSTH) for a given 
         event number (e.g., tone number) across subjects/trials, with tone #1 at the top.
-        
+
         Parameters:
             event_type (str): The event type (e.g., 'Tone' or 'Lick').
             max_events (int): The maximum event number to include.
-            directory_path (str or None): Directory to save the plot (if None, the plot is not saved).
-            brain_region (str): Brain region used to filter subjects.
-            vmin (float): Lower bound of the color scale (Z-score).
-            vmax (float): Upper bound of the color scale (Z-score).
-            df (DataFrame, optional): DataFrame to use (defaults to self.da_df).
-            bin_size (int, optional): Bin size for downsampling.
+            directory_path (str or None): Directory to save the plot (if None, not saved).
+            brain_region (str): Brain region filter ('mPFC' or 'NAc').
+            vmin (float): Lower bound of the color scale (Z‑score).
+            vmax (float): Upper bound of the color scale (Z‑score).
+            df (pd.DataFrame, optional): DataFrame to use (defaults to self.da_df).
+            bin_size (int): Bin size for optional downsampling.
         """
 
         if df is None:
             df = self.da_df
 
-        def split_by_subject(df1, region):
-            df_n = df1[df1['subject_name'].str.startswith('n')]
-            df_p = df1[df1['subject_name'].str.startswith('p')]
-            return df_p if region == 'mPFC' else df_n
-
-        df = split_by_subject(df, brain_region)
-
-        first_row = df.iloc[0]
-        event_time_axes = first_row.get(f'{event_type} Event_Time_Axis', [])
-        if not isinstance(event_time_axes, list) or len(event_time_axes) == 0:
-            print(f"No {event_type} event time axes found.")
+        # Filter by region prefix
+        df = df[df['subject_name'].str.startswith('p')] if brain_region == 'mPFC' \
+            else df[df['subject_name'].str.startswith('n')]
+        if df.empty:
+            print(f"No data for brain region '{brain_region}'.")
             return
-        common_time_axis = event_time_axes[0]
 
-        # print(f"[DEBUG] Heatmap: Averaging {event_type} data for first {max_events} events in brain region {brain_region}")
+        # Grab the common time axis
+        axes_list = df.iloc[0].get(f'{event_type}_Time_Axis', [])
+        if not isinstance(axes_list, list) or len(axes_list) == 0:
+            print(f"No {event_type} Time_Axis found.")
+            return
+        common_time_axis = np.array(axes_list[0])
 
+        # Collect and average traces for each event index
         averaged_event_traces = []
-        for event_idx in range(max_events):
-            event_traces = []
-            for i, row in df.iterrows():
-                event_z_list = row.get(f'{event_type} Event_Zscore', [])
-                if isinstance(event_z_list, list) and len(event_z_list) > event_idx:
-                    trace = np.array(event_z_list[event_idx])
-                    print(f"[DEBUG] Row {i}, subject {row['subject_name']}, event {event_idx+1}: trace shape {trace.shape}, first 5 values: {trace[:5]}")
-                    event_traces.append(trace)
-            if len(event_traces) > 0:
-                avg_trace = np.mean(np.vstack(event_traces), axis=0)
-                print(f"[DEBUG] Averaged trace for event {event_idx+1}: first 10 values: {avg_trace[:10]}")
+        for idx in range(max_events):
+            traces = []
+            for _, row in df.iterrows():
+                zlist = row.get(f'{event_type}_Zscore', [])
+                if isinstance(zlist, list) and len(zlist) > idx:
+                    traces.append(np.array(zlist[idx]))
+            if traces:
+                averaged_event_traces.append(np.nanmean(np.vstack(traces), axis=0))
             else:
-                avg_trace = np.full(len(common_time_axis), np.nan)
-            averaged_event_traces.append(avg_trace)
+                averaged_event_traces.append(np.array([]))
 
-        heatmap_data = np.array(averaged_event_traces)
+        # Truncate to shortest length
+        min_len = min((len(r) for r in averaged_event_traces if r.size), default=0)
+        if min_len == 0:
+            print("No valid event traces to plot.")
+            return
+        heatmap_data = np.vstack([r[:min_len] for r in averaged_event_traces])
+        time_axis = common_time_axis[:min_len]
 
-        if hasattr(self, 'downsample_data'):
-            downsampled_data = []
-            for row_trace in heatmap_data:
-                down_row, _ = self.downsample_data(row_trace, common_time_axis, bin_size)
-                downsampled_data.append(down_row)
-            heatmap_data = np.array(downsampled_data)
-            dummy = np.zeros(len(common_time_axis))
-            _, downsampled_time_axis = self.downsample_data(dummy, common_time_axis, bin_size)
-        else:
-            downsampled_time_axis = common_time_axis
-
-
-        # Invert the y-axis so that tone 1 appears at the top.
-        x_min, x_max = downsampled_time_axis[0], downsampled_time_axis[-1]
-        extent = [x_min, x_max, max_events, 1]
+        # Plot heatmap
+        x_min, x_max = time_axis[0], time_axis[-1]
+        # extent: y from max_events→0 so row1 at top
+        extent = [x_min, x_max, max_events, 0]
 
         fig, ax = plt.subplots(figsize=(12, 8))
-        im = ax.imshow(heatmap_data, aspect='auto', 
-                    cmap='inferno' if brain_region == 'mPFC' else 'viridis',
-                    origin='upper', extent=extent, vmin=vmin, vmax=vmax)
+        cmap_choice = 'inferno' if brain_region == 'mPFC' else 'viridis'
+        im = ax.imshow(
+            heatmap_data,
+            aspect='auto',
+            cmap=cmap_choice,
+            origin='upper',
+            extent=extent,
+            vmin=vmin,
+            vmax=vmax,
+            interpolation='nearest'
+        )
 
+        # Formatting
         ax.set_xlim(x_min, x_max)
-        ax.set_xlabel('Time from Tone Onset (s)', fontsize=30)
-        ax.set_ylabel(f'{event_type} Number', fontsize=30)
-        
-        # Force x-axis ticks to be exactly [-4, 0, 4, 10]
+        ax.set_xlabel('Time from Event Onset (s)', fontsize=24)
+        ax.set_ylabel(f'{event_type} Number', fontsize=24)
         ax.set_xticks([-4, 0, 4, 10])
-        ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=30)
-        
-        # For the y-axis, we'll display 5 ticks (evenly spaced).
-        yticks = np.linspace(1, max_events, 5)
-        ax.set_yticks(yticks)
-        ax.set_yticklabels([f"{int(round(t))}" for t in yticks], fontsize=30)
+        ax.set_xticklabels(['-4', '0', '4', '10'], fontsize=20)
+
+        # y‐ticks at each row (center of each block)
+        y_centers = np.arange(max_events) + 0.5
+        ax.set_yticks(y_centers)
+        ax.set_yticklabels([str(i+1) for i in range(max_events)], fontsize=20)
 
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-        ax.spines['bottom'].set_linewidth(3)
-        ax.spines['left'].set_linewidth(3)
+        ax.spines['bottom'].set_linewidth(2)
+        ax.spines['left'].set_linewidth(2)
         ax.axvline(0, color='white', linestyle='--', linewidth=2)
         ax.axvline(4, color='#FF69B4', linestyle='-', linewidth=2)
-        ax.set_title(f'{brain_region} {event_type} Averaged Heatmap (Tone 1–{max_events})', 
-                    fontsize=32, pad=30)
+        ax.set_title(f'{brain_region} {event_type} Heatmap 1–{max_events}', fontsize=28)
 
         cbar = fig.colorbar(im, ax=ax, orientation='vertical', shrink=0.7)
-        cbar.ax.tick_params(labelsize=30)
-        cbar.set_label("Event Induced Z-score", fontsize=30)
+        cbar.ax.tick_params(labelsize=20)
+        cbar.set_label('Z-score', fontsize=20)
 
-        if directory_path is not None:
-            save_name = f'{brain_region}_{event_type}_Heatmap_Averaged_1to{max_events}.png'
-            save_path = os.path.join(directory_path, save_name)
-            plt.savefig(save_path, transparent=True, dpi=300, bbox_inches="tight")
+        if directory_path:
+            fname = f'{brain_region}_{event_type}_Heatmap_1to{max_events}.png'
+            plt.savefig(os.path.join(directory_path, fname),
+                        dpi=300, bbox_inches='tight', transparent=True)
 
+        plt.tight_layout()
+        plt.show()
+
+    def plot_event_subject_heatmap(self,
+                              event_type: str,
+                              event_index: int,
+                              directory_path: str,
+                              brain_region: str,
+                              vmin: float,
+                              vmax: float,
+                              df=None):
+        """
+        Plots a heatmap in which each row is the DA trace (PSTH) for a single specified
+        event (e.g., Tone #3) across different subjects, with a crisp block per subject.
+        """
+        # 1) grab data
+        if df is None:
+            df = self.da_df.copy()
+
+        # 2) filter by region
+        df = df[df['subject_name'].str.startswith('p')] if brain_region == 'mPFC' \
+            else df[df['subject_name'].str.startswith('n')]
+        if df.empty:
+            print(f"No rows for region '{brain_region}'.")
+            return
+
+        # 3) pull the common time‐axis for this event
+        axes_list = df.iloc[0].get(f'{event_type}_Time_Axis', [])
+        if not isinstance(axes_list, list) or len(axes_list) <= event_index:
+            print(f"No Time_Axis for {event_type} index {event_index}.")
+            return
+        time_axis = np.array(axes_list[event_index])
+
+        # 4) collect each subject’s Z‐scored trace
+        subject_names = []
+        traces = []
+        for _, row in df.iterrows():
+            zlist = row.get(f'{event_type}_Zscore', [])
+            if isinstance(zlist, list) and len(zlist) > event_index:
+                subject_names.append(row['subject_name'])
+                traces.append(np.array(zlist[event_index]))
+        if not traces:
+            print("No traces found.")
+            return
+
+        # 5) truncate to shortest
+        min_len = min(len(t) for t in traces)
+        traces = [t[:min_len] for t in traces]
+        time_axis = time_axis[:min_len]
+
+        # 6) stack into (n_subjects × n_time) array
+        heatmap_data = np.vstack(traces)
+        n_subj = heatmap_data.shape[0]
+
+        # 7) set extent so row 0 is at the top band, row n_subj-1 at bottom
+        extent = [time_axis[0], time_axis[-1], n_subj, 0]
+
+        # 8) plot
+        fig, ax = plt.subplots(figsize=(8, max(2, n_subj * 0.4)))
+        cmap = 'inferno' if brain_region == 'mPFC' else 'viridis'
+        im = ax.imshow(
+            heatmap_data,
+            aspect='auto',
+            origin='upper',
+            extent=extent,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            interpolation='nearest'
+        )
+
+        # 9) tidy up axes
+        ax.set_xlabel('Time from Event Onset (s)', fontsize=14)
+        ax.set_ylabel('Subject', fontsize=14)
+        ax.set_title(f'{brain_region} {event_type} #{event_index+1} by Subject', fontsize=16)
+
+        # vertical event markers
+        for t in (0, 4):
+            ax.axvline(t, color='white' if t==0 else '#FF69B4',
+                    linestyle='--' if t==0 else '-', lw=1.5)
+
+        # x‐ticks
+        ax.set_xticks([-4, 0, 4, 10])
+        ax.set_xticklabels(['-4', '0', '4', '10'])
+
+        # y‐ticks at each band’s center
+        ax.set_yticks(np.arange(n_subj) + 0.5)
+        ax.set_yticklabels(subject_names, fontsize=8)
+
+        # colorbar
+        cbar = fig.colorbar(im, ax=ax, orientation='vertical', shrink=0.7)
+        cbar.set_label('Z-score', fontsize=12)
+        cbar.ax.tick_params(labelsize=10)
+
+        # 10) save if requested
+        if directory_path:
+            fname = f'{brain_region}_{event_type}_{event_index+1}_by_subject_heatmap.png'
+            plt.savefig(os.path.join(directory_path, fname),
+                        dpi=300, bbox_inches='tight', transparent=True)
+
+        plt.tight_layout()
         plt.show()
 
 

@@ -203,7 +203,7 @@ class Trial:
             # zero-phase filter
             self.updated_DA   = filtfilt(b, a, self.updated_DA,   padtype='even')
             self.updated_ISOS = filtfilt(b, a, self.updated_ISOS, padtype='even')
-            print(f"Low-pass filtered @ {cutoff_hz} Hz")
+            # print(f"Low-pass filtered @ {cutoff_hz} Hz")
 
 
 
@@ -303,37 +303,7 @@ class Trial:
 
 
     '''********************************** MOTION CORRECTION **********************************'''
-    def motion_correction_align_channels_poly(self):
-        """
-        Fit a degree-1 polynomial (slope + intercept) to predict DA from the isosbestic channel.
-        Stores the fitted control trace in self.isosbestic_fitted, which you can then use
-        for dF/F calculation (e.g. (DA – fitted_control)/fitted_control).
-        """
-        # grab your two equal-length 1D arrays
-        x = np.asarray(self.updated_ISOS, dtype=float)
-        y = np.asarray(self.updated_DA,   dtype=float)
-
-        # perform degree-1 polynomial fit: y ≃ m·x + b
-        m, b = np.polyfit(x, y, deg=1)
-
-        # build the fitted control trace
-        self.isosbestic_fitted = m * x + b
-
-        # optional: print fit parameters
-        print(f"Align fit: DA ≃ {m:.4f}·ISOS + {b:.4f}")
-
-
-    def motion_correction_align_channels_linReg(self):
-        """
-        Use ordinary least-squares LinearRegression to fit the isosbestic channel
-        to the DA channel and store the fitted control trace in self.isosbestic_fitted.
-        """
-        # pull out your two equal-length 1D arrays
-        reg = LinearRegression()
-        
-        n = len(self.updated_DA)
-        reg.fit(self.updated_ISOS.reshape(n, 1), self.updated_DA.reshape(n, 1))
-        self.isosbestic_fitted = reg.predict(self.updated_ISOS.reshape(n, 1)).reshape(n,)
+    
 
     def motion_correction_align_channels_IRLS(self, IRLS_constant: float = 1.4):
         """
@@ -355,7 +325,7 @@ class Trial:
         self.isosbestic_fitted = b0 + b1 * x
 
         # optional: log the fit
-        print(f"IRLS fit: DA ≃ {b1:.4f}·ISOS + {b0:.4f}")
+        # print(f"IRLS fit: DA ≃ {b1:.4f}·ISOS + {b0:.4f}")
 
 
 

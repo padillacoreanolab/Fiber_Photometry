@@ -104,12 +104,11 @@ class RTC(Experiment):
             trial.remove_initial_LED_artifact(t=30)
             trial.remove_final_data_segment(t=10)
 
-
             # 3) low‐pass
             trial.lowpass_filter(cutoff_hz=3.0)
 
             # 4) high‐pass recentered
-            trial.basline_drift_double_exponential()
+            trial.baseline_drift_highpass_recentered(cutoff=0.001)
 
             # 5) IRLS fit
             trial.motion_correction_align_channels_IRLS(IRLS_constant=1.4)
@@ -644,7 +643,7 @@ class RTC(Experiment):
                        title: str = None,
                        ylim: tuple = None,
                        xlim: tuple = None,
-                       bin_size: int = 100,
+                       bin_size: int = 1,
                        figsize: tuple = (6, 4),
 
                        save_path: str = None):
@@ -752,7 +751,7 @@ class RTC(Experiment):
         y_max: float,
         df=None,
         condition='Win',
-        bin_size=100,
+        bin_size=1,
         xlim=None
     ):
         """
@@ -850,7 +849,7 @@ class RTC(Experiment):
                             event_type: str,
                             event_index: int,
                             brain_region: str,
-                            bin_size: int = 100,
+                            bin_size: int = 1,
                             ncols: int = 4,
                             figsize_per_plot: tuple = (3, 2),
                             directory_path: str = None):
