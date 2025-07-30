@@ -218,3 +218,21 @@ class SleapExperiment(Experiment):
     def save_sleap_features(self, out_csv: str):
         """Dump the concatenated SLEAP + DA feature table."""
         self.all_sleap_features.to_csv(out_csv, index=False)
+
+
+    def save_investigation_features(self, out_csv: str):
+        """
+        Save only those rows where the subject is investigating.
+        """
+        df = self.all_sleap_features
+        # keep only rows whose behavior_active includes “Investigation”
+        mask = df["behavior_active"].str.contains("Investigation", na=False)
+        df.loc[mask].to_csv(out_csv, index=False)
+
+    def save_behavior_features(self, out_csv: str):
+        """
+        Save only those rows where any behavior is active (i.e. behavior_active is not NaN).
+        """
+        df = self.all_sleap_features
+        mask = df["behavior_active"].notna()
+        df.loc[mask].to_csv(out_csv, index=False)
