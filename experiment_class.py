@@ -58,7 +58,7 @@ class Experiment:
             trial.lowpass_filter(cutoff_hz=3.0)
 
             # 4) high‐pass recentered
-            trial.baseline_drift_highpass_recentered(cutoff=0.001)
+            trial.basline_drift_double_exponential()
 
             # 5) IRLS fit
             trial.motion_correction_align_channels_IRLS(IRLS_constant=1.4)
