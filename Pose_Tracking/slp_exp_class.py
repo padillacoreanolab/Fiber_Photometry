@@ -97,6 +97,8 @@ class SleapExperiment(Experiment):
             trial.filter_sleap_bouts(interp_kind="linear")
             trial.smooth_locations(win=25, poly=3)
             trial.add_metadata_and_DA()
+
+            trial.add_social_labels(a_cm = 6, b_cm = 4)
             df = trial.compute_pairwise_features()
             df = trial.add_behavior_column(df, time_col="time_s",
                                out_col="behavior_active",
@@ -236,3 +238,23 @@ class SleapExperiment(Experiment):
         df = self.all_sleap_features
         mask = df["behavior_active"].notna()
         df.loc[mask].to_csv(out_csv, index=False)
+
+
+    def save_social_features(self, out_dir: str):
+        """
+        Save into `out_dir/social_combined.csv` all rows where
+        either subject→agent or agent→subject social mask == "Yes",
+        retaining both mask columns.
+        """
+        os.makedirs(out_dir, exist_ok=True)
+        df = self.all_sleap_features
+
+        # build combined mask
+        mask = (df["subject_in_agent"] == "Yes") | (df["agent_in_subject"] == "Yes")
+        combined = df.loc[mask].copy()
+
+        out_path = os.path.join(out_dir, "social_combined.csv")
+        combined.to_csv(out_path, index=False)
+
+        print(f"Saved {len(combined)} rows where either social mask == 'Yes' → {out_path}")
+
