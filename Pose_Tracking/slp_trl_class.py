@@ -3,6 +3,9 @@ import sys
 PROJECT_ROOT = os.path.abspath(os.path.join(os.getcwd(), '..'))
 sys.path.append(PROJECT_ROOT)
 
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
 from trial_class import Trial
 import h5py
 from scipy.interpolate import interp1d
@@ -156,31 +159,102 @@ class SleapTrial(Trial):
 
     # ---------------------- SLEAP I/O & prep ---------------------- #
     def load_sleap(self, h5_path: str, fps: float = 10.0):
+        """
+        Load the .analysis.h5 exactly the same way as your overlay does:
+          tracks has shape (inst, dims, nodes, frames) → transpose to
+          (frames, nodes, dims, inst).
+        """
         with h5py.File(h5_path, "r") as f:
-            raw    = f["tracks"][:].T  # (frames, nodes, dims, instances)
-            tracks = [t.decode() for t in f["track_names"][:]]
-            nodes  = [n.decode() for n in f["node_names"][:]]
+            raw = f["tracks"][:]                             # (inst, dims, nodes, frames)
+            # reorder to (frames, nodes, dims, instances)
+            tracks = raw.transpose((3, 2, 1, 0))             # (F, N, D, M)
 
-        self._raw_locations = raw
-        self.frame_times    = np.arange(raw.shape[0]) / fps
-        self.track_dict     = {name: i for i, name in enumerate(tracks)}
-        self.node_dict      = {name: i for i, name in enumerate(nodes)}
+            track_names = [t.decode() for t in f["track_names"][:]]
+            node_names  = [n.decode() for n in f["node_names"][:]]
+
+        # now store in the exact same shape your overlay expects
+        self._raw_locations = tracks
+        self.frame_times    = np.arange(tracks.shape[0]) / fps
+
+        # build lookup dicts
+        self.track_dict     = {name: i for i, name in enumerate(track_names)}
+        self.node_dict      = {name: i for i, name in enumerate(node_names)}
+
 
     def filter_sleap_bouts(self, interp_kind="linear"):
+        """
+        Builds two views on self._raw_locations:
+        • self.locations_full    : (F, N, D, M), NaN when outside bouts
+        • self.locations_cropped : (n_bout, N, D, M), only the bout frames
+
+        Also stores:
+        • self.frame_indices     : length‐n_bout array of original frame numbers
+        • self.in_bout_times     : length‐n_bout array of corresponding times
+        """
+        # 1) make a boolean mask over all original frames
         mask = np.zeros(len(self.frame_times), dtype=bool)
         for start, end in self.bouts.values():
             mask |= (self.frame_times >= start) & (self.frame_times <= end)
 
-        self.in_bout_times = self.frame_times[mask]
-        cropped = self._raw_locations[mask, ...]
-        self.locations = fill_missing(cropped, kind=interp_kind)
+        # 2) record which frame‐indices survive
+        self.frame_indices = np.flatnonzero(mask)  # e.g. [102,103,104,…]
 
-    def smooth_locations(self, win=25, poly=3):
-        F, N, D, I = self.locations.shape
+        # 3) slice out only those frames and interpolate gaps
+        cropped = self._raw_locations[self.frame_indices, ...]       # (n_bout, N, D, M)
+        filled  = fill_missing(cropped, kind=interp_kind)
+
+        # 4) store the cropped view
+        self.locations_cropped = filled
+        self.in_bout_times     = self.frame_times[self.frame_indices]
+
+        # 5) build a full‐length version with NaNs outside your bouts
+        full_shape  = self._raw_locations.shape  # (F, N, D, M)
+        full_masked  = np.full(full_shape, np.nan, dtype=filled.dtype)
+        full_masked[self.frame_indices, ...] = filled
+        self.locations_full = full_masked
+
+        # 6) optionally choose your “default” locations array
+        #    (you can switch this back and forth in your pipeline)
+        # self.locations = self.locations_full
+        # or
+        # self.locations = self.locations_cropped
+
+
+
+    def smooth_locations(self, win: int = 25, poly: int = 3):
+        """
+        Smooth the SLEAP tracks with a Savitzky–Golay filter.
+
+        Operates on self.locations_cropped (only bout frames), then
+        rebuilds self.locations_full so the smoothed data is in both views.
+
+        Must call filter_sleap_bouts(...) before this.
+        """
+        # 1) sanity check
+        if not hasattr(self, "locations_cropped"):
+            raise RuntimeError("Call filter_sleap_bouts() before smooth_locations()")
+
+        # 2) smooth the cropped trajectories
+        cropped = self.locations_cropped    # shape = (n_bout, N, D, M)
+        Fc, N, D, M = cropped.shape
+        smoothed = np.zeros_like(cropped)
         for ni in range(N):
-            for ii in range(I):
-                traj = self.locations[:, ni, :, ii]
-                self.locations[:, ni, :, ii] = smooth_diff(traj, deriv=0, win=win, poly=poly)
+            for mi in range(M):
+                traj = cropped[:, ni, :, mi]         # (Fc, 2)
+                smoothed[:, ni, :, mi] = smooth_diff(traj, deriv=0, win=win, poly=poly)
+
+        # 3) overwrite the cropped view
+        self.locations_cropped = smoothed
+
+        # 4) rebuild the full‐length, NaN‐masked view
+        full_shape = self._raw_locations.shape  # (F, N, D, M)
+        full = np.full(full_shape, np.nan, dtype=smoothed.dtype)
+        full[self.frame_indices, ...] = smoothed
+        self.locations_full = full
+
+        # 5) keep self.locations pointing to whichever you prefer;
+        #    here we default to the cropped (you could swap to full instead)
+        self.locations = self.locations_cropped
 
     # ---------------------- calibration ---------------------- #
     def calibrate_from_corners(self,
@@ -386,3 +460,177 @@ class SleapTrial(Trial):
 
         df[out_col] = out
         return df
+
+
+    # Proximity functions
+    def compute_social_ellipse_masks(self,
+                                 a_cm: float,
+                                 b_cm: float,
+                                 angle_src: str   = 'Tail_Base',
+                                 angle_dst: str   = 'Nose',
+                                 use_full: bool   = True
+                                 ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Compute two full‐length boolean masks over *_raw_locations* (shape F×...):
+        - mask_agent_in_subject: True when agent’s nose inside subject’s ellipse
+        - mask_subject_in_agent: True when subject’s nose inside agent’s ellipse
+
+        If use_full=True, uses self.locations_full (F×N×2×M).
+        """
+        # pick the array that covers every raw frame
+        loc = (self.locations_full if use_full and hasattr(self, 'locations_full')
+            else self._raw_locations)   # (F, N_nodes, 2, M_instances)
+
+        F, N, D, M = loc.shape
+
+        def _one_mask(center_track, target_track):
+            t_c = self.track_dict[center_track]
+            t_t = self.track_dict[target_track]
+
+            # —(1) ellipse center = per‐frame mean over *all* nodes of the center animal
+            #    (that approximates its body center / COM)
+            C = np.nanmean(loc[:, :, :, t_c], axis=1)   # shape (F,2)
+
+            # —(2) orientation vector on the same animal
+            src = self.node_dict[angle_src]
+            dst = self.node_dict[angle_dst]
+            V = loc[:, dst, :, t_c] - loc[:, src, :, t_c]  # (F,2)
+            thetas = np.arctan2(V[:,1], V[:,0])
+
+            # —(3) nose of the target animal
+            idx_nose = self.node_dict['Nose']
+            P = loc[:, idx_nose, :, t_t]                   # (F,2)
+
+            # —(4) convert cm→px
+            if self.px_to_cm:
+                a_px, b_px = a_cm / self.px_to_cm, b_cm / self.px_to_cm
+            else:
+                a_px, b_px = a_cm, b_cm
+
+            # —(5) rotate into ellipse frame & test
+            d = P - C                                      # (F,2)
+            cos_t, sin_t = np.cos(thetas), np.sin(thetas)
+            x_rot =  cos_t * d[:,0] + sin_t * d[:,1]
+            y_rot = -sin_t * d[:,0] + cos_t * d[:,1]
+            return (x_rot**2 / a_px**2 + y_rot**2 / b_px**2) <= 1
+
+        self.mask_agent_in_subject = _one_mask('subject', 'agent')
+        self.mask_subject_in_agent = _one_mask('agent',   'subject')
+        return self.mask_agent_in_subject, self.mask_subject_in_agent
+
+
+
+    def add_social_labels(self, a_cm: float, b_cm: float):
+        """
+        Adds two columns to self.features_df, tagging each row (bout‐frame)
+        whether agent→subject or subject→agent sociality was True.
+        """
+        # 1) make sure we have full‐length locations
+        if not hasattr(self, 'locations_full'):
+            self.filter_sleap_bouts()
+
+        # 2) compute them (length = n_raw_frames)
+        maskA, maskS = self.compute_social_ellipse_masks(a_cm, b_cm)
+
+        # 3) map your cropped‐indices → raw frames
+        raw_idxs = self.frame_indices  # len = n_bout_frames
+
+        # 4) sanity check
+        if raw_idxs.max() >= len(maskA):
+            raise IndexError(f"Frame index {raw_idxs.max()} ≥ mask length {len(maskA)}")
+
+        # 5) slice
+        a_flags = maskA[raw_idxs]
+        s_flags = maskS[raw_idxs]
+
+        # 6) write‐into your df
+        self.features_df['agent_in_subject'] = np.where(a_flags, "Yes", "No")
+        self.features_df['subject_in_agent'] = np.where(s_flags, "Yes", "No")
+        return self.features_df
+        
+
+    def load_video(self, video_path: str):
+        """Open the arena video so we can grab raw frames later."""
+        self._video = cv2.VideoCapture(video_path)
+        if not self._video.isOpened():
+            raise IOError(f"Cannot open video {video_path}")
+
+    def get_frame(self, frame_i: int) -> np.ndarray:
+        """
+        Seek to frame_i in the *filtered* timebase and return the correct
+        original‐video frame (H×W×3, RGB).
+        """
+        # Map from your filtered index → raw video index
+        if hasattr(self, "frame_indices"):
+            orig_frame = int(self.frame_indices[frame_i])
+        else:
+            orig_frame = frame_i
+
+        self._video.set(cv2.CAP_PROP_POS_FRAMES, orig_frame)
+        ok, bgr = self._video.read()
+        if not ok:
+            raise IndexError(f"Frame {orig_frame} could not be read")
+        return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    
+
+
+    # Plotting
+    def plot_raw_frame_skeleton(self, frame_i: int, video_path: str = None):
+        """
+        Plot video‐frame #frame_i with the *raw* (uncropped, unsmoothed) SLEAP skeleton
+        for both 'subject' and 'agent'.  If *any* node at that frame is NaN, raises.
+
+        Parameters
+        ----------
+        frame_i : int
+            The *raw* video frame to grab (0..n_frames-1).
+        video_path : str, optional
+            If self._video isn’t yet open, will load this path.
+        """
+        # 1) bounds check
+        raw = self._raw_locations  # (frames, nodes, dims, instances)
+        F = raw.shape[0]
+        if not (0 <= frame_i < F):
+            raise IndexError(f"Frame {frame_i} out of range [0, {F})")
+
+        # 2) NaN check
+        this_frame = raw[frame_i]  # (nodes, dims, instances)
+        if np.isnan(this_frame).any():
+            raise ValueError(f"SLEAP data contains NaN at raw frame {frame_i}")
+
+        # 3) ensure video loaded
+        if not hasattr(self, "_video") or self._video is None:
+            if video_path is None:
+                raise ValueError("No video loaded—pass video_path")
+            self.load_video(video_path)
+
+        # 4) grab exact video frame
+        self._video.set(cv2.CAP_PROP_POS_FRAMES, frame_i)
+        ok, bgr = self._video.read()
+        if not ok:
+            raise RuntimeError(f"Could not read video frame {frame_i}")
+        img = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+        # 5) plot
+        fig, ax = plt.subplots(figsize=(8,6))
+        ax.imshow(img)
+        ax.axis("off")
+        ax.set_title(f"Raw SLEAP skeleton — frame {frame_i}")
+
+        colors = {"subject":"lime", "agent":"red"}
+        for track_name, t_idx in self.track_dict.items():
+            if track_name not in colors:
+                continue
+            pts = this_frame[:, :, t_idx]  # (nodes, dims)
+            xs, ys = pts[:,0], pts[:,1]    # x=col, y=row
+            ax.scatter(xs, ys,
+                       c=colors[track_name],
+                       s=50, edgecolor="k",
+                       label=track_name)
+            ax.plot(xs, ys,
+                    c=colors[track_name],
+                    lw=2, alpha=0.7)
+
+        ax.legend(loc="upper right")
+        plt.tight_layout()
+        plt.show()

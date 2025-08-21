@@ -470,7 +470,7 @@ class Trial:
             n = min(len(starts), len(ends))
             # enumerate each bout separately
             for i in range(n):
-                key = f"{prefix}_{i+1}"
+                key = f"{prefix}-{i+1}"
                 self.bouts[key] = (float(starts[i]), float(ends[i]))
 
         # 4. Which behaviors mark bout boundaries?
