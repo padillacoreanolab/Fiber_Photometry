@@ -247,6 +247,55 @@ class Reward_Competition(RTC):
 
 
 
+    # 2) Build winner/loser/tie splits explicitly (ties = NaN winner slot)
+    def split_by_outcome(self, placeholders: bool = False):
+        df = self.da_df.copy()
+        id_cols = ['subject_name', 'file name', 'trial']
+        metric_cols = [c for c in df.columns if c not in id_cols]
+
+        def _as_list(x):
+            if isinstance(x, np.ndarray): return x.tolist()
+            return x if isinstance(x, list) else []
+
+        def _keep(seq, wins, subject, which, placeholders):
+            seq  = _as_list(seq)
+            wins = _as_list(wins)
+            out = []
+            for i, val in enumerate(seq):
+                w = wins[i] if i < len(wins) else np.nan
+                is_nan  = pd.isna(w)                    # tie
+                is_win  = (not is_nan) and (w == subject)
+                is_loss = (not is_nan) and (w != subject)
+                keep = (which == 'win'  and is_win) or \
+                    (which == 'loss' and is_loss) or \
+                    (which == 'tie'  and is_nan)
+                if placeholders:
+                    out.append(val if keep else np.nan)
+                else:
+                    if keep: out.append(val)
+            return out
+
+        def _build(which):
+            pruned = df.apply(lambda row: pd.Series({
+                col: _keep(row[col],
+                        row.get('filtered_winner_array', []),
+                        row['subject_name'],
+                        which,
+                        placeholders)
+                for col in metric_cols
+            }), axis=1)
+            full = pd.concat([df[id_cols], pruned], axis=1)
+            key = metric_cols[0]
+            if placeholders:
+                mask = full[key].apply(lambda lst: any(not pd.isna(x) for x in lst))
+            else:
+                mask = full[key].apply(lambda lst: isinstance(lst, list) and len(lst) > 0)
+            return full.loc[mask].reset_index(drop=True)
+
+        self.winner_df = _build('win')
+        self.loser_df  = _build('loss')
+        self.tie_df    = _build('tie')
+
 
 
 
@@ -456,6 +505,36 @@ class Reward_Competition(RTC):
             lambda x: x if isinstance(x, list) else []
         )
 
+    # 1) Keep ties when reading HVL: store a boolean mask, do NOT coerce "T" to NaN
+    def read_hvl_scoring_keep_ties(self, hvlfp):
+        hv = pd.read_excel(hvlfp)
+        hv.columns = hv.columns.str.strip()
+        hv = hv.rename(columns={'File Name':'file name','Subject':'subject_name'})
+
+        pre_cols  = [c for c in hv.columns if c.lower().endswith('precomp')]
+        comp_cols = [c for c in hv.columns if c.lower().endswith('comp') and c not in pre_cols]
+
+        # Tie masks (True where the cell literally equals "T")
+        hv['HVL_PreComp_Tmask'] = hv[pre_cols].apply(lambda r: [v == 'T' for v in r.tolist()], axis=1)
+        hv['HVL_Comp_Tmask']    = hv[comp_cols].apply(lambda r: [v == 'T' for v in r.tolist()], axis=1)
+
+        # Also keep numeric versions (turn non-numeric & "T" → NaN) if you need them
+        hv_num = hv.copy()
+        hv_num[pre_cols]  = hv_num[pre_cols].apply(pd.to_numeric, errors='coerce')
+        hv_num[comp_cols] = hv_num[comp_cols].apply(pd.to_numeric, errors='coerce')
+        hv['HVL_PreComp'] = hv_num[pre_cols].apply(lambda r: r.tolist(), axis=1)
+        hv['HVL_Comp']    = hv_num[comp_cols].apply(lambda r: r.tolist(), axis=1)
+
+        hv['file name'] = hv['subject_name'] + '-' + hv['file name'].str.split('-').str[-2:].str.join('-')
+
+        valid = self.trials_df[['subject_name','file name']].drop_duplicates()
+        hv = hv.merge(valid, on=['subject_name','file name'], how='inner')
+
+        keep_cols = ['subject_name','file name','HVL_PreComp','HVL_Comp','HVL_PreComp_Tmask','HVL_Comp_Tmask']
+        self.trials_df = self.trials_df.merge(hv[keep_cols], on=['subject_name','file name'], how='left')
+
+        for c in ['HVL_PreComp','HVL_Comp','HVL_PreComp_Tmask','HVL_Comp_Tmask']:
+            self.trials_df[c] = self.trials_df[c].apply(lambda x: x if isinstance(x, list) else [])
 
     def compute_pretrial_EI_DA(self,
                             pretrial_window: tuple[float,float] = (-10.0, 0.0),
