@@ -644,7 +644,7 @@ class RTC(Experiment):
                        ylim: tuple = None,
                        xlim: tuple = None,
                        bin_size: int = 1,
-                       figsize: tuple = (6, 4),
+                       figsize: tuple = (6, 5),
 
                        save_path: str = None):
         """
@@ -713,8 +713,8 @@ class RTC(Experiment):
         ax.axvline(0, color='k', ls='--', lw=2)
         ax.axvline(4, color='#FF69B4', ls='-', lw=2)
 
-        ax.set_xlabel('Time (s)', fontsize=14)
-        ax.set_ylabel('Event-induced Z-scored ΔF/F', fontsize=14)
+        ax.set_xlabel('Time (s)', fontsize=20)
+        ax.set_ylabel('Event-induced Z-scored ΔF/F', fontsize=20)
         if title:
             ax.set_title(title, fontsize=16, fontweight='bold')
         else:
@@ -727,7 +727,7 @@ class RTC(Experiment):
         ax.set_xticks([-4, 0, 4, 10,20,30])
         if xlim is not None:
             ax.set_xlim(xlim)
-        ax.tick_params(axis='both', which='major', labelsize=12, length=6, width=1.5)
+        ax.tick_params(axis='both', which='major', labelsize=20, length=6, width=1.5)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         ax.spines['bottom'].set_linewidth(1.5)

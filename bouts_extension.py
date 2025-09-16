@@ -301,22 +301,22 @@ def plot_behavior_across_bouts_no_identities(
         )
 
     # 8) Labels & title
-    ax.set_title(title, fontsize=16)
-    ax.set_ylabel(ylabel or y_col, fontsize=30, labelpad=12)
-    ax.set_xlabel(xlabel, fontsize=30, labelpad=12)
+    ax.set_title(title, fontsize=10)
+    ax.set_ylabel(ylabel or y_col, fontsize=35, labelpad=12)
+    ax.set_xlabel(xlabel, fontsize=35, labelpad=12)
 
     # 9) X-ticks & custom labels/colors
     ax.set_xticks(np.arange(len(pivot_df.columns)))
     if custom_xtick_labels:
-        ax.set_xticklabels(custom_xtick_labels, fontsize=28)
+        ax.set_xticklabels(custom_xtick_labels, fontsize=35)
         if custom_xtick_colors:
             for tick, color in zip(ax.get_xticklabels(), custom_xtick_colors):
                 tick.set_color(color)
     else:
         ax.set_xticklabels(pivot_df.columns, fontsize=26)
 
-    ax.tick_params(axis='x', labelsize=30)
-    ax.tick_params(axis='y', labelsize=30)
+    ax.tick_params(axis='x', labelsize=35)
+    ax.tick_params(axis='y', labelsize=35)
 
     # 10) Y-limits (automatic or user‐provided)
     if ylim is None:
@@ -692,8 +692,8 @@ def plot_peak_for_subsequent_behaviors(
             zorder=3
         )
 
-    ax.set_xlabel(xlabel, fontsize=30, labelpad=12)
-    ax.set_ylabel(ylabel, fontsize=30, labelpad=12)
+    ax.set_xlabel(xlabel, fontsize=35, labelpad=12)
+    ax.set_ylabel(ylabel, fontsize=35, labelpad=12)
 
     if ylim is not None:
         ax.set_ylim(ylim)
@@ -701,20 +701,20 @@ def plot_peak_for_subsequent_behaviors(
             y_ticks = np.arange(ylim[0], ylim[1] + ytick_increment, ytick_increment)
             ax.set_yticks(y_ticks)
             y_tick_labels = [f"{int(yt)}" if float(yt).is_integer() else f"{yt:.1f}" for yt in y_ticks]
-            ax.set_yticklabels(y_tick_labels, fontsize=28)
+            ax.set_yticklabels(y_tick_labels, fontsize=35)
 
     if custom_xtick_labels:
         ax.set_xticks(np.arange(1, len(custom_xtick_labels) + 1))
-        ax.set_xticklabels(custom_xtick_labels, fontsize=28)
+        ax.set_xticklabels(custom_xtick_labels, fontsize=35)
     else:
         unique_x = np.arange(1, n_subsequent_behaviors + 1)
         ax.set_xticks(unique_x)
-        ax.set_xticklabels([str(x) for x in unique_x], fontsize=28)
+        ax.set_xticklabels([str(x) for x in unique_x], fontsize=35)
 
     if plot_title:
-        ax.set_title(plot_title, fontsize=16)
+        ax.set_title(plot_title, fontsize=10)
 
-    ax.legend(fontsize=18)
+    ax.legend(fontsize=25)
     plt.tight_layout()
 
     if save and save_path:
