@@ -301,22 +301,22 @@ def plot_behavior_across_bouts_no_identities(
         )
 
     # 8) Labels & title
-    ax.set_title(title, fontsize=16)
-    ax.set_ylabel(ylabel or y_col, fontsize=30, labelpad=12)
-    ax.set_xlabel(xlabel, fontsize=30, labelpad=12)
+    ax.set_title(title, fontsize=10)
+    ax.set_ylabel(ylabel or y_col, fontsize=35, labelpad=12)
+    ax.set_xlabel(xlabel, fontsize=35, labelpad=12)
 
     # 9) X-ticks & custom labels/colors
     ax.set_xticks(np.arange(len(pivot_df.columns)))
     if custom_xtick_labels:
-        ax.set_xticklabels(custom_xtick_labels, fontsize=28)
+        ax.set_xticklabels(custom_xtick_labels, fontsize=35)
         if custom_xtick_colors:
             for tick, color in zip(ax.get_xticklabels(), custom_xtick_colors):
                 tick.set_color(color)
     else:
         ax.set_xticklabels(pivot_df.columns, fontsize=26)
 
-    ax.tick_params(axis='x', labelsize=30)
-    ax.tick_params(axis='y', labelsize=30)
+    ax.tick_params(axis='x', labelsize=35)
+    ax.tick_params(axis='y', labelsize=35)
 
     # 10) Y-limits (automatic or user‐provided)
     if ylim is None:
@@ -545,7 +545,6 @@ def plot_behavior_across_bouts_with_identities(metadata_df,
     
     plt.show()
 
-
 def plot_peak_for_subsequent_behaviors(
     exp_da_dict,
     selected_bouts=None,
@@ -553,7 +552,7 @@ def plot_peak_for_subsequent_behaviors(
     n_subsequent_behaviors=3,
     peak_col="Max Peak",
     metric_type='slope',
-    figsize=(14, 8),
+    figsize=(12, 7),
     line_order=None,
     custom_colors=None,
     custom_legend_labels=None,
@@ -566,19 +565,21 @@ def plot_peak_for_subsequent_behaviors(
     save=False,
     save_path="peaks_for_subsequent_behaviors.png"
 ):
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from scipy.stats import linregress
+    from scipy.optimize import curve_fit
 
-    # === Embedded helper: merges all subject DataFrames ===
     def create_big_df_from_exp_da_dict(exp_da_dict):
         return pd.concat(
             [df.assign(Subject=subj) for subj, df in exp_da_dict.items() if not df.empty],
             ignore_index=True
         )
 
-    # === Exponential decay model ===
     def exponential_decay(x, A, B, tau):
         return A + B * np.exp(-x / tau)
 
-    # === Build combined DataFrame ===
     big_df = create_big_df_from_exp_da_dict(exp_da_dict)
 
     if selected_bouts is not None:
@@ -593,18 +594,29 @@ def plot_peak_for_subsequent_behaviors(
 
     big_df.sort_values(["Subject", "Bout", "Event_Start"], inplace=True)
     big_df["BehaviorIndex"] = big_df.groupby(["Subject", "Bout"]).cumcount() + 1
-
-    # Keep all groups, truncate after n_subsequent_behaviors
     big_df = big_df[big_df["BehaviorIndex"] <= n_subsequent_behaviors]
 
+    all_bouts = big_df["Bout"].unique()
+    full_index = pd.MultiIndex.from_product(
+        [all_bouts, np.arange(1, n_subsequent_behaviors + 1)],
+        names=["Bout", "BehaviorIndex"]
+    )
+
+    subject_level = (
+        big_df.groupby(["Subject", "Bout", "BehaviorIndex"], as_index=False)
+        .agg(PeakVal=(peak_col, "mean"))
+    )
+
     agg_df = (
-        big_df.groupby(["Bout", "BehaviorIndex"], as_index=False)
+        subject_level.groupby(["Bout", "BehaviorIndex"], as_index=False)
         .agg(
-            SubjectCount=("Subject", "nunique"),
-            AvgPeak=(peak_col, "mean"),
-            StdPeak=(peak_col, "std")
+            SubjectCount=("PeakVal", "count"),
+            AvgPeak=("PeakVal", "mean"),
+            StdPeak=("PeakVal", "std")
         )
     )
+
+    agg_df = agg_df.set_index(["Bout", "BehaviorIndex"]).reindex(full_index).reset_index()
     agg_df["SEM"] = agg_df["StdPeak"] / np.sqrt(agg_df["SubjectCount"])
 
     if custom_colors is None:
@@ -615,11 +627,10 @@ def plot_peak_for_subsequent_behaviors(
     ax.spines["right"].set_visible(False)
     ax.spines["left"].set_linewidth(5)
     ax.spines["bottom"].set_linewidth(5)
-    ax.tick_params(axis="both", which="major", labelsize=48)
+    ax.tick_params(axis="both", which="major", labelsize=28)
 
     metrics_dict = {}
-
-    unique_bouts = line_order if line_order else sorted(agg_df["Bout"].unique())
+    unique_bouts = line_order if line_order else sorted(agg_df["Bout"].dropna().unique())
 
     for i, bout in enumerate(unique_bouts):
         df_line = agg_df[agg_df["Bout"] == bout].copy()
@@ -629,22 +640,31 @@ def plot_peak_for_subsequent_behaviors(
         y_vals = df_line["AvgPeak"].values
         y_err = df_line["SEM"].values
 
-        if len(x_vals) == 0 or len(y_vals) == 0:
-            print(f"Skipping bout '{bout}' due to no data.")
+        if len(x_vals) == 0 or np.all(np.isnan(y_vals)):
+            print(f"Skipping bout '{bout}' due to no valid data.")
             continue
 
         # Fit metric
         if metric_type.lower() == 'slope':
-            slope, intercept, r_val, p_val, std_err = linregress(x_vals, y_vals)
-            metrics_dict[bout] = slope
-            metric_label = f"slope: {slope:.3f}"
+            valid = ~np.isnan(x_vals) & ~np.isnan(y_vals)
+            if np.sum(valid) >= 2:
+                slope, intercept, r_val, p_val, std_err = linregress(x_vals[valid], y_vals[valid])
+                metrics_dict[bout] = slope
+                metric_label = f"slope: {slope:.3f}"
+            else:
+                metrics_dict[bout] = np.nan
+                metric_label = "slope: N/A"
         elif metric_type.lower() == 'decay':
-            p0 = (np.min(y_vals), np.max(y_vals) - np.min(y_vals), 1.0)
             try:
-                popt, _ = curve_fit(exponential_decay, x_vals, y_vals, p0=p0)
-                tau = popt[2]
-                metrics_dict[bout] = tau
-                metric_label = f"decay: {tau:.3f}"
+                valid = ~np.isnan(x_vals) & ~np.isnan(y_vals)
+                if np.sum(valid) >= 3:
+                    p0 = (np.min(y_vals[valid]), np.max(y_vals[valid]) - np.min(y_vals[valid]), 1.0)
+                    popt, _ = curve_fit(exponential_decay, x_vals[valid], y_vals[valid], p0=p0)
+                    tau = popt[2]
+                    metrics_dict[bout] = tau
+                    metric_label = f"decay: {tau:.3f}"
+                else:
+                    raise RuntimeError
             except RuntimeError:
                 metrics_dict[bout] = np.nan
                 metric_label = "decay: N/A"
@@ -653,7 +673,7 @@ def plot_peak_for_subsequent_behaviors(
             raise ValueError("metric_type must be 'slope' or 'decay'.")
 
         color = custom_colors[i % len(custom_colors)]
-        subject_n = df_line["SubjectCount"].max()
+        subject_n = df_line["SubjectCount"].max() if df_line["SubjectCount"].notna().any() else 0
         legend_label = (
             custom_legend_labels[i] if custom_legend_labels and i < len(custom_legend_labels)
             else f"{bout} ({metric_label}, n={subject_n})"
@@ -664,15 +684,16 @@ def plot_peak_for_subsequent_behaviors(
             yerr=y_err,
             marker='o', linestyle='-',
             color=color,
-            linewidth=5, markersize=30,
-            capsize=10,
-            elinewidth=8,
-            capthick=8,
-            label=legend_label
+            linewidth=3, markersize=18,
+            capsize=6,
+            elinewidth=3,
+            capthick=3,
+            label=legend_label,
+            zorder=3
         )
 
-    ax.set_xlabel(xlabel, fontsize=48, labelpad=12)
-    ax.set_ylabel(ylabel, fontsize=48, labelpad=12)
+    ax.set_xlabel(xlabel, fontsize=35, labelpad=12)
+    ax.set_ylabel(ylabel, fontsize=35, labelpad=12)
 
     if ylim is not None:
         ax.set_ylim(ylim)
@@ -680,30 +701,29 @@ def plot_peak_for_subsequent_behaviors(
             y_ticks = np.arange(ylim[0], ylim[1] + ytick_increment, ytick_increment)
             ax.set_yticks(y_ticks)
             y_tick_labels = [f"{int(yt)}" if float(yt).is_integer() else f"{yt:.1f}" for yt in y_ticks]
-            ax.set_yticklabels(y_tick_labels, fontsize=48)
+            ax.set_yticklabels(y_tick_labels, fontsize=35)
 
     if custom_xtick_labels:
         ax.set_xticks(np.arange(1, len(custom_xtick_labels) + 1))
-        ax.set_xticklabels(custom_xtick_labels, fontsize=48)
+        ax.set_xticklabels(custom_xtick_labels, fontsize=35)
     else:
-        unique_x = sorted(agg_df["BehaviorIndex"].unique())
+        unique_x = np.arange(1, n_subsequent_behaviors + 1)
         ax.set_xticks(unique_x)
-        ax.set_xticklabels([str(x) for x in unique_x], fontsize=48)
+        ax.set_xticklabels([str(x) for x in unique_x], fontsize=35)
 
     if plot_title:
-        ax.set_title(plot_title, fontsize=20)
+        ax.set_title(plot_title, fontsize=10)
 
-    ax.legend(fontsize=26)
+    ax.legend(fontsize=25)
     plt.tight_layout()
 
     if save and save_path:
-        plt.savefig(save_path, transparent=True, dpi=300)
+        plt.savefig(save_path, transparent=True, bbox_inches='tight', pad_inches=0.1, dpi=300)
 
     plt.show()
 
     print(f"\n=== Computed Metric ({metric_type.upper()}): ===")
     for bout, val in metrics_dict.items():
-        print(f"Bout: {bout}, {metric_type} = {val:.3f}")
+        print(f"Bout: {bout}, {metric_type} = {val:.3f}" if not np.isnan(val) else f"Bout: {bout}, {metric_type} = N/A")
 
     return agg_df
-

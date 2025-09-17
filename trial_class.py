@@ -250,7 +250,7 @@ class Trial:
     def basline_drift_double_exponential(self,
                             p0: dict | None = None,
                             bounds: dict | None = None,
-                            maxfev: int = 2000):
+                            maxfev: int = 10000):
         """
         Fit & subtract a double‐exp bleaching baseline from both updated_DA and updated_ISOS,
         then add back each signal’s original mean so the DC level is preserved.
